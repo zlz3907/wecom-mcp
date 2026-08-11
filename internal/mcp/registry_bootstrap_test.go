@@ -1,0 +1,134 @@
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/zhonglizhi/wecom-mcp-v2/internal/config"
+)
+
+type bootstrapFakeClient struct {
+	fields      map[string]map[string]any
+	createCalls int
+}
+
+func (f *bootstrapFakeClient) Request(_ context.Context, operation string, payload any) (map[string]any, error) {
+	switch operation {
+	case "create_smartsheet":
+		f.createCalls++
+		return map[string]any{"result": map[string]any{"docid": "registry-created", "url": "https://example.invalid/registry"}}, nil
+	case "get_sheet":
+		return map[string]any{"result": map[string]any{"sheet_list": []any{map[string]any{"type": "smartsheet", "sheet_id": "sheet-registry"}}}}, nil
+	case "get_fields":
+		items := make([]any, 0, len(f.fields))
+		for _, field := range f.fields {
+			items = append(items, field)
+		}
+		return map[string]any{"result": map[string]any{"fields": items}}, nil
+	case "add_fields":
+		body, _ := payload.(map[string]any)
+		definitions, _ := body["fields"].([]map[string]any)
+		if len(definitions) != 1 {
+			return nil, fmt.Errorf("unexpected field payload: %#v", payload)
+		}
+		title, _ := definitions[0]["field_title"].(string)
+		field := map[string]any{"field_title": title, "field_id": "id-" + title, "field_type": "FIELD_TYPE_TEXT"}
+		f.fields[title] = field
+		return map[string]any{"result": map[string]any{"fields": []any{field}}}, nil
+	default:
+		return nil, fmt.Errorf("unexpected operation %s", operation)
+	}
+}
+
+func bootstrapTestConfig(t *testing.T) (string, config.Config) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "instance.json")
+	schema := filepath.Join(dir, "schema.json")
+	state := filepath.Join(dir, "state.json")
+	data := `{"version":1,"instance_name":"zoop_wecom_zhycit","tenant_route":"wecom-zhycit-admin-assistant","registry_document_id":"","registry_key":"zhycit_zoop_governance_v2","schema_mirror_path":"` + schema + `","state_path":"` + state + `","api_whitelist":{"bootstrap":["create_smartsheet","get_sheet","get_fields","add_fields"]}}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := config.LoadBootstrapCandidate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path, runtime
+}
+
+func TestRegistryBootstrapCreatesOncePersistsAndRereads(t *testing.T) {
+	path, runtime := bootstrapTestConfig(t)
+	server := &Server{store: config.NewStore(path)}
+	client := &bootstrapFakeClient{fields: map[string]map[string]any{}}
+	raw, _ := json.Marshal(map[string]string{"owner_authorization": "create_and_persist_default_registry"})
+	result, err := server.bootstrapRegistry(context.Background(), runtime, client, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := result.(map[string]any)
+	if output["state"] != "created_configured_readback_verified" || output["readback_verified"] != true || client.createCalls != 1 {
+		t.Fatalf("result=%#v createCalls=%d", output, client.createCalls)
+	}
+	if len(client.fields) != len(registryBootstrapFields) {
+		t.Fatalf("field count=%d", len(client.fields))
+	}
+	persisted, err := config.Load(path)
+	if err != nil || persisted.RegistryDocumentID != "registry-created" {
+		t.Fatalf("persisted=%#v err=%v", persisted, err)
+	}
+	state, exists, err := loadRegistryBootstrapState(registryBootstrapStatePath(runtime))
+	if err != nil || !exists || state.Phase != "verified" || state.DocumentID != "registry-created" {
+		t.Fatalf("state=%#v exists=%v err=%v", state, exists, err)
+	}
+	configured, err := server.bootstrapRegistry(context.Background(), persisted, nil, raw)
+	if err != nil || configured.(map[string]any)["state"] != "already_configured" || client.createCalls != 1 {
+		t.Fatalf("configured=%#v err=%v createCalls=%d", configured, err, client.createCalls)
+	}
+}
+
+func TestRegistryBootstrapCreatingSentinelStopsDuplicate(t *testing.T) {
+	path, runtime := bootstrapTestConfig(t)
+	server := &Server{store: config.NewStore(path)}
+	client := &bootstrapFakeClient{fields: map[string]map[string]any{}}
+	state := registryBootstrapState{Phase: "creating", StartedAt: "2026-08-10T00:00:00Z", UpdatedAt: "2026-08-10T00:00:00Z"}
+	if err := reserveRegistryBootstrapState(registryBootstrapStatePath(runtime), state); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(map[string]string{"owner_authorization": "create_and_persist_default_registry"})
+	if _, err := server.bootstrapRegistry(context.Background(), runtime, client, raw); err == nil {
+		t.Fatal("uncertain creating sentinel must fail closed")
+	}
+	if client.createCalls != 0 {
+		t.Fatalf("duplicate create calls=%d", client.createCalls)
+	}
+}
+
+func TestRegistryBootstrapResumesCreatedDocumentWithoutCreatingAgain(t *testing.T) {
+	path, runtime := bootstrapTestConfig(t)
+	server := &Server{store: config.NewStore(path)}
+	client := &bootstrapFakeClient{fields: map[string]map[string]any{}}
+	state := registryBootstrapState{
+		Phase: "created", DocumentID: "registry-resume", ShareURL: "https://example.invalid/resume",
+		StartedAt: "2026-08-10T00:00:00Z", UpdatedAt: "2026-08-10T00:00:01Z",
+	}
+	if err := reserveRegistryBootstrapState(registryBootstrapStatePath(runtime), state); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(map[string]string{"owner_authorization": "create_and_persist_default_registry"})
+	result, err := server.bootstrapRegistry(context.Background(), runtime, client, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.createCalls != 0 || result.(map[string]any)["created"] != false {
+		t.Fatalf("result=%#v createCalls=%d", result, client.createCalls)
+	}
+	persisted, err := config.Load(path)
+	if err != nil || persisted.RegistryDocumentID != "registry-resume" {
+		t.Fatalf("persisted=%#v err=%v", persisted, err)
+	}
+}
