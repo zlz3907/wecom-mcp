@@ -1,0 +1,20 @@
+format=wecom-mcp-verification-v1
+captured_at_utc=2026-08-11T14:30:55Z
+ended_at_utc=2026-08-11T14:31:54Z
+source_ref=origin/main
+source_commit=80a3f13f47c8524ad97323859741fc320f33b48c
+source_tree=104206c41571341492c0dfe2115ec1f146853385
+candidate_dirty=no
+go_version=go version go1.23.1 darwin/amd64
+command=GOCACHE=<isolated-temporary-cache> go test ./...
+?   github.com/zhonglizhi/wecom-mcp-v2/cmd/wecom-mcp-v2 [no test files]
+ok  github.com/zhonglizhi/wecom-mcp-v2/internal/config 2.171s
+ok  github.com/zhonglizhi/wecom-mcp-v2/internal/mcp 2.206s
+ok  github.com/zhonglizhi/wecom-mcp-v2/internal/wecom 2.998s
+result_test=passed
+command=GOCACHE=<isolated-temporary-cache> go vet ./...
+result_vet=passed
+command=GOCACHE=<isolated-temporary-cache> go build -trimpath -o <temporary-binary> ./cmd/wecom-mcp-v2
+result_build=passed
+built_binary_sha256=7d67df77a6809c4e0bc20fe845ee5bbe52c21d3433a0ef701eb6868509e5e6f9
+overall=passed
