@@ -7,25 +7,44 @@
 - 配置模板仅作为示例保存。真实 `*.local.json` 与 `GNAS_*` 环境变量由安装目标环境另行管理。
 - 本流程不依赖 GitHub Release、包注册表或公开仓库。
 
-## 复现远端基线
+## 复现当前远端目标
 
-目标基线固定为：
+目标是私有仓库 `zlz3907/wecom-mcp` 的 `main`。验证开始时先用只读远端查询捕获当次目标 commit，再在 fetch 后确认远端没有漂移，并由该 commit 解析 tree。后续断言、detached checkout 与证据必须复用同一组值，不得把会随提交变化的 commit/tree 写死在文档中。
 
-```text
-commit 80a3f13f47c8524ad97323859741fc320f33b48c
-tree   104206c41571341492c0dfe2115ec1f146853385
-```
-
-非破坏性获取并在新目录检出（不会移动或清理当前工作树）：
+以下流程失败关闭，且不会移动或清理当前工作树：
 
 ```sh
-git fetch --no-tags origin main
-test "$(git rev-parse origin/main)" = 80a3f13f47c8524ad97323859741fc320f33b48c
-test "$(git rev-parse origin/main^{tree})" = 104206c41571341492c0dfe2115ec1f146853385
-git worktree add --detach ../wecom-mcp-baseline-80a3f13 origin/main
+set -eu
+
+expected_remote=https://github.com/zlz3907/wecom-mcp.git
+test "$(git remote get-url origin)" = "$expected_remote"
+test "$(gh repo view zlz3907/wecom-mcp --json isPrivate --jq .isPrivate)" = true
+
+target_commit=$(
+  git ls-remote --exit-code origin refs/heads/main |
+    awk 'NR == 1 { print $1 } END { if (NR != 1) exit 1 }'
+)
+printf '%s\n' "$target_commit" | grep -Eq '^[0-9a-f]{40}$'
+
+git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+test "$(git rev-parse origin/main)" = "$target_commit"
+target_tree=$(git rev-parse "$target_commit^{tree}")
+test "$(git rev-parse origin/main^{tree})" = "$target_tree"
+
+target_short=$(printf '%.12s' "$target_commit")
+checkout_dir="../wecom-mcp-remote-$target_short"
+test ! -e "$checkout_dir"
+git worktree add --detach "$checkout_dir" "$target_commit"
+
+test -z "$(git -C "$checkout_dir" symbolic-ref -q HEAD || true)"
+test -z "$(git -C "$checkout_dir" status --porcelain=v1 --untracked-files=normal)"
+test "$(git -C "$checkout_dir" rev-parse HEAD)" = "$target_commit"
+test "$(git -C "$checkout_dir" rev-parse HEAD^{tree})" = "$target_tree"
+printf 'target_commit=%s\ntarget_tree=%s\ncheckout=%s\n' \
+  "$target_commit" "$target_tree" "$checkout_dir"
 ```
 
-若目标目录已存在，选择另一个空目录；不得用 `reset`、`clean` 或覆盖现有工作树。
+`gh repo view` 的私有属性检查和 `git ls-remote` 都是只读远端查询。若仓库身份、私有属性、远端查询、fetch 后 commit、tree、目标目录、detached 状态或工作树清洁度任一不符合预期，流程立即失败；应保留现场并重新开始一次新的验证，不得用 `reset`、`clean`、force fetch 或覆盖现有工作树来绕过失败。
 
 ## 安装与校验
 
