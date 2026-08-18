@@ -1,0 +1,309 @@
+// wecom-mcp-v2-configure performs the small, deliberately constrained client
+// registration step used by the portable installer.  It never reads or writes
+// Enterprise WeCom data and it refuses to guess an unknown client's format.
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+const (
+	instanceName = "zoop_wecom_zhycit"
+	beginMarker  = "# BEGIN wecom-mcp-v2 managed zoop_wecom_zhycit"
+	endMarker    = "# END wecom-mcp-v2 managed zoop_wecom_zhycit"
+)
+
+type result struct {
+	Client     string `json:"client"`
+	Configured bool   `json:"configured"`
+	ConfigPath string `json:"config_path,omitempty"`
+	BackupPath string `json:"backup_path,omitempty"`
+	Result     string `json:"result"`
+	NextAction string `json:"next_action,omitempty"`
+}
+
+type options struct {
+	client          string
+	binary          string
+	serviceConfig   string
+	codexConfig     string
+	traeConfig      string
+	workBuddyConfig string
+}
+
+func main() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fatal(result{Client: "unknown", Result: "agent_blocked", NextAction: "set HOME and retry"}, 3)
+	}
+	opt := options{}
+	var switchPrefix, switchRelease string
+	flag.StringVar(&opt.client, "client", "auto", "auto|codex|trae-solo-cn|workbuddy|none")
+	flag.StringVar(&opt.binary, "binary", "", "absolute MCP binary path")
+	flag.StringVar(&opt.serviceConfig, "config", "", "absolute instance configuration path")
+	flag.StringVar(&opt.codexConfig, "codex-config", filepath.Join(home, ".codex", "config.toml"), "Codex config.toml path")
+	flag.StringVar(&opt.traeConfig, "trae-config", filepath.Join(home, "Library", "Application Support", "TRAE SOLO CN", "User", "mcp.json"), "TRAE SOLO CN mcp.json path")
+	flag.StringVar(&opt.workBuddyConfig, "workbuddy-config", "", "reserved: WorkBuddy config path")
+	flag.StringVar(&switchPrefix, "switch-current", "", "internal: atomically switch a managed prefix current link")
+	flag.StringVar(&switchRelease, "release", "", "internal: managed release name for --switch-current")
+	flag.Parse()
+	if switchPrefix != "" || switchRelease != "" {
+		if err := atomicSwitchCurrent(switchPrefix, switchRelease); err != nil {
+			fatal(result{Client: "installer", Result: "agent_blocked", NextAction: err.Error()}, 3)
+		}
+		printResults([]result{{Client: "installer", Configured: false, Result: "switched"}})
+		return
+	}
+
+	if !validClient(opt.client) {
+		fatal(result{Client: opt.client, Result: "agent_blocked", NextAction: "use --client auto, codex, trae-solo-cn, workbuddy, or none"}, 3)
+	}
+	if opt.client == "none" {
+		printResults([]result{{Client: "none", Result: "skipped", NextAction: "restart a client only after registering it explicitly"}})
+		return
+	}
+	if err := validateInput(opt); err != nil {
+		fatal(result{Client: opt.client, Result: "agent_blocked", NextAction: err.Error()}, 3)
+	}
+
+	var results []result
+	switch opt.client {
+	case "codex":
+		results = append(results, configureCodex(opt))
+	case "trae-solo-cn":
+		results = append(results, configureTRAE(opt))
+	case "workbuddy":
+		results = append(results, workBuddyBlocked(opt))
+	case "auto":
+		if fileExists(opt.codexConfig) {
+			results = append(results, configureCodex(opt))
+		}
+		if fileExists(opt.traeConfig) {
+			results = append(results, configureTRAE(opt))
+		}
+		if len(results) == 0 {
+			results = append(results, result{Client: "auto", Result: "agent_blocked", NextAction: "no known Codex or TRAE SOLO CN configuration found; rerun with --client codex or --client trae-solo-cn after confirming the client is installed"})
+		}
+	}
+	printResults(results)
+	for _, item := range results {
+		if item.Result == "agent_blocked" {
+			os.Exit(3)
+		}
+	}
+}
+
+func atomicSwitchCurrent(prefix, release string) error {
+	if !filepath.IsAbs(prefix) || release == "" || strings.ContainsAny(release, "/\\") {
+		return errors.New("--switch-current requires an absolute prefix and a simple release name")
+	}
+	target := filepath.Join(prefix, "releases", release)
+	if info, err := os.Stat(target); err != nil || !info.IsDir() {
+		return errors.New("requested managed release does not exist")
+	}
+	current := filepath.Join(prefix, "current")
+	if info, err := os.Lstat(current); err == nil && info.Mode()&os.ModeSymlink == 0 {
+		return errors.New("current exists but is not a symbolic link")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	temporary := filepath.Join(prefix, fmt.Sprintf(".current-%d", os.Getpid()))
+	if err := os.Remove(temporary); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Symlink(filepath.ToSlash(filepath.Join("releases", release)), temporary); err != nil {
+		return err
+	}
+	if err := os.Rename(temporary, current); err != nil {
+		_ = os.Remove(temporary)
+		return err
+	}
+	return nil
+}
+
+func validClient(value string) bool {
+	return value == "auto" || value == "codex" || value == "trae-solo-cn" || value == "workbuddy" || value == "none"
+}
+
+func validateInput(opt options) error {
+	for label, value := range map[string]string{"--binary": opt.binary, "--config": opt.serviceConfig} {
+		if value == "" || !filepath.IsAbs(value) {
+			return fmt.Errorf("%s must be an existing absolute path", label)
+		}
+		if _, err := os.Stat(value); err != nil {
+			return fmt.Errorf("%s is not readable: %w", label, err)
+		}
+	}
+	return nil
+}
+
+func configureCodex(opt options) result {
+	path := opt.codexConfig
+	block, err := codexBlock(opt.binary, opt.serviceConfig)
+	if err != nil {
+		return result{Client: "codex", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := writeNew(path, []byte(block)); err != nil {
+			return result{Client: "codex", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+		}
+		return result{Client: "codex", Configured: true, ConfigPath: path, Result: "configured", NextAction: "restart Codex, then run initialize, tools/list, and a read-only wecom_schema_status call"}
+	}
+	if err != nil {
+		return result{Client: "codex", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+	}
+	text := string(data)
+	if strings.Contains(text, beginMarker) || strings.Contains(text, endMarker) {
+		if strings.Contains(text, beginMarker) && strings.Contains(text, endMarker) && strings.Contains(text, block) {
+			return result{Client: "codex", Configured: true, ConfigPath: path, Result: "already_configured", NextAction: "restart Codex if it is running"}
+		}
+		return result{Client: "codex", ConfigPath: path, Result: "agent_blocked", NextAction: "managed Codex block is incomplete or conflicts with requested paths; inspect it manually"}
+	}
+	if strings.Contains(text, "[mcp_servers."+instanceName+"]") {
+		return result{Client: "codex", ConfigPath: path, Result: "agent_blocked", NextAction: "an unmanaged zoop_wecom_zhycit Codex entry already exists; inspect and migrate it manually"}
+	}
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	backup, err := backupAndReplace(path, []byte(text+"\n"+block))
+	if err != nil {
+		return result{Client: "codex", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+	}
+	return result{Client: "codex", Configured: true, ConfigPath: path, BackupPath: backup, Result: "configured", NextAction: "restart Codex, then run initialize, tools/list, and a read-only wecom_schema_status call"}
+}
+
+func codexBlock(binary, serviceConfig string) (string, error) {
+	if strings.ContainsAny(binary+serviceConfig, "\"\n\r") {
+		return "", errors.New("paths containing quotes or newlines are not supported for TOML registration")
+	}
+	return fmt.Sprintf("%s\n[mcp_servers.%s]\ncommand = \"%s\"\nargs = [\"--config\", \"%s\"]\nenabled = true\n%s\n", beginMarker, instanceName, binary, serviceConfig, endMarker), nil
+}
+
+func configureTRAE(opt options) result {
+	path := opt.traeConfig
+	var root map[string]any
+	data, err := os.ReadFile(path)
+	newFile := errors.Is(err, os.ErrNotExist)
+	if newFile {
+		root = map[string]any{}
+	} else if err != nil {
+		return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+	} else if err := json.Unmarshal(data, &root); err != nil {
+		return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: "TRAE SOLO CN mcp.json is not valid JSON; fix it before registration"}
+	}
+	servers, ok := root["mcpServers"].(map[string]any)
+	if !ok && root["mcpServers"] != nil {
+		return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: "TRAE SOLO CN mcpServers is not an object; its contract is not safe to modify"}
+	}
+	if servers == nil {
+		servers = map[string]any{}
+		root["mcpServers"] = servers
+	}
+	desired := map[string]any{"command": opt.binary, "args": []any{"--config", opt.serviceConfig}}
+	if existing, exists := servers[instanceName]; exists {
+		if equalServer(existing, desired) {
+			return result{Client: "trae-solo-cn", Configured: true, ConfigPath: path, Result: "already_configured", NextAction: "restart TRAE SOLO CN if it is running"}
+		}
+		return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: "an existing TRAE SOLO CN server entry conflicts with requested paths; inspect it manually"}
+	}
+	servers[instanceName] = desired
+	encoded, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+	}
+	encoded = append(encoded, '\n')
+	if newFile {
+		if err := writeNew(path, encoded); err != nil {
+			return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+		}
+		return result{Client: "trae-solo-cn", Configured: true, ConfigPath: path, Result: "configured", NextAction: "restart TRAE SOLO CN, then run initialize, tools/list, and a read-only wecom_schema_status call"}
+	}
+	backup, err := backupAndReplace(path, encoded)
+	if err != nil {
+		return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+	}
+	return result{Client: "trae-solo-cn", Configured: true, ConfigPath: path, BackupPath: backup, Result: "configured", NextAction: "restart TRAE SOLO CN, then run initialize, tools/list, and a read-only wecom_schema_status call"}
+}
+
+func equalServer(raw any, desired map[string]any) bool {
+	existing, ok := raw.(map[string]any)
+	if !ok || existing["command"] != desired["command"] {
+		return false
+	}
+	args, ok := existing["args"].([]any)
+	return ok && len(args) == 2 && args[0] == "--config" && args[1] == desired["args"].([]any)[1]
+}
+
+func workBuddyBlocked(opt options) result {
+	next := "WorkBuddy configuration contract/path is not established; inspect its MCP documentation and rerun with a supported adapter"
+	if opt.workBuddyConfig != "" {
+		next = "WorkBuddy adapter is intentionally unavailable because its configuration contract is unverified; do not edit " + opt.workBuddyConfig + " automatically"
+	}
+	return result{Client: "workbuddy", Result: "agent_blocked", NextAction: next}
+}
+
+func writeNew(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0600)
+}
+
+func backupAndReplace(path string, data []byte) (string, error) {
+	backup := path + ".wecom-mcp-v2-" + time.Now().UTC().Format("20060102T150405Z") + ".bak"
+	if err := copyFile(path, backup); err != nil {
+		return "", err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".wecom-mcp-v2-*.tmp")
+	if err != nil {
+		return "", err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0600); err != nil {
+		temp.Close()
+		return "", err
+	}
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return "", err
+	}
+	if err := temp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return "", err
+	}
+	return backup, nil
+}
+
+func copyFile(source, destination string) error {
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(destination, data, 0600)
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func printResults(results []result) {
+	encoded, _ := json.MarshalIndent(results, "", "  ")
+	fmt.Println(string(encoded))
+}
+
+func fatal(item result, code int) {
+	printResults([]result{item})
+	os.Exit(code)
+}

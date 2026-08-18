@@ -4,6 +4,14 @@
 
 安装后，Codex 或 TRAE 可以用自然语言查询 Zoop 的需求、任务等记录，也可以在明确指令下受控维护记录。它适合已经使用 Zoop 管理研发工作，希望直接在 AI 客户端里查看和更新企业微信智能表格的个人或团队。
 
+## 非技术用户一键安装
+
+正式发布固定版本后，用户不需要安装 Go、选择 CPU 架构、下载二进制或手工编辑 MCP 配置。将 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md) 中的完整 Prompt 粘贴给 TRAE 或其他具备本机终端和 MCP 管理能力的 Agent，由 Agent 自动探查环境、校验 GitHub Release、安装并注册已确认的客户端。
+
+安装器只接受固定 Release 资产，自动识别 OS/CPU 架构，校验 `SHA256SUMS`，保留旧版本并原子切换 `~/.mcp/wecom-mcp-v2/current`。它将 `installed`、`configured`、`loaded`、`verified` 分开报告；没有本地受保护配置时可以只安装二进制，但不会伪装服务已可用。
+
+WorkBuddy 的本机 MCP 配置契约尚未确认，Prompt 会要求 Agent 输出 `agent_blocked`，不会猜路径或写入未知配置。当前支持矩阵、回滚规则和发布前门禁见 [便携安装说明](PORTABLE_INSTALL.md)。
+
 ## 30 秒 Quick Start
 
 从源码本地构建：

@@ -1,5 +1,25 @@
 # 便携安装、校验、版本与回滚
 
+## GitHub Release 产品化入口（MVP）
+
+本文件原有流程适用于本地源码安装与生命周期证据；GitHub 分发使用仓库根目录的 `install.sh` 与 `scripts/package-release.sh`。打包脚本按 `GOOS/GOARCH` 自动生成 `darwin/arm64`、`darwin/amd64`、`linux/arm64`、`linux/amd64` 的命名产物、各产物内的 `INSTALL-MANIFEST.txt` 和统一 `SHA256SUMS`。安装器自行检测宿主 OS/架构，不把选择责任交给用户。
+
+发布人员只在干净候选中运行本地打包，例如：
+
+```sh
+./scripts/package-release.sh --version vX.Y.Z --output /absolute/path/to/release-assets
+```
+
+这一步只生成本地资产，不创建 tag、不 push、不上传 GitHub Release。真正发布前必须复核 `SHA256SUMS`、`RELEASE-MANIFEST.txt`、许可证、GitHub 可见性与 Release 访问策略。当前 Windows 因 `syscall.Flock` 不可交叉构建；`install.sh` 在 Windows 明确失败关闭。WorkBuddy 没有已确认的配置文件契约，安装器只保留 `--workbuddy-config` 适配点且拒绝自动写入。
+
+离线产品化回归测试：
+
+```sh
+./scripts/test-github-installer.sh
+```
+
+它执行 shell 静态检查、Go 测试/vet/build、四个发布资产构建、临时 HOME 安装、配置备份/幂等、checksum 篡改拒绝、回滚与无本地配置 fail-closed；不访问线上企业微信。
+
 ## 前提与边界
 
 - Go 1.23 或更高兼容版本；POSIX shell；本地已有仓库检出。
