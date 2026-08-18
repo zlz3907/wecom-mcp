@@ -70,8 +70,8 @@ bootstrap 在调用企业微信创建接口前先创建本地排他哨兵。若�
 
 ```toml
 [mcp_servers.zoop_wecom_zhycit]
-command = "/Users/zhonglizhi/.codex/mcp/wecom-mcp-v2/bin/wecom-mcp-v2"
-args = ["--config", "/Users/zhonglizhi/.codex/mcp/wecom-mcp-v2/config/zoop_wecom_zhycit.local.json"]
+command = "$HOME/.codex/mcp/wecom-mcp-v2/bin/wecom-mcp-v2"
+args = ["--config", "$HOME/.codex/mcp/wecom-mcp-v2/config/zoop_wecom_zhycit.local.json"]
 startup_timeout_sec = 10
 tool_timeout_sec = 20
 enabled = true
