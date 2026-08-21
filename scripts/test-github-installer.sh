@@ -54,12 +54,15 @@ grep -q 'Flock' "$test_root/windows-build.txt"
 "$package_repo/scripts/package-release.sh" --version v0.0.0-test2 --output "$test_root/release2"
 test -f "$test_root/release1/SHA256SUMS"
 test -f "$test_root/release1/RELEASE-MANIFEST.txt"
+test -f "$test_root/release1/LICENSE"
 test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_darwin_arm64.tar.gz"
 test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_darwin_amd64.tar.gz"
 test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_linux_arm64.tar.gz"
 test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_linux_amd64.tar.gz"
-test "$(wc -l < "$test_root/release1/SHA256SUMS" | tr -d ' ')" -eq 6
+test "$(wc -l < "$test_root/release1/SHA256SUMS" | tr -d ' ')" -eq 7
 grep -q '^asset_linux_amd64=wecom-mcp-v2_v0.0.0-test1_linux_amd64.tar.gz$' "$test_root/release1/RELEASE-MANIFEST.txt"
+grep -q '^license=LICENSE$' "$test_root/release1/RELEASE-MANIFEST.txt"
+tar -tzf "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_darwin_arm64.tar.gz" | grep -qx './LICENSE'
 
 home_dir="$test_root/home"
 mkdir -p "$home_dir/.codex"

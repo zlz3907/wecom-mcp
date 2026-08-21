@@ -49,6 +49,7 @@ for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
   )
   chmod 0755 "$stage/bin/wecom-mcp-v2" "$stage/bin/wecom-mcp-v2-configure"
   cp "$repo_dir/config/zoop_wecom_zhycit.json.example" "$stage/config/zoop_wecom_zhycit.json.example"
+  cp "$repo_dir/LICENSE" "$stage/LICENSE"
   {
     echo "format=wecom-mcp-github-release-v1"
     echo "version=$version"
@@ -58,12 +59,14 @@ for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
     echo "binary_sha256=$(sha256 "$stage/bin/wecom-mcp-v2")"
     echo "configure_sha256=$(sha256 "$stage/bin/wecom-mcp-v2-configure")"
     echo "config_example_sha256=$(sha256 "$stage/config/zoop_wecom_zhycit.json.example")"
+    echo "license_sha256=$(sha256 "$stage/LICENSE")"
   } > "$stage/INSTALL-MANIFEST.txt"
   asset="wecom-mcp-v2_${version}_${goos}_${goarch}.tar.gz"
   tar -C "$stage" -czf "$output/$asset" .
 done
 cp "$repo_dir/install.sh" "$output/install.sh"
 chmod 0755 "$output/install.sh"
+cp "$repo_dir/LICENSE" "$output/LICENSE"
 {
   echo "format=wecom-mcp-github-release-index-v1"
   echo "version=$version"
@@ -73,6 +76,8 @@ chmod 0755 "$output/install.sh"
   echo "unsupported_core=windows/amd64 (current syscall.Flock implementation does not build on Windows)"
   echo "installer=install.sh"
   echo "checksums=SHA256SUMS"
+  echo "license=LICENSE"
+  echo "license_sha256=$(sha256 "$repo_dir/LICENSE")"
   echo "asset_darwin_arm64=wecom-mcp-v2_${version}_darwin_arm64.tar.gz"
   echo "asset_darwin_amd64=wecom-mcp-v2_${version}_darwin_amd64.tar.gz"
   echo "asset_linux_arm64=wecom-mcp-v2_${version}_linux_arm64.tar.gz"
@@ -80,7 +85,7 @@ chmod 0755 "$output/install.sh"
 } > "$output/RELEASE-MANIFEST.txt"
 (
   cd "$output"
-  for file in install.sh RELEASE-MANIFEST.txt wecom-mcp-v2_"$version"_*.tar.gz; do
+  for file in install.sh RELEASE-MANIFEST.txt LICENSE wecom-mcp-v2_"$version"_*.tar.gz; do
     printf '%s  %s\n' "$(sha256 "$file")" "$file"
   done > SHA256SUMS
 )
