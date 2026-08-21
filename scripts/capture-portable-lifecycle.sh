@@ -44,6 +44,17 @@ export GOCACHE="$go_cache"
 cleanup() { rm -f "$tmp_output" "$tmp_binary"; rm -rf "$go_cache"; }
 trap cleanup EXIT HUP INT TERM
 
+sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print tolower($1)}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print tolower($1)}'
+  else
+    echo "error: shasum or sha256sum is required" >&2
+    exit 3
+  fi
+}
+
 run() {
   label=$1
   shift
@@ -90,7 +101,7 @@ expect_rejection() {
   run test go test ./...
   run vet go vet ./...
   run build go build -trimpath -o "$tmp_binary" ./cmd/wecom-mcp-v2
-  echo "built_binary_sha256=$(shasum -a 256 "$tmp_binary" | awk '{print $1}')"
+  echo "built_binary_sha256=$(sha256 "$tmp_binary")"
 
   run install_previous "$source_dir/scripts/install-portable.sh" --prefix "$prefix" --source "$previous_source"
   previous_version=$(sed -n 's/^version=//p' "$prefix/current/INSTALL-MANIFEST.txt")

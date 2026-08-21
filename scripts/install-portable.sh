@@ -58,14 +58,25 @@ chmod 0755 "$tmp_binary"
 mv "$tmp_binary" "$release_dir/bin/wecom-mcp-v2"
 cp "$repo_dir/config/zoop_wecom_zhycit.json.example" "$release_dir/config/zoop_wecom_zhycit.json.example"
 
-binary_sha=$(shasum -a 256 "$release_dir/bin/wecom-mcp-v2" | awk '{print $1}')
-config_sha=$(shasum -a 256 "$release_dir/config/zoop_wecom_zhycit.json.example" | awk '{print $1}')
+sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print tolower($1)}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print tolower($1)}'
+  else
+    echo "error: shasum or sha256sum is required" >&2
+    exit 3
+  fi
+}
+
+binary_sha=$(sha256 "$release_dir/bin/wecom-mcp-v2")
+config_sha=$(sha256 "$release_dir/config/zoop_wecom_zhycit.json.example")
 git -C "$repo_dir" diff --binary HEAD -- . > "$candidate_input"
 git -C "$repo_dir" ls-files --others --exclude-standard | while IFS= read -r file; do
   printf 'untracked=%s\n' "$file"
-  shasum -a 256 "$repo_dir/$file"
+  sha256 "$repo_dir/$file"
 done >> "$candidate_input"
-candidate_sha=$(shasum -a 256 "$candidate_input" | awk '{print $1}')
+candidate_sha=$(sha256 "$candidate_input")
 {
   echo "format=wecom-mcp-portable-v1"
   echo "version=$version"
@@ -78,7 +89,15 @@ candidate_sha=$(shasum -a 256 "$candidate_input" | awk '{print $1}')
   echo "installed_at_utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 } > "$release_dir/INSTALL-MANIFEST.txt"
 
-ln -sfn "releases/$version" "$prefix/current"
+current="$prefix/current"
+if [ -e "$current" ] && [ ! -L "$current" ]; then
+  echo "error: current exists but is not a symbolic link" >&2
+  exit 3
+fi
+temporary_current="$prefix/.current-$version-$$"
+rm -f "$temporary_current"
+ln -s "releases/$version" "$temporary_current"
+mv -f "$temporary_current" "$current"
 trap - EXIT HUP INT TERM
 echo "installed_version=$version"
 echo "installed_path=$release_dir"

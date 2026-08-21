@@ -12,8 +12,20 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 tmp_output="$output.tmp.$$"
 tmp_binary=$(mktemp "${TMPDIR:-/tmp}/wecom-mcp-build.XXXXXX")
-cleanup() { rm -f "$tmp_output" "$tmp_binary"; }
+tmp_status=$(mktemp "${TMPDIR:-/tmp}/wecom-mcp-status.XXXXXX")
+cleanup() { rm -f "$tmp_output" "$tmp_binary" "$tmp_status"; }
 trap cleanup EXIT HUP INT TERM
+
+sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print tolower($1)}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print tolower($1)}'
+  else
+    echo "error: shasum or sha256sum is required" >&2
+    exit 3
+  fi
+}
 
 run() {
   label=$1
@@ -36,13 +48,14 @@ mkdir -p "$(dirname -- "$output")"
   echo "source_tree=$(git -C "$repo_dir" rev-parse HEAD^{tree})"
   status=$(git -C "$repo_dir" status --porcelain=v1 --untracked-files=normal)
   if [ -n "$status" ]; then echo "candidate_dirty=yes"; else echo "candidate_dirty=no"; fi
-  echo "status_sha256=$(printf '%s' "$status" | shasum -a 256 | awk '{print $1}')"
+  printf '%s' "$status" > "$tmp_status"
+  echo "status_sha256=$(sha256 "$tmp_status")"
   echo "go_version=$(go version)"
   cd "$repo_dir"
   run test go test ./...
   run vet go vet ./...
   run build go build -trimpath -o "$tmp_binary" ./cmd/wecom-mcp-v2
-  echo "built_binary_sha256=$(shasum -a 256 "$tmp_binary" | awk '{print $1}')"
+  echo "built_binary_sha256=$(sha256 "$tmp_binary")"
   echo "overall=passed"
 } > "$tmp_output"
 mv "$tmp_output" "$output"
