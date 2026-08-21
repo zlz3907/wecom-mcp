@@ -215,15 +215,15 @@ fetch() {
 
 asset_id_for_name() {
   asset_wanted=$1
-  awk -v wanted="$asset_wanted" '
-    /"id": [0-9]+,/ {
+  tr ',' '\n' < "$release_api_json" | awk -v wanted="$asset_wanted" '
+    /"id":[[:space:]]*[0-9]+/ {
       current = $0
-      sub(/.*"id": /, "", current)
-      sub(/,.*/, "", current)
+      sub(/.*"id":[[:space:]]*/, "", current)
+      sub(/[^0-9].*/, "", current)
     }
     /"name":/ {
       current_name = $0
-      sub(/.*"name": "/, "", current_name)
+      sub(/.*"name":[[:space:]]*"/, "", current_name)
       sub(/".*/, "", current_name)
       if (current_name == wanted) {
         count++
