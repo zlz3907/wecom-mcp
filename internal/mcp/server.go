@@ -67,6 +67,7 @@ var tools = []tool{
 	{"wecom_field_codec_lab_register", "将已创建的字段编码验证表按固定 SMART_SHEETS_IDS 规范登记为 active；仅允许当前实例创建的实验表，登记后回读核验。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_api_call", "调用当前固定租户的旧 MCP 全量企业微信 API 契约。operation 必须在实例 API 白名单内；不会接受租户、地址或凭据路由字段。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"operation", "payload"}, "properties": map[string]any{"operation": map[string]any{"type": "string", "enum": legacyOperations()}, "payload": map[string]any{"type": "object"}}}},
 	{"wecom_record_read", "从当前固定企业微信实例的指定 Zoop 表读取记录。调用方不能指定租户、文档或子表标识。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"target_role"}, "properties": map[string]any{"target_role": map[string]any{"type": "string", "enum": []string{"Z-S01", "Z-S02", "Z-S03", "Z-S04", "Z-S05", "Z-S06", "Z-S07", "Z-S08", "Z-S09"}}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 200}}}},
+	{"wecom_record_query", "固定租户的只读精确查询：支持 record_id、受控字段过滤、排序、offset 分页、字段投影和紧凑结果。调用方不能指定租户、文档或子表标识。", recordQueryToolSchema()},
 	{"wecom_record_apply", "向当前固定企业微信实例的 Zoop 表写入已由字段验证表证明的字段类型，并完成一次回读。新建 S01 自动将四个任务计数字段初始化为 0；S03 新增或更新回读成功后自动重算关联 S01 的当前、完成和阻塞任务数。字段、租户、文档和子表均不可由调用方指定；附件和系统自动字段仍会拒绝写入。关联字段对调用方只接受受控 {record_id} 对象数组，发送企业微信前编译为已验证的 record_id 字符串数组。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"target_role", "operation", "idempotency_key", "source_revision", "records"}, "properties": map[string]any{"target_role": map[string]any{"type": "string", "enum": []string{"Z-S01", "Z-S02", "Z-S03", "Z-S04", "Z-S05", "Z-S06", "Z-S07", "Z-S08", "Z-S09"}}, "operation": map[string]any{"type": "string", "enum": []string{"add_records", "update_records"}}, "idempotency_key": map[string]any{"type": "string", "minLength": 16, "maxLength": 256}, "source_revision": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "records": map[string]any{"type": "array", "minItems": 1, "maxItems": 50, "items": map[string]any{"type": "object"}}}}},
 	{"wecom_requirement_progress_reconcile", "只读取完整 S01/S03 快照并重算所有需求的当前、完成和阻塞任务数；不改计划任务基线，不重复写任务。用于 applied_progress_sync_pending 或巡检发现计数漂移后的受控恢复。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"idempotency_key", "source_revision"}, "properties": map[string]any{"idempotency_key": map[string]any{"type": "string", "minLength": 16, "maxLength": 256}, "source_revision": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}}}},
 }
@@ -241,6 +242,8 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 			return nil, err
 		}
 		return sanitizedReadResult(result, input.TargetRole), nil
+	case "wecom_record_query":
+		return s.queryRecords(ctx, runtime, schema, client, raw)
 	case "wecom_record_apply":
 		return s.apply(ctx, runtime, schema, client, raw)
 	case "wecom_requirement_progress_reconcile":

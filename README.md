@@ -36,6 +36,30 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 
 更完整的本地安装、校验和回滚方法见 [便携安装说明](PORTABLE_INSTALL.md)。
 
+## 当前工具
+
+`wecom_record_query` 提供固定租户内的只读查询：支持 `record_ids` 精确读取、受控 `filter_spec`、排序、`offset/limit` 分页和 `field_ids` 投影。默认返回紧凑单元格值，并显式返回 `record_count`、`returned_count`、`has_more`、`next_offset` 与 `response_truncated`。调用方不能传入租户、文档、子表或凭据参数。
+
+过滤字段 ID、字段类型、排序字段和投影字段都必须存在于本地只读 Schema 镜像；服务端会补齐并校验企业微信所需的 `field_type`，不把客户端提供的任意对象直接转发到线上。
+
+例如按 Z-S03 的任务编号精确查询：
+
+```json
+{
+  "target_role": "Z-S03",
+  "filter_spec": {
+    "conjunction": "CONJUNCTION_AND",
+    "conditions": [{
+      "field_id": "fhbs1w",
+      "operator": "OPERATOR_IS",
+      "string_value": {"value": ["TASK-ZOOP-MCP-PORTABLE-VERIFY-005"]}
+    }]
+  },
+  "field_ids": ["fhbs1w", "fabcde", "fGyxtt"],
+  "limit": 100
+}
+```
+
 ## 安装后怎么用
 
 重新加载客户端中的 MCP 后，可以先从只读问题开始：
