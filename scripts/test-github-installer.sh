@@ -33,7 +33,9 @@ git -C "$repo_dir" ls-files --others --exclude-standard | while IFS= read -r fil
   cp "$repo_dir/$file" "$package_repo/$file"
 done
 git -C "$package_repo" add -A
-git -C "$package_repo" -c user.name='offline-test' -c user.email='offline-test@example.invalid' commit --quiet -m 'offline candidate fixture'
+if ! git -C "$package_repo" diff --cached --quiet; then
+  git -C "$package_repo" -c user.name='offline-test' -c user.email='offline-test@example.invalid' commit --quiet -m 'offline candidate fixture'
+fi
 installer="$package_repo/install.sh"
 verify_script="$package_repo/scripts/verify-portable-install.sh"
 
