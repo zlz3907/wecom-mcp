@@ -39,7 +39,7 @@ cp config/zoop_wecom_zhycit.json.example config/zoop_wecom_zhycit.local.json
 
 再通过运行环境提供 `GNAS_BASE_URL`、`GNAS_APP_ID` 和 `GNAS_APP_SECRET`，不要把凭据写入仓库。可以用下面的只读调用检查二进制、环境变量和配置是否能正常加载：
 
-上面的 pipe 入口适合已信任仓库维护者的场景。引导提示词会把 `latest` 仅用于解析固定 tag，再验证同一 Release 的 `install.sh`、`RELEASE-MANIFEST.txt`、`LICENSE`、`SHA256SUMS` 和平台压缩包；安装器拒绝 HTTP、查询串、重复/非 64 位 SHA-256、tag/平台不匹配以及未声明的资产。它绝不执行 `latest` 直接返回的二进制。Release 的 `SHA256SUMS` 必须同时包含 `install.sh`、`RELEASE-MANIFEST.txt`、`LICENSE` 和全部平台压缩包。
+上面的 pipe 入口适合已信任仓库维护者的场景。引导提示词会把 `latest` 仅用于解析固定 tag，再验证同一 Release 的 `install.sh`、`RELEASE-MANIFEST.txt`、`LICENSE`、`SHA256SUMS` 和平台压缩包；Private 仓库只使用 Agent 已有的 GitHub 登录态或 `GH_TOKEN/GITHUB_TOKEN`，认证文件只在临时目录存在且权限为 0600。安装器拒绝 HTTP、查询串、重复/非 64 位 SHA-256、tag/平台不匹配以及未声明的资产。它绝不执行 `latest` 直接返回的二进制。Release 的 `SHA256SUMS` 必须同时包含 `install.sh`、`RELEASE-MANIFEST.txt`、`LICENSE` 和全部平台压缩包。
 
 本地回滚不会下载任何内容：`~/.mcp/wecom-mcp-v2/current` 只会切到再次通过 manifest/hash 校验的既有 release，重启客户端并执行只读 smoke test。可用 `install.sh --rollback <已安装版本>` 完成原子切换。`install.sh --uninstall` 只移除 `current` 软链接，保留 release、备份和客户端配置；客户端配置应通过安装器生成的备份或人工审阅后恢复。输出中的 `installed` 只证明本地受校验文件/current，`configured` 只证明客户端配置写入，`loaded` 必须有当前运行时 initialize/tools/list，`verified` 还必须有真实只读 `wecom_schema_status` tools/call。当前使用 Apache-2.0；正式 Release 仅用于仓库授权范围内的私有验收，不代表企业微信数据、商标或服务访问权随许可证授予。
 
