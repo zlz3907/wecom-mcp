@@ -64,7 +64,7 @@ printf 'target_commit=%s\ntarget_tree=%s\ncheckout=%s\n' \
   "$target_commit" "$target_tree" "$checkout_dir"
 ```
 
-`gh repo view` 的私有属性检查和 `git ls-remote` 都是只读远端查询。若仓库身份、私有属性、远端查询、fetch 后 commit、tree、目标目录、detached 状态或工作树清洁度任一不符合预期，流程立即失败；应保留现场并重新开始一次新的验证，不得用 `reset`、`clean`、force fetch 或覆盖现有工作树来绕过失败。
+`gh repo view` 的仓库身份/可见性检查和 `git ls-remote` 都是只读远端查询。若仓库身份、公开可见性、远端查询、fetch 后 commit、tree、目标目录、detached 状态或工作树清洁度任一不符合预期，流程立即失败；应保留现场并重新开始一次新的验证，不得用 `reset`、`clean`、force fetch 或覆盖现有工作树来绕过失败。
 
 ## 安装与校验
 
