@@ -78,3 +78,49 @@ func TestAtomicSwitchCurrentReplacesSymlink(t *testing.T) {
 		t.Fatalf("unexpected current target %q", target)
 	}
 }
+
+func TestConfigTargetRejectsSymlinkAndWorldWritableParent(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "config.toml")
+	actual := filepath.Join(dir, "actual.toml")
+	if err := os.WriteFile(actual, []byte("model = \"gpt\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(actual, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateConfigTarget(target, "--codex-config", true); err == nil {
+		t.Fatal("expected symlink to be rejected")
+	}
+
+	missing := filepath.Join(dir, "missing", "config.toml")
+	if err := os.Mkdir(filepath.Dir(missing), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Dir(missing), 0777); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateConfigTarget(missing, "--codex-config", true); err == nil {
+		t.Fatal("expected world-writable parent to be rejected")
+	}
+}
+
+func TestBackupDoesNotOverwriteSameSecondBackup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("model = \"gpt\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	opt := options{binary: "/tmp/current/bin/wecom-mcp-v2", serviceConfig: "/tmp/zoop.local.json", codexConfig: path}
+	first := configureCodex(opt)
+	if !first.Configured {
+		t.Fatalf("unexpected first result: %#v", first)
+	}
+	if err := os.WriteFile(path, []byte("model = \"gpt-5\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	second := configureCodex(opt)
+	if !second.Configured || second.BackupPath == first.BackupPath {
+		t.Fatalf("expected unique backup paths, first=%#v second=%#v", first, second)
+	}
+}

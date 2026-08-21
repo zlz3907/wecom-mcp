@@ -133,19 +133,25 @@ func validClient(value string) bool {
 }
 
 func validateInput(opt options) error {
-	for label, value := range map[string]string{"--binary": opt.binary, "--config": opt.serviceConfig} {
-		if value == "" || !filepath.IsAbs(value) {
-			return fmt.Errorf("%s must be an existing absolute path", label)
-		}
-		if _, err := os.Stat(value); err != nil {
-			return fmt.Errorf("%s is not readable: %w", label, err)
-		}
+	if opt.binary == "" || !filepath.IsAbs(opt.binary) {
+		return errors.New("--binary must be an existing absolute path")
+	}
+	if info, err := os.Lstat(opt.binary); err != nil {
+		return fmt.Errorf("--binary is not readable: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+		return errors.New("--binary must be a regular executable file, not a symlink or special file")
+	}
+	if err := validateConfigTarget(opt.serviceConfig, "--config", false); err != nil {
+		return err
 	}
 	return nil
 }
 
 func configureCodex(opt options) result {
 	path := opt.codexConfig
+	if err := validateConfigTarget(path, "--codex-config", true); err != nil {
+		return result{Client: "codex", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+	}
 	block, err := codexBlock(opt.binary, opt.serviceConfig)
 	if err != nil {
 		return result{Client: "codex", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
@@ -181,14 +187,17 @@ func configureCodex(opt options) result {
 }
 
 func codexBlock(binary, serviceConfig string) (string, error) {
-	if strings.ContainsAny(binary+serviceConfig, "\"\n\r") {
-		return "", errors.New("paths containing quotes or newlines are not supported for TOML registration")
+	if strings.ContainsAny(binary+serviceConfig, "\\\"\n\r") {
+		return "", errors.New("paths containing backslashes, quotes, or newlines are not supported for TOML registration")
 	}
 	return fmt.Sprintf("%s\n[mcp_servers.%s]\ncommand = \"%s\"\nargs = [\"--config\", \"%s\"]\nenabled = true\n%s\n", beginMarker, instanceName, binary, serviceConfig, endMarker), nil
 }
 
 func configureTRAE(opt options) result {
 	path := opt.traeConfig
+	if err := validateConfigTarget(path, "--trae-config", true); err != nil {
+		return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+	}
 	var root map[string]any
 	data, err := os.ReadFile(path)
 	newFile := errors.Is(err, os.ErrNotExist)
@@ -245,7 +254,7 @@ func equalServer(raw any, desired map[string]any) bool {
 func workBuddyBlocked(opt options) result {
 	next := "WorkBuddy configuration contract/path is not established; inspect its MCP documentation and rerun with a supported adapter"
 	if opt.workBuddyConfig != "" {
-		next = "WorkBuddy adapter is intentionally unavailable because its configuration contract is unverified; do not edit " + opt.workBuddyConfig + " automatically"
+		next = "WorkBuddy adapter is intentionally unavailable because its configuration contract is unverified; do not edit the supplied path automatically"
 	}
 	return result{Client: "workbuddy", Result: "agent_blocked", NextAction: next}
 }
@@ -254,11 +263,33 @@ func writeNew(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	return file.Sync()
 }
 
 func backupAndReplace(path string, data []byte) (string, error) {
-	backup := path + ".wecom-mcp-v2-" + time.Now().UTC().Format("20060102T150405Z") + ".bak"
+	if info, err := os.Lstat(path); err != nil {
+		return "", err
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", errors.New("client configuration must be a regular file, not a symlink or special file")
+	}
+	backupBase := path + ".wecom-mcp-v2-" + time.Now().UTC().Format("20060102T150405Z")
+	backup := backupBase + ".bak"
+	for suffix := 1; ; suffix++ {
+		if _, err := os.Lstat(backup); errors.Is(err, os.ErrNotExist) {
+			break
+		} else if err != nil {
+			return "", err
+		}
+		backup = fmt.Sprintf("%s-%d.bak", backupBase, suffix)
+	}
 	if err := copyFile(path, backup); err != nil {
 		return "", err
 	}
@@ -276,6 +307,10 @@ func backupAndReplace(path string, data []byte) (string, error) {
 		temp.Close()
 		return "", err
 	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return "", err
+	}
 	if err := temp.Close(); err != nil {
 		return "", err
 	}
@@ -290,7 +325,52 @@ func copyFile(source, destination string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(destination, data, 0600)
+	file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
+func validateConfigTarget(path, label string, allowMissing bool) error {
+	if path == "" || !filepath.IsAbs(path) {
+		return fmt.Errorf("%s must be an absolute path", label)
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if !allowMissing {
+			return fmt.Errorf("%s does not exist", label)
+		}
+		return validateConfigParent(filepath.Dir(path), label)
+	}
+	if err != nil {
+		return fmt.Errorf("%s cannot be inspected: %w", label, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("%s must be a regular file, not a symlink or special file", label)
+	}
+	if info.Mode().Perm()&0022 != 0 {
+		return fmt.Errorf("%s is group/other writable; tighten its permissions before registration", label)
+	}
+	return nil
+}
+
+func validateConfigParent(parent, label string) error {
+	info, err := os.Stat(parent)
+	if err != nil {
+		return fmt.Errorf("parent directory for %s is not accessible: %w", label, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("parent directory for %s is not a directory", label)
+	}
+	if info.Mode().Perm()&0022 != 0 {
+		return fmt.Errorf("parent directory for %s is group/other writable; tighten its permissions before registration", label)
+	}
+	return nil
 }
 
 func fileExists(path string) bool {

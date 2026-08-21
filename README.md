@@ -10,6 +10,14 @@
 
 安装器只接受固定 Release 资产，自动识别 OS/CPU 架构，校验 `SHA256SUMS`，保留旧版本并原子切换 `~/.mcp/wecom-mcp-v2/current`。它将 `installed`、`configured`、`loaded`、`verified` 分开报告；没有本地受保护配置时可以只安装二进制，但不会伪装服务已可用。
 
+```sh
+curl -fsSL https://raw.githubusercontent.com/zlz3907/wecom-mcp/vX.Y.Z/install.sh | sh -s -- --version vX.Y.Z --client auto
+```
+
+`vX.Y.Z` 必须替换为 Owner 已批准且实际存在的固定 Release tag；当前候选不会创建或发布该 Release。需要审阅时，先下载固定 tag 的 `install.sh`、`RELEASE-MANIFEST.txt` 和 `SHA256SUMS`，按校验和验证后再执行脚本。
+
+它会自动探查既有的 `~/.trae/mcp-config/wecom/zoop_wecom_zhycit.local.json`；如果该本地配置不存在，安装器只安装二进制并明确报告 `configured=no`，不会复制示例配置、凭据或伪装服务已可用。可显式传入受保护的本地配置：`--config /absolute/path/to/zoop_wecom_zhycit.local.json`。
+
 WorkBuddy 的本机 MCP 配置契约尚未确认，Prompt 会要求 Agent 输出 `agent_blocked`，不会猜路径或写入未知配置。当前支持矩阵、回滚规则和发布前门禁见 [便携安装说明](PORTABLE_INSTALL.md)。
 
 ## 30 秒 Quick Start
@@ -30,6 +38,10 @@ cp config/zoop_wecom_zhycit.json.example config/zoop_wecom_zhycit.local.json
 - 将 `state_path` 改为本机可写位置的绝对路径。
 
 再通过运行环境提供 `GNAS_BASE_URL`、`GNAS_APP_ID` 和 `GNAS_APP_SECRET`，不要把凭据写入仓库。可以用下面的只读调用检查二进制、环境变量和配置是否能正常加载：
+
+上面的 pipe 入口适合已信任仓库维护者的场景。引导提示词会把 `latest` 仅用于解析固定 tag，再验证同一 Release 的 `install.sh`、`RELEASE-MANIFEST.txt`、`SHA256SUMS` 和平台压缩包；安装器拒绝 HTTP、查询串、重复/非 64 位 SHA-256、tag/平台不匹配以及未声明的资产。它绝不执行 `latest` 直接返回的二进制。Release 的 `SHA256SUMS` 必须同时包含 `install.sh`、`RELEASE-MANIFEST.txt` 和全部平台压缩包。
+
+本地回滚不会下载任何内容：`~/.mcp/wecom-mcp-v2/current` 只会切到再次通过 manifest/hash 校验的既有 release，重启客户端并执行只读 smoke test。可用 `install.sh --rollback <已安装版本>` 完成原子切换。`install.sh --uninstall` 只移除 `current` 软链接，保留 release、备份和客户端配置；客户端配置应通过安装器生成的备份或人工审阅后恢复。输出中的 `installed` 只证明本地受校验文件/current，`configured` 只证明客户端配置写入，`loaded` 必须有当前运行时 initialize/tools/list，`verified` 还必须有真实只读 `wecom_schema_status` tools/call。当前仓库仍需要 Owner/法务确认正式许可证，且必须创建带固定 tag 的 GitHub Release 后，一键入口才可真正对外使用。
 
 ```sh
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wecom_schema_status","arguments":{}}}' | \

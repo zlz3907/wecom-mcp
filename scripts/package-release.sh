@@ -24,7 +24,16 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/wecom-mcp-package.XXXXXX")
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT HUP INT TERM
 
-sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
+sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print tolower($1)}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print tolower($1)}'
+  else
+    echo "error: shasum or sha256sum is required" >&2
+    exit 3
+  fi
+}
 commit=$(git -C "$repo_dir" rev-parse HEAD)
 tree=$(git -C "$repo_dir" rev-parse HEAD^{tree})
 
@@ -33,8 +42,11 @@ for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
   goarch=${target#*/}
   stage="$work/${goos}-${goarch}"
   mkdir -p "$stage/bin" "$stage/config"
-  GOOS="$goos" GOARCH="$goarch" go build -trimpath -o "$stage/bin/wecom-mcp-v2" "$repo_dir/cmd/wecom-mcp-v2"
-  GOOS="$goos" GOARCH="$goarch" go build -trimpath -o "$stage/bin/wecom-mcp-v2-configure" "$repo_dir/cmd/wecom-mcp-v2-configure"
+  (
+    cd "$repo_dir"
+    GOOS="$goos" GOARCH="$goarch" go build -trimpath -o "$stage/bin/wecom-mcp-v2" ./cmd/wecom-mcp-v2
+    GOOS="$goos" GOARCH="$goarch" go build -trimpath -o "$stage/bin/wecom-mcp-v2-configure" ./cmd/wecom-mcp-v2-configure
+  )
   chmod 0755 "$stage/bin/wecom-mcp-v2" "$stage/bin/wecom-mcp-v2-configure"
   cp "$repo_dir/config/zoop_wecom_zhycit.json.example" "$stage/config/zoop_wecom_zhycit.json.example"
   {
@@ -52,10 +64,6 @@ for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
 done
 cp "$repo_dir/install.sh" "$output/install.sh"
 chmod 0755 "$output/install.sh"
-(
-  cd "$output"
-  shasum -a 256 install.sh wecom-mcp-v2_"$version"_*.tar.gz > SHA256SUMS
-)
 {
   echo "format=wecom-mcp-github-release-index-v1"
   echo "version=$version"
@@ -65,5 +73,15 @@ chmod 0755 "$output/install.sh"
   echo "unsupported_core=windows/amd64 (current syscall.Flock implementation does not build on Windows)"
   echo "installer=install.sh"
   echo "checksums=SHA256SUMS"
+  echo "asset_darwin_arm64=wecom-mcp-v2_${version}_darwin_arm64.tar.gz"
+  echo "asset_darwin_amd64=wecom-mcp-v2_${version}_darwin_amd64.tar.gz"
+  echo "asset_linux_arm64=wecom-mcp-v2_${version}_linux_arm64.tar.gz"
+  echo "asset_linux_amd64=wecom-mcp-v2_${version}_linux_amd64.tar.gz"
 } > "$output/RELEASE-MANIFEST.txt"
+(
+  cd "$output"
+  for file in install.sh RELEASE-MANIFEST.txt wecom-mcp-v2_"$version"_*.tar.gz; do
+    printf '%s  %s\n' "$(sha256 "$file")" "$file"
+  done > SHA256SUMS
+)
 echo "release_output=$output"
