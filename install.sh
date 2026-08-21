@@ -48,6 +48,7 @@ codex_config=""
 trae_config=""
 workbuddy_config=""
 github_auth_file=""
+release_api_json=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -193,10 +194,47 @@ fetch() {
   fetch_url=$1
   fetch_output=$2
   case "$fetch_url" in
-    https://*) curl_https "$fetch_url" -o "$fetch_output" ;;
+    https://*)
+      if [ -n "$github_auth_file" ] && [ -n "$release_api_json" ]; then
+        case "$fetch_url" in
+          "$release_base"/*)
+            fetch_asset_name=${fetch_url#"$release_base"/}
+            fetch_asset_id=$(asset_id_for_name "$fetch_asset_name") || return 1
+            curl_https -H 'Accept: application/octet-stream' "https://api.github.com/repos/$PROJECT_REPOSITORY/releases/assets/$fetch_asset_id" -o "$fetch_output"
+            ;;
+          *) curl_https "$fetch_url" -o "$fetch_output" ;;
+        esac
+      else
+        curl_https "$fetch_url" -o "$fetch_output"
+      fi
+      ;;
     file://*) curl -fsSL "$fetch_url" -o "$fetch_output" ;;
     *) return 1 ;;
   esac
+}
+
+asset_id_for_name() {
+  asset_wanted=$1
+  awk -v wanted="$asset_wanted" '
+    /"id": [0-9]+,/ {
+      current = $0
+      sub(/.*"id": /, "", current)
+      sub(/,.*/, "", current)
+    }
+    /"name":/ {
+      current_name = $0
+      sub(/.*"name": "/, "", current_name)
+      sub(/".*/, "", current_name)
+      if (current_name == wanted) {
+        count++
+        value = current
+      }
+    }
+    END {
+      if (count != 1 || value == "") exit 1
+      print value
+    }
+  ' "$release_api_json"
 }
 
 validate_release_base() {
@@ -303,7 +341,7 @@ github_token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 if [ -n "$github_token" ]; then
   github_auth_file=$(mktemp "${TMPDIR:-/tmp}/wecom-mcp-github-auth.XXXXXX") || blocked "unable to create a private GitHub auth file; no files were changed" 3
   chmod 0600 "$github_auth_file" || blocked "unable to protect the private GitHub auth file; no files were changed" 3
-  printf 'machine github.com\nlogin x-access-token\npassword %s\n' "$github_token" > "$github_auth_file" || blocked "unable to prepare private GitHub authentication; no files were changed" 3
+  printf 'machine github.com\nlogin x-access-token\npassword %s\nmachine api.github.com\nlogin x-access-token\npassword %s\n' "$github_token" "$github_token" > "$github_auth_file" || blocked "unable to prepare private GitHub authentication; no files were changed" 3
   cleanup_auth() { rm -f "$github_auth_file"; }
   trap cleanup_auth EXIT HUP INT TERM
 fi
@@ -339,6 +377,12 @@ trap cleanup EXIT HUP INT TERM
 checksums="$temporary_dir/SHA256SUMS"
 release_manifest="$temporary_dir/RELEASE-MANIFEST.txt"
 archive="$temporary_dir/$asset"
+if [ -n "$github_auth_file" ]; then
+  release_api_json="$temporary_dir/GITHUB-RELEASE.json"
+  curl_https "https://api.github.com/repos/$PROJECT_REPOSITORY/releases/tags/$version" -o "$release_api_json" || {
+    blocked "unable to access the private GitHub Release API; confirm GitHub login and repository access, then retry" 3
+  }
+fi
 if ! fetch "$release_base/SHA256SUMS" "$checksums" || ! fetch "$release_base/RELEASE-MANIFEST.txt" "$release_manifest"; then
   blocked "unable to download the fixed Release manifest/checksum; confirm Release visibility and tag, then retry" 3
 fi
