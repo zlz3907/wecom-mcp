@@ -49,6 +49,7 @@ trae_config=""
 workbuddy_config=""
 github_auth_file=""
 release_api_json=""
+latest_api_json=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -342,19 +343,36 @@ if [ -n "$github_token" ]; then
   github_auth_file=$(mktemp "${TMPDIR:-/tmp}/wecom-mcp-github-auth.XXXXXX") || blocked "unable to create a private GitHub auth file; no files were changed" 3
   chmod 0600 "$github_auth_file" || blocked "unable to protect the private GitHub auth file; no files were changed" 3
   printf 'machine github.com\nlogin x-access-token\npassword %s\nmachine api.github.com\nlogin x-access-token\npassword %s\n' "$github_token" "$github_token" > "$github_auth_file" || blocked "unable to prepare private GitHub authentication; no files were changed" 3
-  cleanup_auth() { rm -f "$github_auth_file"; }
+  cleanup_auth() { rm -f "$github_auth_file" "$latest_api_json"; }
   trap cleanup_auth EXIT HUP INT TERM
 fi
 
 if [ -z "$version" ]; then
   [ -z "$release_base" ] || blocked "--version is required when --release-base is supplied; check the fixed tag before retrying" 2
-  resolved_url=$(curl_https -o /dev/null -w '%{url_effective}' "https://github.com/$PROJECT_REPOSITORY/releases/latest") || {
-    blocked "unable to resolve the latest GitHub Release; supply --version vX.Y.Z after checking release access" 3
-  }
-  case "$resolved_url" in
-    */releases/tag/*) version=${resolved_url##*/releases/tag/} ;;
-    *) blocked "GitHub latest-release redirect did not resolve to a fixed tag" 3 ;;
-  esac
+  if [ -n "$github_auth_file" ]; then
+    latest_api_json=$(mktemp "${TMPDIR:-/tmp}/wecom-mcp-github-latest.XXXXXX") || blocked "unable to create a private latest-release response file; no files were changed" 3
+    curl_https "https://api.github.com/repos/$PROJECT_REPOSITORY/releases/latest" -o "$latest_api_json" || {
+      blocked "unable to resolve the latest private GitHub Release; confirm GitHub login and repository access, then retry" 3
+    }
+    version=$(tr ',' '\n' < "$latest_api_json" | awk '
+      /"tag_name":[[:space:]]*"/ {
+        value = $0
+        sub(/.*"tag_name":[[:space:]]*"/, "", value)
+        sub(/".*/, "", value)
+        print value
+        exit
+      }
+    ')
+    [ -n "$version" ] || blocked "private GitHub latest-release response has no tag_name" 3
+  else
+    resolved_url=$(curl_https -o /dev/null -w '%{url_effective}' "https://github.com/$PROJECT_REPOSITORY/releases/latest") || {
+      blocked "unable to resolve the latest GitHub Release; supply --version vX.Y.Z after checking release access" 3
+    }
+    case "$resolved_url" in
+      */releases/tag/*) version=${resolved_url##*/releases/tag/} ;;
+      *) blocked "GitHub latest-release redirect did not resolve to a fixed tag" 3 ;;
+    esac
+  fi
   case "$version" in v[0-9]*) ;; *) blocked "resolved release tag is not a supported fixed version" 3 ;; esac
   case "$version" in *[!A-Za-z0-9._-]*) blocked "resolved release tag contains unsupported characters" 3 ;; esac
 fi
