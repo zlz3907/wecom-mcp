@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "instance_name": "zoop_wecom_zhycit",
+  "tenant_route": "REPLACE_WITH_LOCAL_TENANT_ROUTE",
+  "schema_admin_user": "REPLACE_WITH_LOCAL_ADMIN_USER",
+  "registry_document_id": "",
+  "registry_key": "REPLACE_WITH_LOCAL_REGISTRY_KEY",
+  "schema_mirror_path": "/absolute/path/to/local/schema-mirror.md",
+  "state_path": "/absolute/path/to/local/state/instance.json",
+  "api_whitelist": {
+    "directory": ["list_employees"],
+    "document_read": ["get_doc_base_info", "get_doc_share_url", "get_doc_auth"],
+    "document_write": ["create_smartsheet", "rename_document", "lock_down_doc_access", "grant_doc_readers", "harden_doc_security"],
+    "sheet_read": ["get_sheets", "get_fields", "get_records", "get_views"],
+    "sheet_write": ["add_sheet", "update_sheet", "delete_sheet", "add_view", "update_view", "delete_views", "add_fields", "update_fields", "delete_fields", "add_records", "update_records", "delete_records"],
+    "registry_resolution": ["get_sheet", "get_fields", "get_records"],
+    "zoop_records_read": ["get_records"],
+    "zoop_records_write": ["add_records", "update_records"],
+    "schema_migration": ["get_sheet", "get_fields", "get_records", "add_sheet", "add_fields", "update_fields"],
+    "field_codec_lab": ["create_smartsheet", "get_doc_share_url", "get_doc_auth", "get_sheet", "get_fields", "add_fields", "add_records", "get_records"]
+  }
+}

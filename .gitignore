@@ -1,0 +1,4 @@
+/bin/
+/config/*.local.json
+/state/
+.DS_Store
