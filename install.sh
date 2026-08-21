@@ -47,6 +47,7 @@ release_base=""
 codex_config=""
 trae_config=""
 workbuddy_config=""
+github_auth_file=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -180,11 +181,19 @@ valid_sha256() {
   [ "${#valid_value}" -eq 64 ]
 }
 
+curl_https() {
+  if [ -n "$github_auth_file" ]; then
+    curl -fsSL --proto '=https' --tlsv1.2 --netrc-file "$github_auth_file" "$@"
+  else
+    curl -fsSL --proto '=https' --tlsv1.2 "$@"
+  fi
+}
+
 fetch() {
   fetch_url=$1
   fetch_output=$2
   case "$fetch_url" in
-    https://*) curl -fsSL --proto '=https' --tlsv1.2 "$fetch_url" -o "$fetch_output" ;;
+    https://*) curl_https "$fetch_url" -o "$fetch_output" ;;
     file://*) curl -fsSL "$fetch_url" -o "$fetch_output" ;;
     *) return 1 ;;
   esac
@@ -290,9 +299,18 @@ command -v curl >/dev/null 2>&1 || blocked "curl is unavailable; install it befo
 command -v tar >/dev/null 2>&1 || blocked "tar is unavailable; install it before retrying" 3
 command -v mktemp >/dev/null 2>&1 || blocked "mktemp is unavailable; install it before retrying" 3
 
+github_token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+if [ -n "$github_token" ]; then
+  github_auth_file=$(mktemp "${TMPDIR:-/tmp}/wecom-mcp-github-auth.XXXXXX") || blocked "unable to create a private GitHub auth file; no files were changed" 3
+  chmod 0600 "$github_auth_file" || blocked "unable to protect the private GitHub auth file; no files were changed" 3
+  printf 'machine github.com\nlogin x-access-token\npassword %s\n' "$github_token" > "$github_auth_file" || blocked "unable to prepare private GitHub authentication; no files were changed" 3
+  cleanup_auth() { rm -f "$github_auth_file"; }
+  trap cleanup_auth EXIT HUP INT TERM
+fi
+
 if [ -z "$version" ]; then
   [ -z "$release_base" ] || blocked "--version is required when --release-base is supplied; check the fixed tag before retrying" 2
-  resolved_url=$(curl -fsSL --proto '=https' --tlsv1.2 -o /dev/null -w '%{url_effective}' "https://github.com/$PROJECT_REPOSITORY/releases/latest") || {
+  resolved_url=$(curl_https -o /dev/null -w '%{url_effective}' "https://github.com/$PROJECT_REPOSITORY/releases/latest") || {
     blocked "unable to resolve the latest GitHub Release; supply --version vX.Y.Z after checking release access" 3
   }
   case "$resolved_url" in
@@ -313,7 +331,10 @@ release_name="${version}-${platform_os}-${platform_arch}"
 release_version="$version"
 
 temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/wecom-mcp-install.XXXXXX") || blocked "unable to create a private temporary directory; inspect TMPDIR permissions" 3
-cleanup() { rm -rf "$temporary_dir"; }
+cleanup() {
+  rm -rf "$temporary_dir"
+  if [ -n "$github_auth_file" ]; then rm -f "$github_auth_file"; fi
+}
 trap cleanup EXIT HUP INT TERM
 checksums="$temporary_dir/SHA256SUMS"
 release_manifest="$temporary_dir/RELEASE-MANIFEST.txt"
