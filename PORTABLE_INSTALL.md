@@ -10,7 +10,7 @@
 ./scripts/package-release.sh --version vX.Y.Z --output /absolute/path/to/release-assets
 ```
 
-这一步只生成本地资产，不创建 tag、不 push、不上传 GitHub Release。真正发布前必须复核 `SHA256SUMS` 是否包含安装器、Release 索引和全部四个平台资产，且每行是唯一 64 位小写 SHA-256；同时复核许可证、GitHub 可见性与 Release 访问策略。消费者还会拒绝 Release 索引的 tag、校验文件名或平台 asset 映射不一致。当前 Windows 因 `syscall.Flock` 不可交叉构建；`install.sh` 在 Windows 明确失败关闭。WorkBuddy 没有已确认的配置文件契约，安装器只保留 `--workbuddy-config` 适配点且拒绝自动写入。
+这一步只生成本地资产，不创建 tag、不 push、不上传 GitHub Release。真正发布前必须复核 `SHA256SUMS` 是否包含安装器、Release 索引和全部四个平台资产，且每行是唯一 64 位小写 SHA-256；同时复核许可证、GitHub 可见性与 Release 访问策略。消费者还会拒绝 Release 索引的 tag、校验文件名或平台 asset 映射不一致。当前 Windows 因 `syscall.Flock` 不可交叉构建；`install.sh` 在 Windows 明确失败关闭。WorkBuddy 的低层安装器不猜本机配置路径、不自动覆盖未知文件；最终提示词会引导用户使用官方“设置 > MCP”入口或官方 `mcp.json` 编辑器完成配置。
 
 离线产品化回归测试：
 

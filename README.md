@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/zlz3907/wecom-mcp/vX.Y.Z/install.sh
 
 它会自动探查既有的 `~/.trae/mcp-config/wecom/zoop_wecom_zhycit.local.json`；如果该本地配置不存在，安装器只安装二进制并明确报告 `configured=no`，不会复制示例配置、凭据或伪装服务已可用。可显式传入受保护的本地配置：`--config /absolute/path/to/zoop_wecom_zhycit.local.json`。
 
-WorkBuddy 的本机 MCP 配置契约尚未确认，Prompt 会要求 Agent 输出 `agent_blocked`，不会猜路径或写入未知配置。当前支持矩阵、回滚规则和发布前门禁见 [便携安装说明](PORTABLE_INSTALL.md)。
+WorkBuddy 使用官方“设置 > MCP”入口或官方 `mcp.json` 编辑器由 Agent 引导配置；低层安装器不会猜本机配置路径，也不会覆盖未知 JSON。当前支持矩阵、回滚规则和发布前门禁见 [便携安装说明](PORTABLE_INSTALL.md)。
 
 ## 30 秒 Quick Start
 
@@ -96,7 +96,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 
 - 系统：macOS、Linux。
 - 客户端：Codex、TRAE。
-- WorkBuddy：当前未支持。
+- WorkBuddy：支持官方 MCP 设置入口的引导式配置；未知本机文件契约时低层安装器会阻断，不猜路径、不覆盖配置。
 - Windows：当前未验证。
 
 本服务使用 stdio JSON-RPC，每个进程连接一个由本机配置固定的企业微信实例。
