@@ -39,16 +39,11 @@ fi
 installer="$package_repo/install.sh"
 verify_script="$package_repo/scripts/verify-portable-install.sh"
 
-# Windows/amd64 is intentionally a fail-closed MVP gap until the Unix flock
-# implementation receives a reviewed Windows lock adapter.
-set +e
-GOOS=windows GOARCH=amd64 go build -trimpath -o "$test_root/windows-unsupported.exe" ./cmd/wecom-mcp-v2 > "$test_root/windows-build.txt" 2>&1
-windows_exit=$?
-set -e
-test "$windows_exit" -ne 0
-grep -q 'Flock' "$test_root/windows-build.txt"
+# Windows/amd64 must cross-compile before the release matrix is packaged.
+GOOS=windows GOARCH=amd64 go build -trimpath -o "$test_root/wecom-mcp-v2.exe" ./cmd/wecom-mcp-v2
+test -s "$test_root/wecom-mcp-v2.exe"
 
-# package-release.sh is the architecture matrix test: all four supported Unix
+# package-release.sh is the architecture matrix test: all five supported
 # targets must build before a release directory is considered publishable.
 "$package_repo/scripts/package-release.sh" --version v0.0.0-test1 --output "$test_root/release1"
 "$package_repo/scripts/package-release.sh" --version v0.0.0-test2 --output "$test_root/release2"
@@ -59,10 +54,13 @@ test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_darwin_arm64.tar.gz"
 test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_darwin_amd64.tar.gz"
 test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_linux_arm64.tar.gz"
 test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_linux_amd64.tar.gz"
-test "$(wc -l < "$test_root/release1/SHA256SUMS" | tr -d ' ')" -eq 7
+test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_windows_amd64.zip"
+test "$(wc -l < "$test_root/release1/SHA256SUMS" | tr -d ' ')" -eq 8
 grep -q '^asset_linux_amd64=wecom-mcp-v2_v0.0.0-test1_linux_amd64.tar.gz$' "$test_root/release1/RELEASE-MANIFEST.txt"
+grep -q '^asset_windows_amd64=wecom-mcp-v2_v0.0.0-test1_windows_amd64.zip$' "$test_root/release1/RELEASE-MANIFEST.txt"
 grep -q '^license=LICENSE$' "$test_root/release1/RELEASE-MANIFEST.txt"
 tar -tzf "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_darwin_arm64.tar.gz" | grep -qx './LICENSE'
+unzip -l "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_windows_amd64.zip" | grep -q 'bin/wecom-mcp-v2.exe'
 
 home_dir="$test_root/home"
 mkdir -p "$home_dir/.codex"
@@ -125,7 +123,8 @@ grep -qx 'result=agent_blocked' "$test_root/workbuddy.txt"
 test ! -e "$test_root/unknown-prefix"
 test ! -e "$test_root/workbuddy-prefix"
 
-# Platform and architecture probes are fail-closed before curl or prefix writes.
+# The POSIX shell installer still rejects Windows; Windows users consume the
+# verified ZIP directly. Unknown architectures also fail before prefix writes.
 fake_bin="$test_root/fake-bin"
 mkdir -p "$fake_bin"
 printf '%s\n' '#!/bin/sh' 'case "$1" in -s) echo Windows_NT ;; -m) echo x86_64 ;; esac' > "$fake_bin/uname"
