@@ -9,7 +9,7 @@
 现在用户只需把下面这句话粘贴给 TRAE、WorkBuddy 或其他具备本机终端和 MCP 管理能力的 Agent：
 
 ```text
-请打开并严格执行仓库根目录的 AGENT_INSTALL_PROMPT.md。完整路径：https://raw.githubusercontent.com/zlz3907/wecom-mcp/main/AGENT_INSTALL_PROMPT.md。不要自行改写、跳过校验或猜测配置路径；执行完成后按该文件规定的机器可读格式汇报结果。
+请安装 wecom-mcp-v2，并严格执行：https://raw.githubusercontent.com/zlz3907/wecom-mcp/main/AGENT_INSTALL_PROMPT.md
 ```
 
 完整安装规则只维护在 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md)，避免 README 与安装规范不一致。
