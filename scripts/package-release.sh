@@ -91,6 +91,7 @@ cp "$repo_dir/LICENSE" "$stage/LICENSE"
 )
 cp "$repo_dir/install.sh" "$output/install.sh"
 chmod 0755 "$output/install.sh"
+cp "$repo_dir/install.ps1" "$output/install.ps1"
 cp "$repo_dir/LICENSE" "$output/LICENSE"
 {
   echo "format=wecom-mcp-github-release-index-v1"
@@ -99,6 +100,7 @@ cp "$repo_dir/LICENSE" "$output/LICENSE"
   echo "source_tree=$tree"
   echo "supported_core=darwin/arm64,darwin/amd64,linux/arm64,linux/amd64,windows/amd64"
   echo "installer=install.sh"
+  echo "installer_windows=install.ps1"
   echo "checksums=SHA256SUMS"
   echo "license=LICENSE"
   echo "license_sha256=$(sha256 "$repo_dir/LICENSE")"
@@ -110,7 +112,7 @@ cp "$repo_dir/LICENSE" "$output/LICENSE"
 } > "$output/RELEASE-MANIFEST.txt"
 (
   cd "$output"
-  for file in install.sh RELEASE-MANIFEST.txt LICENSE wecom-mcp-v2_"$version"_*.tar.gz wecom-mcp-v2_"$version"_*.zip; do
+  for file in install.sh install.ps1 RELEASE-MANIFEST.txt LICENSE wecom-mcp-v2_"$version"_*.tar.gz wecom-mcp-v2_"$version"_*.zip; do
     printf '%s  %s\n' "$(sha256 "$file")" "$file"
   done > SHA256SUMS
 )
