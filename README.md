@@ -9,7 +9,7 @@
 现在用户只需把下面这句话粘贴给 TRAE、WorkBuddy 或其他具备本机终端和 MCP 管理能力的 Agent：
 
 ```text
-请打开并严格执行仓库根目录的 AGENT_INSTALL_PROMPT.md。完整路径：https://raw.githubusercontent.com/zlz3907/wecom-mcp/main/AGENT_INSTALL_PROMPT.md。不要自行改写、跳过校验或猜测配置路径；执行完成后按该文件规定的机器可读格式汇报结果。
+请安装 wecom-mcp-v2，并严格执行：https://raw.githubusercontent.com/zlz3907/wecom-mcp/main/AGENT_INSTALL_PROMPT.md
 ```
 
 完整安装规则只维护在 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md)，避免 README 与安装规范不一致。
@@ -101,10 +101,10 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 
 ## 支持范围
 
-- 系统：macOS、Linux。
+- 系统：macOS、Linux、Windows amd64。
 - 客户端：Codex、TRAE。
 - WorkBuddy：支持官方 MCP 设置入口的引导式配置；未知本机文件契约时低层安装器会阻断，不猜路径、不覆盖配置。
-- Windows：当前未验证。
+- Windows：提供 amd64 Release 包；通过 Windows CI 原生构建。
 
 本服务使用 stdio JSON-RPC，每个进程连接一个由本机配置固定的企业微信实例。
 

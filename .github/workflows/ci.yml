@@ -26,3 +26,15 @@ jobs:
         run: go build -trimpath ./...
       - name: Installer regression
         run: ./scripts/test-github-installer.sh
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+      - name: Build Windows binaries
+        run: |
+          go build -trimpath -o wecom-mcp-v2.exe ./cmd/wecom-mcp-v2
+          go build -trimpath -o wecom-mcp-v2-configure.exe ./cmd/wecom-mcp-v2-configure
