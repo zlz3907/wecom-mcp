@@ -38,3 +38,6 @@ jobs:
         run: |
           go build -trimpath -o wecom-mcp-v2.exe ./cmd/wecom-mcp-v2
           go build -trimpath -o wecom-mcp-v2-configure.exe ./cmd/wecom-mcp-v2-configure
+      - name: Windows installer regression
+        shell: powershell
+        run: .\scripts\test-windows-installer.ps1

@@ -14,13 +14,19 @@
 
 完整安装规则只维护在 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md)，避免 README 与安装规范不一致。
 
-安装器只接受固定 Release 资产，自动识别 OS/CPU 架构，校验 `SHA256SUMS`，保留旧版本并原子切换 `~/.mcp/wecom-mcp-v2/current`。它将 `installed`、`configured`、`loaded`、`verified` 分开报告；没有本地受保护配置时可以只安装二进制，但不会伪装服务已可用。
+安装器只接受固定 Release 资产，自动识别 OS/CPU 架构并校验 `SHA256SUMS`。macOS/Linux 保留旧版本并原子切换 `~/.mcp/wecom-mcp-v2/current`；Windows 由 Release 内的 `install.ps1` 直接安装到受校验的版本目录，不创建链接。它将 `installed`、`configured`、`loaded`、`verified` 分开报告；没有本地受保护配置时可以只安装二进制，但不会伪装服务已可用。
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/zlz3907/wecom-mcp/vX.Y.Z/install.sh | sh -s -- --version vX.Y.Z --client auto
 ```
 
 `vX.Y.Z` 必须替换为实际存在的固定 Release tag。需要审阅时，先下载固定 tag 的 `install.sh`、`RELEASE-MANIFEST.txt`、`LICENSE` 和 `SHA256SUMS`，按校验和验证后再执行脚本。
+
+Windows 在固定 Release 中下载并按 `SHA256SUMS` 校验 `install.ps1` 后，从普通 PowerShell 执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.Z
+```
 
 它会自动探查既有的本地实例配置；如果该本地配置不存在，安装器只安装二进制并明确报告 `configured=no`，不会复制示例配置、凭据或伪装服务已可用。可显式传入受保护的本地配置：`--config /absolute/path/to/zoop_wecom_zhycit.local.json`。
 
@@ -46,7 +52,7 @@ cp config/zoop_wecom_zhycit.json.example config/zoop_wecom_zhycit.local.json
 
 再通过运行环境提供 `GNAS_BASE_URL`、`GNAS_APP_ID` 和 `GNAS_APP_SECRET`，不要把凭据写入仓库。可以用下面的只读调用检查二进制、环境变量和配置是否能正常加载：
 
-上面的 pipe 入口适合已信任仓库维护者的场景。引导提示词会把 `latest` 仅用于解析固定 tag，再验证同一公开 Release 的 `install.sh`、`RELEASE-MANIFEST.txt`、`LICENSE`、`SHA256SUMS` 和平台压缩包；安装器不需要 GitHub 登录态，也不会索要或复制 token。安装器拒绝 HTTP、查询串、重复/非 64 位 SHA-256、tag/平台不匹配以及未声明的资产。它绝不执行 `latest` 直接返回的二进制。Release 的 `SHA256SUMS` 必须同时包含 `install.sh`、`RELEASE-MANIFEST.txt`、`LICENSE` 和全部平台压缩包。
+上面的 pipe 入口适合已信任仓库维护者的场景。引导提示词会把 `latest` 仅用于解析固定 tag，再验证同一公开 Release 的 `install.sh` 或 `install.ps1`、`RELEASE-MANIFEST.txt`、`LICENSE`、`SHA256SUMS` 和平台压缩包；安装器不需要 GitHub 登录态，也不会索要或复制 token。安装器拒绝损坏的校验和、tag/平台不匹配以及未声明的资产。它绝不执行 `latest` 直接返回的二进制。Release 的 `SHA256SUMS` 必须同时包含两个安装器、`RELEASE-MANIFEST.txt`、`LICENSE` 和全部平台压缩包。
 
 本地回滚不会下载任何内容：`~/.mcp/wecom-mcp-v2/current` 只会切到再次通过 manifest/hash 校验的既有 release，重启客户端并执行只读 smoke test。可用 `install.sh --rollback <已安装版本>` 完成原子切换。`install.sh --uninstall` 只移除 `current` 软链接，保留 release、备份和客户端配置；客户端配置应通过安装器生成的备份或人工审阅后恢复。输出中的 `installed` 只证明本地受校验文件/current，`configured` 只证明客户端配置写入，`loaded` 必须有当前运行时 initialize/tools/list，`verified` 还必须有真实只读 `wecom_schema_status` tools/call。当前使用 Apache-2.0；许可证只覆盖本项目代码，不覆盖企业微信数据、商标、服务访问权或用户自己的配置。
 
@@ -104,7 +110,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 - 系统：macOS、Linux、Windows amd64。
 - 客户端：Codex、TRAE。
 - WorkBuddy：支持官方 MCP 设置入口的引导式配置；未知本机文件契约时低层安装器会阻断，不猜路径、不覆盖配置。
-- Windows：提供 amd64 Release 包；通过 Windows CI 原生构建。
+- Windows：提供 amd64 Release 包；通过 Windows CI 原生构建，并用 PowerShell 5.1 验证首次安装与重复安装。
 
 本服务使用 stdio JSON-RPC，每个进程连接一个由本机配置固定的企业微信实例。
 
