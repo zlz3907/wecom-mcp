@@ -5,14 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
-	"syscall"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/config"
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/wecom"
 )
@@ -337,29 +336,20 @@ func acquireProgressFileLock(ctx context.Context, statePath string) (func(), err
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0700); err != nil {
 		return nil, fmt.Errorf("创建进度锁目录失败")
 	}
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	fileLock := flock.New(lockPath, flock.SetPermissions(0600))
+	locked, err := fileLock.TryLockContext(ctx, 25*time.Millisecond)
 	if err != nil {
-		return nil, fmt.Errorf("打开进度锁失败")
-	}
-	for {
-		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			return func() {
-				_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-				_ = file.Close()
-			}, nil
-		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
-			_ = file.Close()
-			return nil, fmt.Errorf("获取进度锁失败")
-		}
-		select {
-		case <-ctx.Done():
-			_ = file.Close()
+		_ = fileLock.Close()
+		if ctx.Err() != nil {
 			return nil, fmt.Errorf("等待进度锁超时")
-		case <-time.After(25 * time.Millisecond):
 		}
+		return nil, fmt.Errorf("获取进度锁失败")
 	}
+	if !locked {
+		_ = fileLock.Close()
+		return nil, fmt.Errorf("获取进度锁失败")
+	}
+	return func() { _ = fileLock.Unlock() }, nil
 }
 
 func acquireStateFileLock(statePath string) (func(), error) {
@@ -367,16 +357,10 @@ func acquireStateFileLock(statePath string) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0700); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
+	fileLock := flock.New(lockPath, flock.SetPermissions(0600))
+	if err := fileLock.Lock(); err != nil {
+		_ = fileLock.Close()
 		return nil, err
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	return func() {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-		_ = file.Close()
-	}, nil
+	return func() { _ = fileLock.Unlock() }, nil
 }

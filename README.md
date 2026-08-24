@@ -101,10 +101,10 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 
 ## 支持范围
 
-- 系统：macOS、Linux。
+- 系统：macOS、Linux、Windows amd64。
 - 客户端：Codex、TRAE。
 - WorkBuddy：支持官方 MCP 设置入口的引导式配置；未知本机文件契约时低层安装器会阻断，不猜路径、不覆盖配置。
-- Windows：当前未验证。
+- Windows：提供 amd64 Release 包；通过 Windows CI 构建和测试。
 
 本服务使用 stdio JSON-RPC，每个进程连接一个由本机配置固定的企业微信实例。
 
