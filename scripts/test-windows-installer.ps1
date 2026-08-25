@@ -146,7 +146,7 @@ try {
     $wizardConfiguredWorkspace = Join-Path $root 'wizard-configured-workspace'
     New-Item -ItemType Directory -Path $wizardConfiguredWorkspace | Out-Null
     $wizardConfigured = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $wizard -Version $version -Workspace $wizardConfiguredWorkspace -ConfigPath $serviceConfig -ReleaseBase $baseUrl -NoGui)
-    if ($LASTEXITCODE -ne 0) { throw 'Windows wizard guided configuration failed' }
+    if ($LASTEXITCODE -ne 0) { throw ("Windows wizard guided configuration failed: " + ($wizardConfigured -join '; ')) }
     Assert-Line $wizardConfigured 'wizard_result=passed'
     Assert-Line $wizardConfigured 'configured=yes'
     $traeConfig = Join-Path $wizardConfiguredWorkspace '.trae\mcp.json'

@@ -177,7 +177,7 @@ try {
     $configureJson = (& $configurePath -client trae-work-cn -binary $binaryPath -config ([IO.Path]::GetFullPath($ConfigPath)) -trae-config $traeConfig) -join "`n"
     if ($LASTEXITCODE -ne 0) { throw 'TRAE project registration helper stopped without changing an unknown configuration' }
     $configured = $configureJson | ConvertFrom-Json
-    if (($configured | Where-Object { $_.configured -eq $true }).Count -ne 1) { throw 'TRAE project registration did not complete' }
+    if (@($configured | Where-Object { $_.configured -eq $true }).Count -ne 1) { throw 'TRAE project registration did not complete' }
     Write-Output 'wizard_result=passed'
     Write-Output 'configured=yes'
     Write-Output 'loaded=no'
