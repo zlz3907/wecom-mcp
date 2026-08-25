@@ -57,6 +57,15 @@ func TestTRAERegistrationCreatesAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestTRAEWorkRegistrationUsesRequestedClientName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.json")
+	item := configureTRAE(options{client: "trae-work-cn", binary: "/tmp/wecom-mcp-v2", serviceConfig: "/tmp/zoop.local.json", traeConfig: path})
+	if !item.Configured || item.Result != "configured" || item.Client != "trae-work-cn" {
+		t.Fatalf("unexpected TRAE Work CN result: %#v", item)
+	}
+}
+
 func TestAtomicSwitchCurrentReplacesSymlink(t *testing.T) {
 	prefix := t.TempDir()
 	for _, release := range []string{"old", "new"} {

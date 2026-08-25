@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -45,7 +46,7 @@ func main() {
 	}
 	opt := options{}
 	var switchPrefix, switchRelease string
-	flag.StringVar(&opt.client, "client", "auto", "auto|codex|trae-solo-cn|workbuddy|none")
+	flag.StringVar(&opt.client, "client", "auto", "auto|codex|trae-solo-cn|trae-work-cn|workbuddy|none")
 	flag.StringVar(&opt.binary, "binary", "", "absolute MCP binary path")
 	flag.StringVar(&opt.serviceConfig, "config", "", "absolute instance configuration path")
 	flag.StringVar(&opt.codexConfig, "codex-config", filepath.Join(home, ".codex", "config.toml"), "Codex config.toml path")
@@ -63,7 +64,7 @@ func main() {
 	}
 
 	if !validClient(opt.client) {
-		fatal(result{Client: opt.client, Result: "agent_blocked", NextAction: "use --client auto, codex, trae-solo-cn, workbuddy, or none"}, 3)
+		fatal(result{Client: opt.client, Result: "agent_blocked", NextAction: "use --client auto, codex, trae-solo-cn, trae-work-cn, workbuddy, or none"}, 3)
 	}
 	if opt.client == "none" {
 		printResults([]result{{Client: "none", Result: "skipped", NextAction: "restart a client only after registering it explicitly"}})
@@ -78,6 +79,8 @@ func main() {
 	case "codex":
 		results = append(results, configureCodex(opt))
 	case "trae-solo-cn":
+		results = append(results, configureTRAE(opt))
+	case "trae-work-cn":
 		results = append(results, configureTRAE(opt))
 	case "workbuddy":
 		results = append(results, workBuddyBlocked(opt))
@@ -129,7 +132,7 @@ func atomicSwitchCurrent(prefix, release string) error {
 }
 
 func validClient(value string) bool {
-	return value == "auto" || value == "codex" || value == "trae-solo-cn" || value == "workbuddy" || value == "none"
+	return value == "auto" || value == "codex" || value == "trae-solo-cn" || value == "trae-work-cn" || value == "workbuddy" || value == "none"
 }
 
 func validateInput(opt options) error {
@@ -138,7 +141,7 @@ func validateInput(opt options) error {
 	}
 	if info, err := os.Lstat(opt.binary); err != nil {
 		return fmt.Errorf("--binary is not readable: %w", err)
-	} else if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0) || (runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(opt.binary), ".exe")) {
 		return errors.New("--binary must be a regular executable file, not a symlink or special file")
 	}
 	if err := validateConfigTarget(opt.serviceConfig, "--config", false); err != nil {
@@ -194,9 +197,13 @@ func codexBlock(binary, serviceConfig string) (string, error) {
 }
 
 func configureTRAE(opt options) result {
+	clientName := opt.client
+	if clientName == "" || clientName == "auto" {
+		clientName = "trae-solo-cn"
+	}
 	path := opt.traeConfig
 	if err := validateConfigTarget(path, "--trae-config", true); err != nil {
-		return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+		return result{Client: clientName, ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
 	}
 	var root map[string]any
 	data, err := os.ReadFile(path)
@@ -204,13 +211,13 @@ func configureTRAE(opt options) result {
 	if newFile {
 		root = map[string]any{}
 	} else if err != nil {
-		return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+		return result{Client: clientName, ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
 	} else if err := json.Unmarshal(data, &root); err != nil {
-		return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: "TRAE SOLO CN mcp.json is not valid JSON; fix it before registration"}
+		return result{Client: clientName, ConfigPath: path, Result: "agent_blocked", NextAction: "TRAE mcp.json is not valid JSON; ask the organization technical administrator to repair it"}
 	}
 	servers, ok := root["mcpServers"].(map[string]any)
 	if !ok && root["mcpServers"] != nil {
-		return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: "TRAE SOLO CN mcpServers is not an object; its contract is not safe to modify"}
+		return result{Client: clientName, ConfigPath: path, Result: "agent_blocked", NextAction: "TRAE mcpServers is not an object; its contract is not safe to modify"}
 	}
 	if servers == nil {
 		servers = map[string]any{}
@@ -219,27 +226,27 @@ func configureTRAE(opt options) result {
 	desired := map[string]any{"command": opt.binary, "args": []any{"--config", opt.serviceConfig}}
 	if existing, exists := servers[instanceName]; exists {
 		if equalServer(existing, desired) {
-			return result{Client: "trae-solo-cn", Configured: true, ConfigPath: path, Result: "already_configured", NextAction: "restart TRAE SOLO CN if it is running"}
+			return result{Client: clientName, Configured: true, ConfigPath: path, Result: "already_configured", NextAction: "restart TRAE if it is running"}
 		}
-		return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: "an existing TRAE SOLO CN server entry conflicts with requested paths; inspect it manually"}
+		return result{Client: clientName, ConfigPath: path, Result: "agent_blocked", NextAction: "an existing TRAE server entry conflicts with requested paths; ask the organization technical administrator to inspect it"}
 	}
 	servers[instanceName] = desired
 	encoded, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
-		return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+		return result{Client: clientName, ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
 	}
 	encoded = append(encoded, '\n')
 	if newFile {
 		if err := writeNew(path, encoded); err != nil {
-			return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+			return result{Client: clientName, ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
 		}
-		return result{Client: "trae-solo-cn", Configured: true, ConfigPath: path, Result: "configured", NextAction: "restart TRAE SOLO CN, then run initialize, tools/list, and a read-only wecom_schema_status call"}
+		return result{Client: clientName, Configured: true, ConfigPath: path, Result: "configured", NextAction: "restart TRAE, then run initialize, tools/list, and a read-only wecom_schema_status call"}
 	}
 	backup, err := backupAndReplace(path, encoded)
 	if err != nil {
-		return result{Client: "trae-solo-cn", ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
+		return result{Client: clientName, ConfigPath: path, Result: "agent_blocked", NextAction: err.Error()}
 	}
-	return result{Client: "trae-solo-cn", Configured: true, ConfigPath: path, BackupPath: backup, Result: "configured", NextAction: "restart TRAE SOLO CN, then run initialize, tools/list, and a read-only wecom_schema_status call"}
+	return result{Client: clientName, Configured: true, ConfigPath: path, BackupPath: backup, Result: "configured", NextAction: "restart TRAE, then run initialize, tools/list, and a read-only wecom_schema_status call"}
 }
 
 func equalServer(raw any, desired map[string]any) bool {
@@ -353,7 +360,7 @@ func validateConfigTarget(path, label string, allowMissing bool) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return fmt.Errorf("%s must be a regular file, not a symlink or special file", label)
 	}
-	if info.Mode().Perm()&0022 != 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0022 != 0 {
 		return fmt.Errorf("%s is group/other writable; tighten its permissions before registration", label)
 	}
 	return nil
@@ -367,7 +374,7 @@ func validateConfigParent(parent, label string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("parent directory for %s is not a directory", label)
 	}
-	if info.Mode().Perm()&0022 != 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0022 != 0 {
 		return fmt.Errorf("parent directory for %s is group/other writable; tighten its permissions before registration", label)
 	}
 	return nil
