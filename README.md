@@ -4,7 +4,7 @@
 
 安装后，Codex 或 TRAE 可以用自然语言查询 Zoop 的需求、任务等记录，也可以在明确指令下受控维护记录。它适合已经使用 Zoop 管理研发工作，希望直接在 AI 客户端里查看和更新企业微信智能表格的个人或团队。
 
-## 非技术用户一键安装
+## 非技术用户安装向导
 
 现在用户只需把下面这句话粘贴给 TRAE、WorkBuddy 或其他具备本机终端和 MCP 管理能力的 Agent：
 
@@ -12,9 +12,19 @@
 请安装 wecom-mcp-v2，并严格执行：https://raw.githubusercontent.com/zlz3907/wecom-mcp/main/AGENT_INSTALL_PROMPT.md
 ```
 
-完整安装规则只维护在 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md)，避免 README 与安装规范不一致。
+完整安装规则只维护在 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md)，避免 README 与安装规范不一致。非技术用户不需要输入 PowerShell 命令、选择 CPU 架构、修改白名单或手动清理 staging 目录。
 
-安装器只接受固定 Release 资产，自动识别 OS/CPU 架构并校验 `SHA256SUMS`。macOS/Linux 保留旧版本并原子切换 `~/.mcp/wecom-mcp-v2/current`；Windows 由 Release 内的 `install.ps1` 按宿主客户端安装：TRAE Work CN 使用项目级 `.trae/mcp-servers`，WorkBuddy 使用用户级 `.codebuddy/mcp-servers`，普通终端才使用 `.mcp`。Windows 不创建链接。它将 `installed`、`configured`、`loaded`、`verified` 分开报告；没有本地受保护配置时可以只安装二进制，但不会伪装服务已可用。
+Windows 上如果 TRAE 的 Agent 宿主无权写项目级 `.trae`，Agent 必须在任何 Release 下载和 staging 写入前停止，并准备固定 Release 中经过 SHA-256 校验的 Windows 向导包。用户只需双击 `install-wizard.cmd`，在图形界面中选择当前 TRAE 项目文件夹；向导会在宿主沙箱之外完成同一套 Release 校验和项目级安装。权限恢复后，安装器只清理超过 15 分钟且名称严格匹配本安装器格式的旧 staging/权限探针，不触碰其它目录。它不会回退到 standalone，也不会让用户复制命令。
+
+如果本机缺少组织实例配置，向导会明确提示用户联系本组织技术人员获取：
+
+- `zoop_wecom_zhycit.local.json` 实例配置；
+- 与实例配置匹配的只读 Schema 镜像；
+- 由组织批准的 `GNAS_BASE_URL`、`GNAS_APP_ID`、`GNAS_APP_SECRET` 私密配置方式。
+
+向导不会让非技术用户猜测参数，也不会要求用户把密钥粘贴进对话。配置资产齐备且三项 GNAS 环境已由组织安全配置后，向导会备份并合并项目级 `.trae/mcp.json`，然后提示重启 TRAE 完成只读验证。
+
+安装器只接受固定 Release 资产，自动识别 OS/CPU 架构并校验 `SHA256SUMS`。macOS/Linux 保留旧版本并原子切换 `~/.mcp/wecom-mcp-v2/current`；Windows 由 Release 内的 `install.ps1` 按宿主客户端安装，并额外提供 `wecom-mcp-v2_<version>_windows_wizard.zip` 图形向导包。TRAE Work CN 使用项目级 `.trae/mcp-servers`，WorkBuddy 使用用户级 `.codebuddy/mcp-servers`，普通终端才使用 `.mcp`。Windows 不创建链接。它将 `installed`、`configured`、`loaded`、`verified` 分开报告；没有本地受保护配置时可以只安装二进制，但不会伪装服务已可用。
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/zlz3907/wecom-mcp/vX.Y.Z/install.sh | sh -s -- --version vX.Y.Z --client auto
@@ -22,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/zlz3907/wecom-mcp/vX.Y.Z/install.sh
 
 `vX.Y.Z` 必须替换为实际存在的固定 Release tag。需要审阅时，先下载固定 tag 的 `install.sh`、`RELEASE-MANIFEST.txt`、`LICENSE` 和 `SHA256SUMS`，按校验和验证后再执行脚本。
 
-Windows 在固定 Release 中下载并按 `SHA256SUMS` 校验 `install.ps1` 后，按客户端执行其一：
+下面的 PowerShell 命令只用于技术人员审计。普通用户使用 Release 中的 Windows 安装向导，不需要执行这些命令。Windows 在固定 Release 中下载并按 `SHA256SUMS` 校验 `install.ps1` 后，按客户端执行其一：
 
 ```powershell
 # TRAE Work CN：Workspace 必须是当前真实授权工作空间

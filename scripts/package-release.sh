@@ -92,6 +92,15 @@ cp "$repo_dir/LICENSE" "$stage/LICENSE"
 cp "$repo_dir/install.sh" "$output/install.sh"
 chmod 0755 "$output/install.sh"
 cp "$repo_dir/install.ps1" "$output/install.ps1"
+wizard_stage="$work/windows-wizard"
+mkdir -p "$wizard_stage"
+cp "$repo_dir/install-wizard.ps1" "$wizard_stage/install-wizard.ps1"
+cp "$repo_dir/install-wizard.cmd" "$wizard_stage/install-wizard.cmd"
+printf '%s\n' "$version" > "$wizard_stage/wizard-version.txt"
+(
+  cd "$wizard_stage"
+  zip -qr "$output/wecom-mcp-v2_${version}_windows_wizard.zip" .
+)
 cp "$repo_dir/LICENSE" "$output/LICENSE"
 {
   echo "format=wecom-mcp-github-release-index-v1"
@@ -101,6 +110,7 @@ cp "$repo_dir/LICENSE" "$output/LICENSE"
   echo "supported_core=darwin/arm64,darwin/amd64,linux/arm64,linux/amd64,windows/amd64"
   echo "installer=install.sh"
   echo "installer_windows=install.ps1"
+  echo "wizard_windows_amd64=wecom-mcp-v2_${version}_windows_wizard.zip"
   echo "checksums=SHA256SUMS"
   echo "license=LICENSE"
   echo "license_sha256=$(sha256 "$repo_dir/LICENSE")"

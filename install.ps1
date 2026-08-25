@@ -21,6 +21,8 @@ $configPaths = 'none'
 $nextAction = 'register binary_path in the target MCP client only after an existing zoop_wecom_zhycit.local.json path is available'
 $work = $null
 $staging = $null
+$permissionProbeSource = $null
+$permissionProbeTarget = $null
 
 function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -54,6 +56,31 @@ function Assert-RegularFile([string]$Path, [string]$Label) {
     $item = Get-Item -LiteralPath $Path -Force
     if ($item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
         throw "$Label must be a regular file"
+    }
+}
+
+function Assert-TargetWritable([string]$ReleaseRoot) {
+    # Exercise the exact create/rename/delete operations used by the installer
+    # before downloading or expanding a release. Restricted Agent hosts can
+    # otherwise leave a .staging-* directory that they are unable to remove.
+    New-Item -ItemType Directory -Path $ReleaseRoot -Force | Out-Null
+    $script:permissionProbeSource = Join-Path $ReleaseRoot (".permission-probe-{0}-source" -f [guid]::NewGuid().ToString('N'))
+    $script:permissionProbeTarget = Join-Path $ReleaseRoot (".permission-probe-{0}-target" -f [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $script:permissionProbeSource | Out-Null
+    [IO.File]::WriteAllText((Join-Path $script:permissionProbeSource 'probe.txt'), 'wecom-mcp-v2 target permission probe')
+    Move-Item -LiteralPath $script:permissionProbeSource -Destination $script:permissionProbeTarget
+    $script:permissionProbeSource = $null
+    Remove-Item -LiteralPath $script:permissionProbeTarget -Recurse -Force
+    $script:permissionProbeTarget = $null
+}
+
+function Remove-StaleInstallerResidue([string]$ReleaseRoot) {
+    $cutoff = [DateTime]::UtcNow.AddMinutes(-15)
+    foreach ($item in Get-ChildItem -LiteralPath $ReleaseRoot -Force -Directory) {
+        if ($item.Name -notmatch '^\.(staging|permission-probe)-[0-9a-f]{32}(-source|-target)?$') { continue }
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+        if ($item.LastWriteTimeUtc -gt $cutoff) { continue }
+        Remove-Item -LiteralPath $item.FullName -Recurse -Force
     }
 }
 
@@ -150,6 +177,13 @@ try {
         return
     }
 
+    try {
+        Assert-TargetWritable $releaseRoot
+        Remove-StaleInstallerResidue $releaseRoot
+    } catch {
+        throw ("target directory permission preflight failed before release download; use the verified Windows installation wizard outside the restricted Agent host: " + $_.Exception.Message)
+    }
+
     $work = Join-Path ([IO.Path]::GetTempPath()) ("wecom-mcp-v2-{0}" -f [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $work | Out-Null
     $checksumsPath = Join-Path $work 'SHA256SUMS'
@@ -193,6 +227,8 @@ catch {
     exit 3
 }
 finally {
+    if ($permissionProbeSource -and (Test-Path -LiteralPath $permissionProbeSource)) { Remove-Item -LiteralPath $permissionProbeSource -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($permissionProbeTarget -and (Test-Path -LiteralPath $permissionProbeTarget)) { Remove-Item -LiteralPath $permissionProbeTarget -Recurse -Force -ErrorAction SilentlyContinue }
     if ($staging -and (Test-Path -LiteralPath $staging)) { Remove-Item -LiteralPath $staging -Recurse -Force }
     if ($work -and (Test-Path -LiteralPath $work)) { Remove-Item -LiteralPath $work -Recurse -Force }
 }
