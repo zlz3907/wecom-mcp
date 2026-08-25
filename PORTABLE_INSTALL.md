@@ -2,7 +2,7 @@
 
 ## GitHub Release 产品化入口（MVP）
 
-本文件原有流程适用于本地源码安装与生命周期证据；GitHub 分发使用仓库根目录的 `install.sh` 与 `scripts/package-release.sh`。打包脚本按 `GOOS/GOARCH` 自动生成 `darwin/arm64`、`darwin/amd64`、`linux/arm64`、`linux/amd64` 的命名产物、各产物内的 `INSTALL-MANIFEST.txt`、Release 索引 `RELEASE-MANIFEST.txt` 和统一 `SHA256SUMS`。安装器自行检测宿主 OS/架构，不把选择责任交给用户。
+本文件原有流程适用于本地源码安装与生命周期证据；GitHub 分发使用仓库根目录的 `install.sh`、`install.ps1` 与 `scripts/package-release.sh`。打包脚本按 `GOOS/GOARCH` 自动生成 `darwin/arm64`、`darwin/amd64`、`linux/arm64`、`linux/amd64`、`windows/amd64` 的命名产物、各产物内的 `INSTALL-MANIFEST.txt`、Release 索引 `RELEASE-MANIFEST.txt` 和统一 `SHA256SUMS`。安装器自行检测宿主 OS/架构，不把选择责任交给用户。
 
 发布人员只在干净候选中运行本地打包，例如：
 
@@ -10,7 +10,7 @@
 ./scripts/package-release.sh --version vX.Y.Z --output /absolute/path/to/release-assets
 ```
 
-这一步只生成本地资产，不创建 tag、不 push、不上传 GitHub Release。真正发布前必须复核 `SHA256SUMS` 是否包含安装器、Release 索引和全部四个平台资产，且每行是唯一 64 位小写 SHA-256；同时复核许可证、GitHub 可见性与 Release 访问策略。消费者还会拒绝 Release 索引的 tag、校验文件名或平台 asset 映射不一致。当前 Windows 因 `syscall.Flock` 不可交叉构建；`install.sh` 在 Windows 明确失败关闭。WorkBuddy 的低层安装器不猜本机配置路径、不自动覆盖未知文件；最终提示词会引导用户使用官方“设置 > MCP”入口或官方 `mcp.json` 编辑器完成配置。
+这一步只生成本地资产，不创建 tag、不 push、不上传 GitHub Release。真正发布前必须复核 `SHA256SUMS` 是否包含两个安装器、Release 索引和全部五个平台资产，且每行是唯一 64 位小写 SHA-256；同时复核许可证、GitHub 可见性与 Release 访问策略。消费者还会拒绝 Release 索引的 tag、校验文件名或平台 asset 映射不一致。Windows `install.ps1` 不写客户端配置：TRAE Work CN 二进制使用官方项目级 `.trae` 范围内的 `mcp-servers/wecom-mcp-v2` 子目录，WorkBuddy 使用官方用户级 `.codebuddy` 范围内的同名子目录；配置仍通过各自官方 MCP 入口安全合并。
 
 离线产品化回归测试：
 
@@ -18,7 +18,7 @@
 ./scripts/test-github-installer.sh
 ```
 
-它执行 shell 静态检查、Go 测试/vet/build、四个发布资产构建、临时 HOME 安装、配置备份/幂等、checksum 篡改拒绝、回滚与无本地配置 fail-closed；不访问线上企业微信。
+它执行 shell 静态检查、Go 测试/vet/build、五个平台发布资产构建、临时 HOME 安装、配置备份/幂等、checksum 篡改拒绝、回滚与无本地配置 fail-closed；Windows CI 另运行 `scripts/test-windows-installer.ps1`，覆盖 standalone、TRAE Work CN 与 WorkBuddy 三种前缀；这些测试都不访问线上企业微信。
 
 ## 前提与边界
 
