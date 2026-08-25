@@ -35,7 +35,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.Z -Client standalone
 ```
 
-它会自动探查既有的本地实例配置；如果该本地配置不存在，安装器只安装二进制并明确报告 `configured=no`，不会复制示例配置、凭据或伪装服务已可用。可显式传入受保护的本地配置：`--config /absolute/path/to/zoop_wecom_zhycit.local.json`。
+它会自动探查既有的本地实例配置；如果该本地配置不存在，安装器只安装二进制并明确报告 `configured=no`，不会复制示例配置、凭据或伪装服务已可用。macOS/Linux 可将受保护的既有配置传给 `install.sh`；Windows `install.ps1` 只安装二进制，配置文件绝对路径在之后的客户端 MCP 注册中作为 `--config` 参数使用。首次安装时所需的本地配置、Schema 镜像、三项私密运行环境及各客户端的后续步骤，以 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md) 为准。
 
 TRAE Work CN 使用官方项目级 `<workspace>/.trae/mcp.json`；WorkBuddy 使用官方用户级 `~/.codebuddy/.mcp.json`。两者都通过各自 MCP 管理入口合并配置，低层安装器不覆盖未知 JSON。`mcp-servers/wecom-mcp-v2` 是本项目在官方配置范围内定义的二进制子目录。当前支持矩阵、回滚规则和发布前门禁见 [便携安装说明](PORTABLE_INSTALL.md)。
 
