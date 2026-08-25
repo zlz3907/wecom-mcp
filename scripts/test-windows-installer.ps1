@@ -9,6 +9,7 @@ $stage = Join-Path $root 'stage'
 $prefix = Join-Path $root 'prefix'
 $server = $null
 $previousTestMode = $env:WECOM_MCP_INSTALLER_TEST
+$previousTestHome = $env:WECOM_MCP_INSTALLER_TEST_HOME
 
 function Sha([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Assert-Line([string[]]$Lines, [string]$Wanted) {
@@ -70,6 +71,7 @@ try {
     if (-not $ready) { throw 'local release server did not start' }
 
     $env:WECOM_MCP_INSTALLER_TEST = '1'
+    $env:WECOM_MCP_INSTALLER_TEST_HOME = Join-Path $root 'user-home'
     $first = @(& $installer -Version $version -Prefix $prefix -ReleaseBase $baseUrl)
     Assert-Line $first 'result=passed'
     Assert-Line $first 'installed=yes'
@@ -82,11 +84,30 @@ try {
 
     $repeat = @(& $installer -Version $version -Prefix $prefix -ReleaseBase $baseUrl)
     Assert-Line $repeat 'result=passed'
-    if (($repeat -join "`n") -notmatch 'existing version directory passed') { throw 'repeat install did not verify and reuse the release' }
+    if (($repeat -join "`n") -notmatch 'existing client-scoped version directory passed') { throw 'repeat install did not verify and reuse the release' }
+
+    $traeWorkspace = Join-Path $root 'trae-workspace'
+    New-Item -ItemType Directory -Path $traeWorkspace | Out-Null
+    $trae = @(& $installer -Version $version -Client trae-work-cn -Workspace $traeWorkspace -ReleaseBase $baseUrl)
+    Assert-Line $trae 'result=passed'
+    Assert-Line $trae 'client=trae-work-cn'
+    Assert-Line $trae ("config_paths=" + (Join-Path $traeWorkspace '.trae\mcp.json'))
+    $traeBinary = Join-Path $traeWorkspace ".trae\mcp-servers\wecom-mcp-v2\releases\${version}-windows-amd64\bin\wecom-mcp-v2.exe"
+    if (-not (Test-Path -LiteralPath $traeBinary -PathType Leaf)) { throw 'TRAE project-scoped binary is missing' }
+    if (Test-Path -LiteralPath (Join-Path $traeWorkspace '.trae\mcp-servers\wecom-mcp-v2\current')) { throw 'TRAE install created a current path' }
+
+    $workbuddy = @(& $installer -Version $version -Client workbuddy -ReleaseBase $baseUrl)
+    Assert-Line $workbuddy 'result=passed'
+    Assert-Line $workbuddy 'client=workbuddy'
+    Assert-Line $workbuddy ("config_paths=" + (Join-Path $env:WECOM_MCP_INSTALLER_TEST_HOME '.codebuddy\.mcp.json'))
+    $workbuddyBinary = Join-Path $env:WECOM_MCP_INSTALLER_TEST_HOME ".codebuddy\mcp-servers\wecom-mcp-v2\releases\${version}-windows-amd64\bin\wecom-mcp-v2.exe"
+    if (-not (Test-Path -LiteralPath $workbuddyBinary -PathType Leaf)) { throw 'WorkBuddy user-scoped binary is missing' }
+    if (Test-Path -LiteralPath (Join-Path $env:WECOM_MCP_INSTALLER_TEST_HOME '.codebuddy\mcp-servers\wecom-mcp-v2\current')) { throw 'WorkBuddy install created a current path' }
     Write-Output 'windows_installer_test=passed'
 }
 finally {
     $env:WECOM_MCP_INSTALLER_TEST = $previousTestMode
+    $env:WECOM_MCP_INSTALLER_TEST_HOME = $previousTestHome
     if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
 }

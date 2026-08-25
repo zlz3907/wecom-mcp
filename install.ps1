@@ -3,7 +3,10 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^v[0-9][A-Za-z0-9._-]*$')]
     [string]$Version,
-    [string]$Prefix = (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.mcp\wecom-mcp-v2'),
+    [ValidateSet('standalone', 'trae-work-cn', 'workbuddy')]
+    [string]$Client = 'standalone',
+    [string]$Workspace = '',
+    [string]$Prefix = '',
     [string]$ReleaseBase = 'https://github.com/zlz3907/wecom-mcp/releases/download'
 )
 
@@ -14,6 +17,8 @@ $releaseName = "${Version}-windows-amd64"
 $binaryPath = 'missing'
 $binarySha256 = 'missing'
 $installed = 'no'
+$configPaths = 'none'
+$nextAction = 'register binary_path in the target MCP client only after an existing zoop_wecom_zhycit.local.json path is available'
 $work = $null
 $staging = $null
 
@@ -83,20 +88,52 @@ function Write-Result([string]$Result, [string]$Evidence, [string]$NextAction) {
     Write-Output 'operation=install'
     Write-Output "release_version=$Version"
     Write-Output 'platform=windows/amd64'
+    Write-Output "client=$Client"
     Write-Output "installed=$installed"
     Write-Output 'configured=no'
     Write-Output 'loaded=no'
     Write-Output 'verified=no'
     Write-Output "binary_path=$binaryPath"
     Write-Output "binary_sha256=$binarySha256"
-    Write-Output 'config_paths=none'
+    Write-Output "config_paths=$configPaths"
     Write-Output 'rollback_target=none'
     Write-Output "evidence=$Evidence"
     Write-Output "next_action=$NextAction"
 }
 
 try {
-    if (-not [IO.Path]::IsPathRooted($Prefix)) { throw '-Prefix must be an absolute path' }
+    $userHome = [Environment]::GetFolderPath('UserProfile')
+    if ($env:WECOM_MCP_INSTALLER_TEST -eq '1' -and $env:WECOM_MCP_INSTALLER_TEST_HOME) {
+        $userHome = $env:WECOM_MCP_INSTALLER_TEST_HOME
+    }
+    if ($Prefix -and $Client -ne 'standalone') { throw '-Prefix may only be used with -Client standalone' }
+    if ($Workspace -and $Client -ne 'trae-work-cn') { throw '-Workspace may only be used with -Client trae-work-cn' }
+    if ($Prefix) {
+        if (-not [IO.Path]::IsPathRooted($Prefix)) { throw '-Prefix must be an absolute path' }
+    } else {
+        switch ($Client) {
+            'trae-work-cn' {
+                if (-not $Workspace -or -not [IO.Path]::IsPathRooted($Workspace)) {
+                    throw '-Client trae-work-cn requires an absolute -Workspace path'
+                }
+                if (-not (Test-Path -LiteralPath $Workspace -PathType Container)) {
+                    throw '-Workspace must be an existing directory'
+                }
+                $Workspace = [IO.Path]::GetFullPath($Workspace)
+                $Prefix = Join-Path $Workspace '.trae\mcp-servers\wecom-mcp-v2'
+                $configPaths = Join-Path $Workspace '.trae\mcp.json'
+                $nextAction = 'use TRAE Settings > MCP to merge zoop_wecom_zhycit into the project .trae/mcp.json after an existing local instance config path is available'
+            }
+            'workbuddy' {
+                $Prefix = Join-Path $userHome '.codebuddy\mcp-servers\wecom-mcp-v2'
+                $configPaths = Join-Path $userHome '.codebuddy\.mcp.json'
+                $nextAction = 'use WorkBuddy MCP management to add a user-scope stdio server after an existing local instance config path is available'
+            }
+            default {
+                $Prefix = Join-Path $userHome '.mcp\wecom-mcp-v2'
+            }
+        }
+    }
     $releaseBaseUri = [Uri]$ReleaseBase
     $testHttp = $env:WECOM_MCP_INSTALLER_TEST -eq '1' -and $releaseBaseUri.Scheme -eq 'http' -and $releaseBaseUri.Host -in @('127.0.0.1', 'localhost')
     if ($releaseBaseUri.Scheme -ne 'https' -and -not $testHttp) { throw '-ReleaseBase must use HTTPS' }
@@ -109,7 +146,7 @@ try {
         $binaryPath = Assert-Release $target
         $binarySha256 = Get-Sha256 $binaryPath
         $installed = 'yes'
-        Write-Result 'passed' 'existing version directory passed the complete INSTALL-MANIFEST checksum verification; no files were overwritten' 'register binary_path in the target MCP client only after an existing zoop_wecom_zhycit.local.json path is available'
+        Write-Result 'passed' 'existing client-scoped version directory passed the complete INSTALL-MANIFEST checksum verification; no files were overwritten' $nextAction
         return
     }
 
@@ -148,7 +185,7 @@ try {
     $binaryPath = Join-Path $target 'bin\wecom-mcp-v2.exe'
     $binarySha256 = Get-Sha256 $binaryPath
     $installed = 'yes'
-    Write-Result 'passed' 'fixed-tag release manifest, archive, and complete INSTALL-MANIFEST checksums verified; version directory installed without current links' 'register binary_path in the target MCP client only after an existing zoop_wecom_zhycit.local.json path is available'
+    Write-Result 'passed' 'fixed-tag release manifest, archive, and complete INSTALL-MANIFEST checksums verified; client-scoped version directory installed without current links' $nextAction
     return
 }
 catch {
