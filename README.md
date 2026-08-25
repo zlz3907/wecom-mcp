@@ -4,7 +4,7 @@
 
 安装后，Codex 或 TRAE 可以用自然语言查询 Zoop 的需求、任务等记录，也可以在明确指令下受控维护记录。它适合已经使用 Zoop 管理研发工作，希望直接在 AI 客户端里查看和更新企业微信智能表格的个人或团队。
 
-## 非技术用户安装向导
+## 非技术用户自动安装
 
 现在用户只需把下面这句话粘贴给 TRAE、WorkBuddy 或其他具备本机终端和 MCP 管理能力的 Agent：
 
@@ -12,19 +12,19 @@
 请安装 wecom-mcp-v2，并严格执行：https://raw.githubusercontent.com/zlz3907/wecom-mcp/main/AGENT_INSTALL_PROMPT.md
 ```
 
-完整安装规则只维护在 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md)，避免 README 与安装规范不一致。非技术用户不需要输入 PowerShell 命令、选择 CPU 架构、修改白名单或手动清理 staging 目录。
+完整安装规则只维护在 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md)，避免 README 与安装规范不一致。非技术用户不需要执行 PowerShell、双击 `.cmd`、选择 CPU 架构、修改白名单或手动清理 staging 目录。
 
-Windows 上如果 TRAE 的 Agent 宿主无权写项目级 `.trae`，Agent 必须在任何 Release 下载和 staging 写入前停止，并准备固定 Release 中经过 SHA-256 校验的 Windows 向导包。用户只需双击 `install-wizard.cmd`，在图形界面中选择当前 TRAE 项目文件夹；向导会在宿主沙箱之外完成同一套 Release 校验和项目级安装。权限恢复后，安装器只清理超过 15 分钟且名称严格匹配本安装器格式的旧 staging/权限探针，不触碰其它目录。它不会回退到 standalone，也不会让用户复制命令。
+Windows Agent 必须准确区分 TRAE SOLO CN、TRAE Work CN、WorkBuddy 和普通终端。TRAE SOLO CN 的二进制安装在当前授权工作空间的 `.trae/mcp-servers/wecom-mcp-v2`，注册到官方用户配置 `%APPDATA%/TRAE SOLO CN/User/mcp.json`；TRAE Work CN 使用项目级 `.trae/mcp.json`。两者都由 Agent 自动完成，不得把 SOLO 降级为 standalone。若正式目标范围不可写，只能如实报告 `agent_blocked`，不能输出 `result=passed`，也不能把命令或文件操作转交给用户。
 
-如果本机缺少组织实例配置，向导会明确提示用户联系本组织技术人员获取：
+如果本机缺少组织实例配置，Agent 会明确提示用户联系本组织技术人员获取：
 
 - `zoop_wecom_zhycit.local.json` 实例配置；
 - 与实例配置匹配的只读 Schema 镜像；
 - 由组织批准的 `GNAS_BASE_URL`、`GNAS_APP_ID`、`GNAS_APP_SECRET` 私密配置方式。
 
-向导不会让非技术用户猜测参数，也不会要求用户把密钥粘贴进对话。配置资产齐备且三项 GNAS 环境已由组织安全配置后，向导会备份并合并项目级 `.trae/mcp.json`，然后提示重启 TRAE 完成只读验证。
+安装流程不会让非技术用户猜测参数，也不会要求用户把密钥粘贴进对话。配置资产齐备且三项 GNAS 环境已由组织安全配置后，Agent 使用 Release 内受校验的配置助手备份并合并对应客户端配置，然后提示重启 TRAE 完成只读验证。
 
-安装器只接受固定 Release 资产，自动识别 OS/CPU 架构并校验 `SHA256SUMS`。macOS/Linux 保留旧版本并原子切换 `~/.mcp/wecom-mcp-v2/current`；Windows 由 Release 内的 `install.ps1` 按宿主客户端安装，并额外提供 `wecom-mcp-v2_<version>_windows_wizard.zip` 图形向导包。TRAE Work CN 使用项目级 `.trae/mcp-servers`，WorkBuddy 使用用户级 `.codebuddy/mcp-servers`，普通终端才使用 `.mcp`。Windows 不创建链接。它将 `installed`、`configured`、`loaded`、`verified` 分开报告；没有本地受保护配置时可以只安装二进制，但不会伪装服务已可用。
+安装器只接受固定 Release 资产，自动识别 OS/CPU 架构并校验 `SHA256SUMS`。macOS/Linux 保留旧版本并原子切换 `~/.mcp/wecom-mcp-v2/current`；Windows 由 Release 内的 `install.ps1` 按宿主客户端安装。TRAE SOLO CN 和 TRAE Work CN 的二进制使用当前工作空间的 `.trae/mcp-servers`，WorkBuddy 使用用户级 `.codebuddy/mcp-servers`，普通终端才使用 `.mcp`。Windows 不创建链接。它将 `installed`、`configured`、`loaded`、`verified` 分开报告；没有本地受保护配置时可以只安装二进制，但不会伪装服务已可用。
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/zlz3907/wecom-mcp/vX.Y.Z/install.sh | sh -s -- --version vX.Y.Z --client auto
@@ -32,9 +32,12 @@ curl -fsSL https://raw.githubusercontent.com/zlz3907/wecom-mcp/vX.Y.Z/install.sh
 
 `vX.Y.Z` 必须替换为实际存在的固定 Release tag。需要审阅时，先下载固定 tag 的 `install.sh`、`RELEASE-MANIFEST.txt`、`LICENSE` 和 `SHA256SUMS`，按校验和验证后再执行脚本。
 
-下面的 PowerShell 命令只用于技术人员审计。普通用户使用 Release 中的 Windows 安装向导，不需要执行这些命令。Windows 在固定 Release 中下载并按 `SHA256SUMS` 校验 `install.ps1` 后，按客户端执行其一：
+下面的 PowerShell 命令只用于技术人员审计，普通用户不需要执行。Windows Agent 在固定 Release 中下载并按 `SHA256SUMS` 校验 `install.ps1` 后，按客户端执行其一：
 
 ```powershell
+# TRAE SOLO CN：二进制使用当前工作空间，MCP 注册到用户级官方配置
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.Z -Client trae-solo-cn -Workspace C:\absolute\workspace
+
 # TRAE Work CN：Workspace 必须是当前真实授权工作空间
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.Z -Client trae-work-cn -Workspace C:\absolute\workspace
 
@@ -47,7 +50,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.
 
 它会自动探查既有的本地实例配置；如果该本地配置不存在，安装器只安装二进制并明确报告 `configured=no`，不会复制示例配置、凭据或伪装服务已可用。macOS/Linux 可将受保护的既有配置传给 `install.sh`；Windows `install.ps1` 只安装二进制，配置文件绝对路径在之后的客户端 MCP 注册中作为 `--config` 参数使用。首次安装时所需的本地配置、Schema 镜像、三项私密运行环境及各客户端的后续步骤，以 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md) 为准。
 
-TRAE Work CN 使用官方项目级 `<workspace>/.trae/mcp.json`；WorkBuddy 使用官方用户级 `~/.codebuddy/.mcp.json`。两者都通过各自 MCP 管理入口合并配置，低层安装器不覆盖未知 JSON。`mcp-servers/wecom-mcp-v2` 是本项目在官方配置范围内定义的二进制子目录。当前支持矩阵、回滚规则和发布前门禁见 [便携安装说明](PORTABLE_INSTALL.md)。
+TRAE SOLO CN 使用官方用户级 `%APPDATA%/TRAE SOLO CN/User/mcp.json`；TRAE Work CN 使用项目级 `<workspace>/.trae/mcp.json`；WorkBuddy 使用官方用户级 `~/.codebuddy/.mcp.json`。配置助手只备份并合并固定实例，不覆盖未知 JSON。`mcp-servers/wecom-mcp-v2` 是本项目定义的二进制子目录。当前支持矩阵、回滚规则和发布前门禁见 [便携安装说明](PORTABLE_INSTALL.md)。
 
 ## 30 秒 Quick Start
 
@@ -127,7 +130,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 - 系统：macOS、Linux、Windows amd64。
 - 客户端：Codex、TRAE。
 - WorkBuddy：支持官方 MCP 设置入口的引导式配置；未知本机文件契约时低层安装器会阻断，不猜路径、不覆盖配置。
-- Windows：提供 amd64 Release 包；通过 Windows CI 原生构建，并用 PowerShell 5.1 分别验证 standalone、TRAE Work CN 项目级、WorkBuddy 用户级安装及重复安装。
+- Windows：提供 amd64 Release 包；通过 Windows CI 原生构建，并用 PowerShell 5.1 分别验证 standalone、TRAE SOLO CN 自动安装/用户级注册、TRAE Work CN 项目级安装、WorkBuddy 用户级安装及重复安装。
 
 本服务使用 stdio JSON-RPC，每个进程连接一个由本机配置固定的企业微信实例。
 

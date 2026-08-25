@@ -50,23 +50,19 @@ test -s "$test_root/wecom-mcp-v2.exe"
 test -f "$test_root/release1/SHA256SUMS"
 test -f "$test_root/release1/RELEASE-MANIFEST.txt"
 test -f "$test_root/release1/install.ps1"
-test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_windows_wizard.zip"
 test -f "$test_root/release1/LICENSE"
 test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_darwin_arm64.tar.gz"
 test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_darwin_amd64.tar.gz"
 test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_linux_arm64.tar.gz"
 test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_linux_amd64.tar.gz"
 test -f "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_windows_amd64.zip"
-test "$(wc -l < "$test_root/release1/SHA256SUMS" | tr -d ' ')" -eq 10
+test "$(wc -l < "$test_root/release1/SHA256SUMS" | tr -d ' ')" -eq 9
 grep -q '^asset_linux_amd64=wecom-mcp-v2_v0.0.0-test1_linux_amd64.tar.gz$' "$test_root/release1/RELEASE-MANIFEST.txt"
 grep -q '^asset_windows_amd64=wecom-mcp-v2_v0.0.0-test1_windows_amd64.zip$' "$test_root/release1/RELEASE-MANIFEST.txt"
 grep -q '^installer_windows=install.ps1$' "$test_root/release1/RELEASE-MANIFEST.txt"
-grep -q '^wizard_windows_amd64=wecom-mcp-v2_v0.0.0-test1_windows_wizard.zip$' "$test_root/release1/RELEASE-MANIFEST.txt"
 grep -q '^license=LICENSE$' "$test_root/release1/RELEASE-MANIFEST.txt"
 tar -tzf "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_darwin_arm64.tar.gz" | grep -qx './LICENSE'
 unzip -l "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_windows_amd64.zip" | grep -q 'bin/wecom-mcp-v2.exe'
-unzip -l "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_windows_wizard.zip" | grep -q 'install-wizard.cmd'
-unzip -p "$test_root/release1/wecom-mcp-v2_v0.0.0-test1_windows_wizard.zip" wizard-version.txt | grep -qx 'v0.0.0-test1'
 
 home_dir="$test_root/home"
 mkdir -p "$home_dir/.codex"

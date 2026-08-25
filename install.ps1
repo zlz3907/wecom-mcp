@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^v[0-9][A-Za-z0-9._-]*$')]
     [string]$Version,
-    [ValidateSet('standalone', 'trae-work-cn', 'workbuddy')]
+    [ValidateSet('standalone', 'trae-solo-cn', 'trae-work-cn', 'workbuddy')]
     [string]$Client = 'standalone',
     [string]$Workspace = '',
     [string]$Prefix = '',
@@ -134,11 +134,26 @@ try {
         $userHome = $env:WECOM_MCP_INSTALLER_TEST_HOME
     }
     if ($Prefix -and $Client -ne 'standalone') { throw '-Prefix may only be used with -Client standalone' }
-    if ($Workspace -and $Client -ne 'trae-work-cn') { throw '-Workspace may only be used with -Client trae-work-cn' }
+    if ($Workspace -and $Client -notin @('trae-solo-cn', 'trae-work-cn')) { throw '-Workspace may only be used with a TRAE client' }
     if ($Prefix) {
         if (-not [IO.Path]::IsPathRooted($Prefix)) { throw '-Prefix must be an absolute path' }
     } else {
         switch ($Client) {
+            'trae-solo-cn' {
+                if (-not $Workspace -or -not [IO.Path]::IsPathRooted($Workspace)) {
+                    throw '-Client trae-solo-cn requires an absolute -Workspace path'
+                }
+                if (-not (Test-Path -LiteralPath $Workspace -PathType Container)) {
+                    throw '-Workspace must be an existing directory'
+                }
+                if (-not $env:APPDATA -or -not [IO.Path]::IsPathRooted($env:APPDATA)) {
+                    throw 'TRAE SOLO CN requires the standard Windows APPDATA path'
+                }
+                $Workspace = [IO.Path]::GetFullPath($Workspace)
+                $Prefix = Join-Path $Workspace '.trae\mcp-servers\wecom-mcp-v2'
+                $configPaths = Join-Path $env:APPDATA 'TRAE SOLO CN\User\mcp.json'
+                $nextAction = 'locate the organization instance configuration and approved persistent GNAS environment, then use the verified configuration helper to merge the TRAE SOLO CN user mcp.json'
+            }
             'trae-work-cn' {
                 if (-not $Workspace -or -not [IO.Path]::IsPathRooted($Workspace)) {
                     throw '-Client trae-work-cn requires an absolute -Workspace path'
@@ -181,7 +196,7 @@ try {
         Assert-TargetWritable $releaseRoot
         Remove-StaleInstallerResidue $releaseRoot
     } catch {
-        throw ("target directory permission preflight failed before release download; use the verified Windows installation wizard outside the restricted Agent host: " + $_.Exception.Message)
+        throw ("target directory permission preflight failed before release download; stop and report agent_blocked without fallback, manual commands, or repeated writes: " + $_.Exception.Message)
     }
 
     $work = Join-Path ([IO.Path]::GetTempPath()) ("wecom-mcp-v2-{0}" -f [guid]::NewGuid().ToString('N'))
