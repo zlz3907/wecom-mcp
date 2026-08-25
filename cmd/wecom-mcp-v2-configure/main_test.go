@@ -66,6 +66,14 @@ func TestTRAEWorkRegistrationUsesRequestedClientName(t *testing.T) {
 	}
 }
 
+func TestDefaultTRAEConfigPathUsesWindowsAppData(t *testing.T) {
+	got := defaultTRAEConfigPath(`C:\Users\test`, `C:\Users\test\AppData\Roaming`, "windows")
+	want := filepath.Join(`C:\Users\test\AppData\Roaming`, "TRAE SOLO CN", "User", "mcp.json")
+	if got != want {
+		t.Fatalf("default TRAE config path=%q want=%q", got, want)
+	}
+}
+
 func TestAtomicSwitchCurrentReplacesSymlink(t *testing.T) {
 	prefix := t.TempDir()
 	for _, release := range []string{"old", "new"} {

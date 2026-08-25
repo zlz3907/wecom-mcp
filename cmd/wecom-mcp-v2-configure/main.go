@@ -46,11 +46,12 @@ func main() {
 	}
 	opt := options{}
 	var switchPrefix, switchRelease string
+	defaultTRAEConfig := defaultTRAEConfigPath(home, os.Getenv("APPDATA"), runtime.GOOS)
 	flag.StringVar(&opt.client, "client", "auto", "auto|codex|trae-solo-cn|trae-work-cn|workbuddy|none")
 	flag.StringVar(&opt.binary, "binary", "", "absolute MCP binary path")
 	flag.StringVar(&opt.serviceConfig, "config", "", "absolute instance configuration path")
 	flag.StringVar(&opt.codexConfig, "codex-config", filepath.Join(home, ".codex", "config.toml"), "Codex config.toml path")
-	flag.StringVar(&opt.traeConfig, "trae-config", filepath.Join(home, "Library", "Application Support", "TRAE SOLO CN", "User", "mcp.json"), "TRAE SOLO CN mcp.json path")
+	flag.StringVar(&opt.traeConfig, "trae-config", defaultTRAEConfig, "TRAE mcp.json path")
 	flag.StringVar(&opt.workBuddyConfig, "workbuddy-config", "", "reserved: WorkBuddy config path")
 	flag.StringVar(&switchPrefix, "switch-current", "", "internal: atomically switch a managed prefix current link")
 	flag.StringVar(&switchRelease, "release", "", "internal: managed release name for --switch-current")
@@ -101,6 +102,13 @@ func main() {
 			os.Exit(3)
 		}
 	}
+}
+
+func defaultTRAEConfigPath(home, appData, goos string) string {
+	if goos == "windows" && strings.TrimSpace(appData) != "" {
+		return filepath.Join(appData, "TRAE SOLO CN", "User", "mcp.json")
+	}
+	return filepath.Join(home, "Library", "Application Support", "TRAE SOLO CN", "User", "mcp.json")
 }
 
 func atomicSwitchCurrent(prefix, release string) error {

@@ -1,7 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $installer = Join-Path $repo 'install.ps1'
-$wizard = Join-Path $repo 'install-wizard.ps1'
 $root = Join-Path ([IO.Path]::GetTempPath()) ("wecom-mcp-windows-test-{0}" -f [guid]::NewGuid().ToString('N'))
 $version = 'v0.0.0-test'
 $releaseBase = Join-Path $root 'http-root'
@@ -11,9 +10,7 @@ $prefix = Join-Path $root 'prefix'
 $server = $null
 $previousTestMode = $env:WECOM_MCP_INSTALLER_TEST
 $previousTestHome = $env:WECOM_MCP_INSTALLER_TEST_HOME
-$previousGnasBase = $env:GNAS_BASE_URL
-$previousGnasID = $env:GNAS_APP_ID
-$previousGnasSecret = $env:GNAS_APP_SECRET
+$previousAppData = $env:APPDATA
 
 function Sha([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Assert-Line([string[]]$Lines, [string]$Wanted) {
@@ -52,7 +49,6 @@ try {
         'supported_core=windows/amd64'
         'installer=install.sh'
         'installer_windows=install.ps1'
-        "wizard_windows_amd64=wecom-mcp-v2_${version}_windows_wizard.zip"
         'checksums=SHA256SUMS'
         "asset_windows_amd64=$asset"
     ) | Set-Content -LiteralPath (Join-Path $release 'RELEASE-MANIFEST.txt')
@@ -81,6 +77,7 @@ try {
 
     $env:WECOM_MCP_INSTALLER_TEST = '1'
     $env:WECOM_MCP_INSTALLER_TEST_HOME = Join-Path $root 'user-home'
+    $env:APPDATA = Join-Path $root 'appdata'
     $staleStage = Join-Path $prefix 'releases\.staging-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     New-Item -ItemType Directory -Path $staleStage -Force | Out-Null
     (Get-Item -LiteralPath $staleStage).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-1)
@@ -109,23 +106,6 @@ try {
     if (-not (Test-Path -LiteralPath $traeBinary -PathType Leaf)) { throw 'TRAE project-scoped binary is missing' }
     if (Test-Path -LiteralPath (Join-Path $traeWorkspace '.trae\mcp-servers\wecom-mcp-v2\current')) { throw 'TRAE install created a current path' }
 
-    $wizardWorkspace = Join-Path $root 'wizard-workspace'
-    New-Item -ItemType Directory -Path $wizardWorkspace | Out-Null
-    $wizardResult = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $wizard -Version $version -Workspace $wizardWorkspace -ReleaseBase $baseUrl -NoGui -SkipRegistration)
-    if ($LASTEXITCODE -ne 0) { throw 'Windows wizard process failed' }
-    Assert-Line $wizardResult 'result=passed'
-    Assert-Line $wizardResult 'installed=yes'
-    $wizardBinary = Join-Path $wizardWorkspace ".trae\mcp-servers\wecom-mcp-v2\releases\${version}-windows-amd64\bin\wecom-mcp-v2.exe"
-    if (-not (Test-Path -LiteralPath $wizardBinary -PathType Leaf)) { throw 'Windows wizard did not install the verified TRAE binary' }
-
-    $wizardNeedsConfigWorkspace = Join-Path $root 'wizard-needs-config-workspace'
-    New-Item -ItemType Directory -Path $wizardNeedsConfigWorkspace | Out-Null
-    $wizardNeedsConfig = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $wizard -Version $version -Workspace $wizardNeedsConfigWorkspace -ReleaseBase $baseUrl -NoGui)
-    if ($LASTEXITCODE -ne 0) { throw 'Windows wizard first-configuration guidance failed' }
-    Assert-Line $wizardNeedsConfig 'wizard_result=installed_needs_organization_configuration'
-    Assert-Line $wizardNeedsConfig 'configured=no'
-    if (($wizardNeedsConfig -join "`n") -notmatch 'contact the organization technical administrator') { throw 'wizard did not direct a first-time user to organization technical support' }
-
     $schemaPath = Join-Path $root 'schema.json'
     Set-Content -LiteralPath $schemaPath -Value '{"version":1,"digest":"test","roles":{}}' -NoNewline
     $statePath = Join-Path $root 'state.json'
@@ -140,25 +120,29 @@ try {
         state_path = $statePath
         api_whitelist = @{ read = @('get_records') }
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $serviceConfig
-    $env:GNAS_BASE_URL = 'https://example.invalid'
-    $env:GNAS_APP_ID = 'TEST_APP_ID'
-    $env:GNAS_APP_SECRET = 'TEST_APP_SECRET'
-    $wizardConfiguredWorkspace = Join-Path $root 'wizard-configured-workspace'
-    New-Item -ItemType Directory -Path $wizardConfiguredWorkspace | Out-Null
-    $wizardConfigured = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $wizard -Version $version -Workspace $wizardConfiguredWorkspace -ConfigPath $serviceConfig -ReleaseBase $baseUrl -NoGui)
-    if ($LASTEXITCODE -ne 0) { throw ("Windows wizard guided configuration failed: " + ($wizardConfigured -join '; ')) }
-    Assert-Line $wizardConfigured 'wizard_result=passed'
-    Assert-Line $wizardConfigured 'configured=yes'
-    $traeConfig = Join-Path $wizardConfiguredWorkspace '.trae\mcp.json'
-    if (-not (Test-Path -LiteralPath $traeConfig -PathType Leaf)) { throw 'Windows wizard did not register TRAE project MCP configuration' }
-    if ((Get-Content -LiteralPath $traeConfig -Raw) -notmatch 'zoop_wecom_zhycit') { throw 'TRAE project MCP registration is missing the fixed instance' }
+    $soloWorkspace = Join-Path $root 'trae-solo-workspace'
+    New-Item -ItemType Directory -Path $soloWorkspace | Out-Null
+    $solo = @(& $installer -Version $version -Client trae-solo-cn -Workspace $soloWorkspace -ReleaseBase $baseUrl)
+    Assert-Line $solo 'result=passed'
+    Assert-Line $solo 'client=trae-solo-cn'
+    $soloConfig = Join-Path $env:APPDATA 'TRAE SOLO CN\User\mcp.json'
+    Assert-Line $solo ("config_paths=" + $soloConfig)
+    $soloBinary = Join-Path $soloWorkspace ".trae\mcp-servers\wecom-mcp-v2\releases\${version}-windows-amd64\bin\wecom-mcp-v2.exe"
+    if (-not (Test-Path -LiteralPath $soloBinary -PathType Leaf)) { throw 'TRAE SOLO CN workspace-scoped binary is missing' }
+    New-Item -ItemType Directory -Path (Split-Path -Parent $soloConfig) -Force | Out-Null
+    $soloConfigure = Join-Path (Split-Path -Parent $soloBinary) 'wecom-mcp-v2-configure.exe'
+    $soloRegistration = @(& $soloConfigure -client trae-solo-cn -binary $soloBinary -config $serviceConfig)
+    if ($LASTEXITCODE -ne 0) { throw ("TRAE SOLO CN registration failed: " + ($soloRegistration -join '; ')) }
+    if (($soloRegistration -join "`n") -notmatch '"configured": true') { throw 'TRAE SOLO CN registration did not report configured=true' }
+    if (-not (Test-Path -LiteralPath $soloConfig -PathType Leaf)) { throw 'TRAE SOLO CN user mcp.json was not created' }
+    if ((Get-Content -LiteralPath $soloConfig -Raw) -notmatch 'zoop_wecom_zhycit') { throw 'TRAE SOLO CN user MCP registration is missing the fixed instance' }
 
     $blockedPrefix = Join-Path $root 'blocked-prefix'
     Set-Content -LiteralPath $blockedPrefix -Value 'not a directory' -NoNewline
     $blocked = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Version $version -Prefix $blockedPrefix -ReleaseBase $baseUrl)
     if ($LASTEXITCODE -eq 0) { throw 'target permission preflight unexpectedly passed' }
     Assert-Line $blocked 'result=agent_blocked'
-    if (($blocked -join "`n") -notmatch 'permission preflight failed before release download') { throw 'permission preflight did not report the safe wizard handoff' }
+    if (($blocked -join "`n") -notmatch 'stop and report agent_blocked without fallback') { throw 'permission preflight did not fail closed without fallback' }
     if (Get-ChildItem -LiteralPath $root -Recurse -Force -Directory -Filter '.staging-*') { throw 'permission preflight left a staging directory' }
 
     $workbuddy = @(& $installer -Version $version -Client workbuddy -ReleaseBase $baseUrl)
@@ -173,9 +157,7 @@ try {
 finally {
     $env:WECOM_MCP_INSTALLER_TEST = $previousTestMode
     $env:WECOM_MCP_INSTALLER_TEST_HOME = $previousTestHome
-    $env:GNAS_BASE_URL = $previousGnasBase
-    $env:GNAS_APP_ID = $previousGnasID
-    $env:GNAS_APP_SECRET = $previousGnasSecret
+    $env:APPDATA = $previousAppData
     if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
 }
