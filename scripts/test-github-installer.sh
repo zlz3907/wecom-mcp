@@ -109,10 +109,10 @@ auto_config_prefix="$auto_config_home/.mcp/wecom-mcp-v2"
 mkdir -p "$auto_config_home/.codex" "$auto_config_home/.config/wecom-mcp-v2"
 printf 'model = "test"\n' > "$auto_config_home/.codex/config.toml"
 cp "$service_config" "$auto_config_home/.config/wecom-mcp-v2/zoop_wecom_zhycit.local.json"
-HOME="$auto_config_home" "$installer" --version v0.0.0-test1 --prefix "$auto_config_prefix" --client codex --release-base "file://$test_root/release1" > "$test_root/auto-config.txt"
+HOME="$auto_config_home" XDG_CONFIG_HOME="$auto_config_home/.config" "$installer" --version v0.0.0-test1 --prefix "$auto_config_prefix" --client codex --release-base "file://$test_root/release1" > "$test_root/auto-config.txt"
 grep -qx 'result=passed' "$test_root/auto-config.txt"
 grep -qx 'configured=yes' "$test_root/auto-config.txt"
-grep -q "$auto_config_home/.config/wecom-mcp-v2/zoop_wecom_zhycit.local.json" "$auto_config_home/.codex/config.toml"
+grep -qF "$auto_config_home/.config/wecom-mcp-v2/zoop_wecom_zhycit.local.json" "$auto_config_home/.codex/config.toml"
 
 # No configuration is fail-closed: a binary may be installed, but it is neither
 # registered nor claimed to be loaded/verified.
