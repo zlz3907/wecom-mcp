@@ -121,9 +121,10 @@ generic_home="$test_root/generic-home"
 generic_prefix="$generic_home/.mcp/wecom-mcp-v2"
 mkdir -p "$generic_home/.config/wecom-mcp-v2"
 cp "$service_config" "$generic_home/.config/wecom-mcp-v2/zoop_wecom_zhycit.local.json"
-HOME="$generic_home" XDG_CONFIG_HOME="$generic_home/.config" "$installer" --version v0.0.0-test1 --prefix "$generic_prefix" --client none --release-base "file://$test_root/release1" > "$test_root/generic-install.txt"
+HOME="$generic_home" XDG_CONFIG_HOME="$generic_home/.config" "$installer" --version v0.0.0-test1 --prefix "$generic_prefix" --client generic --release-base "file://$test_root/release1" > "$test_root/generic-install.txt"
 grep -qx 'result=passed' "$test_root/generic-install.txt"
 grep -qx 'installed=yes' "$test_root/generic-install.txt"
+grep -qx 'client=generic' "$test_root/generic-install.txt"
 grep -qx 'configured=no' "$test_root/generic-install.txt"
 grep -q 'client registration explicitly skipped' "$test_root/generic-install.txt"
 
@@ -136,19 +137,20 @@ grep -qx 'configured=no' "$test_root/no-config.txt"
 grep -qx 'loaded=no' "$test_root/no-config.txt"
 grep -qx 'verified=no' "$test_root/no-config.txt"
 
-# Unknown client and WorkBuddy must stop before creating an installation prefix.
+# Unknown clients still stop, while WorkBuddy uses the safe install-only path.
 set +e
 HOME="$no_config_home" "$installer" --version v0.0.0-test1 --prefix "$test_root/unknown-prefix" --client unknown --release-base "file://$test_root/release1" > "$test_root/unknown-client.txt" 2>&1
 unknown_exit=$?
-HOME="$no_config_home" "$installer" --version v0.0.0-test1 --prefix "$test_root/workbuddy-prefix" --client workbuddy --release-base "file://$test_root/release1" > "$test_root/workbuddy.txt" 2>&1
-workbuddy_exit=$?
 set -e
+HOME="$no_config_home" "$installer" --version v0.0.0-test1 --prefix "$test_root/workbuddy-prefix" --client workbuddy --release-base "file://$test_root/release1" > "$test_root/workbuddy.txt" 2>&1
 test "$unknown_exit" -ne 0
-test "$workbuddy_exit" -ne 0
 grep -qx 'result=agent_blocked' "$test_root/unknown-client.txt"
-grep -qx 'result=agent_blocked' "$test_root/workbuddy.txt"
+grep -qx 'result=passed' "$test_root/workbuddy.txt"
+grep -qx 'client=workbuddy' "$test_root/workbuddy.txt"
+grep -qx 'installed=yes' "$test_root/workbuddy.txt"
+grep -qx 'configured=no' "$test_root/workbuddy.txt"
 test ! -e "$test_root/unknown-prefix"
-test ! -e "$test_root/workbuddy-prefix"
+test -x "$test_root/workbuddy-prefix/current/bin/wecom-mcp-v2"
 
 # The POSIX shell installer still rejects Windows; Windows users consume the
 # verified ZIP directly. Unknown architectures also fail before prefix writes.
