@@ -130,8 +130,15 @@ function Write-Result([string]$Result, [string]$Evidence, [string]$NextAction) {
 
 try {
     $userHome = [Environment]::GetFolderPath('UserProfile')
+    $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
     if ($env:WECOM_MCP_INSTALLER_TEST -eq '1' -and $env:WECOM_MCP_INSTALLER_TEST_HOME) {
         $userHome = $env:WECOM_MCP_INSTALLER_TEST_HOME
+    }
+    if ($env:WECOM_MCP_INSTALLER_TEST -eq '1' -and $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA) {
+        $localAppData = $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA
+    }
+    if (-not $localAppData -or -not [IO.Path]::IsPathRooted($localAppData)) {
+        throw 'Windows client-scoped installation requires the standard LocalApplicationData path'
     }
     if ($Prefix -and $Client -ne 'standalone') { throw '-Prefix may only be used with -Client standalone' }
     if ($Workspace -and $Client -notin @('trae-solo-cn', 'trae-work-cn')) { throw '-Workspace may only be used with a TRAE client' }
@@ -140,17 +147,19 @@ try {
     } else {
         switch ($Client) {
             'trae-solo-cn' {
-                if (-not $Workspace -or -not [IO.Path]::IsPathRooted($Workspace)) {
-                    throw '-Client trae-solo-cn requires an absolute -Workspace path'
-                }
-                if (-not (Test-Path -LiteralPath $Workspace -PathType Container)) {
-                    throw '-Workspace must be an existing directory'
+                if ($Workspace) {
+                    if (-not [IO.Path]::IsPathRooted($Workspace)) {
+                        throw '-Workspace must be an absolute path when supplied'
+                    }
+                    if (-not (Test-Path -LiteralPath $Workspace -PathType Container)) {
+                        throw '-Workspace must be an existing directory'
+                    }
+                    $Workspace = [IO.Path]::GetFullPath($Workspace)
                 }
                 if (-not $env:APPDATA -or -not [IO.Path]::IsPathRooted($env:APPDATA)) {
                     throw 'TRAE SOLO CN requires the standard Windows APPDATA path'
                 }
-                $Workspace = [IO.Path]::GetFullPath($Workspace)
-                $Prefix = Join-Path $Workspace '.trae\mcp-servers\wecom-mcp-v2'
+                $Prefix = Join-Path $localAppData 'wecom-mcp-v2\clients\trae-solo-cn'
                 $configPaths = Join-Path $env:APPDATA 'TRAE SOLO CN\User\mcp.json'
                 $nextAction = 'locate the organization instance configuration and approved persistent GNAS environment, then use the verified configuration helper to merge the TRAE SOLO CN user mcp.json'
             }
@@ -162,7 +171,7 @@ try {
                     throw '-Workspace must be an existing directory'
                 }
                 $Workspace = [IO.Path]::GetFullPath($Workspace)
-                $Prefix = Join-Path $Workspace '.trae\mcp-servers\wecom-mcp-v2'
+                $Prefix = Join-Path $localAppData 'wecom-mcp-v2\clients\trae-work-cn'
                 $configPaths = Join-Path $Workspace '.trae\mcp.json'
                 $nextAction = 'use TRAE Settings > MCP to merge zoop_wecom_zhycit into the project .trae/mcp.json after an existing local instance config path is available'
             }
