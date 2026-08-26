@@ -16,13 +16,9 @@
 
 Windows Agent 必须根据当前宿主明确暴露的产品身份区分 TRAE SOLO CN、TRAE Work CN、WorkBuddy 和普通终端，不能仅凭当前目录或 `.trae` 文件夹猜测。TRAE SOLO CN 和 TRAE Work CN 的二进制分别安装在 `%LOCALAPPDATA%/wecom-mcp-v2/clients/<client>`，因此不受工作空间位于 C/D/E 盘影响，也不会跨客户端复用。SOLO 注册到官方用户配置 `%APPDATA%/TRAE SOLO CN/User/mcp.json`；Work 使用项目级 `.trae/mcp.json`。若身份不明或实际用户级安装目标不可写，只能如实报告 `agent_blocked`，不能输出 `result=passed`，也不能把命令或文件操作转交给用户。
 
-如果本机缺少组织实例配置，Agent 会明确提示用户联系本组织技术人员获取：
+如果本机缺少组织配置，普通用户只会看到一句话：“程序已经安装，但组织配置尚未部署，请联系本组织技术人员部署 GNAS 本机配置包；部署后重新粘贴原安装指令即可。”用户不需要领取文件、选择目录、告诉 Agent 路径、理解 Schema、填写参数或粘贴密钥。
 
-- `zoop_wecom_zhycit.local.json` 实例配置；
-- 与实例配置匹配的只读 Schema 镜像；
-- 由组织批准的 `GNAS_BASE_URL`、`GNAS_APP_ID`、`GNAS_APP_SECRET` 私密配置方式。
-
-安装流程不会让非技术用户猜测参数，也不会要求用户把密钥粘贴进对话。配置资产齐备且三项 GNAS 环境已由组织安全配置后，Agent 使用 Release 内受校验的配置助手备份并合并对应客户端配置，然后提示重启 TRAE 完成只读验证。
+技术人员将完整配置包部署到固定的用户级受保护位置。Agent 会先读取已有客户端注册项，再自动检查 Windows `%LOCALAPPDATA%/wecom-mcp-v2/config/zoop_wecom_zhycit.local.json` 或 macOS/Linux `${XDG_CONFIG_HOME:-$HOME/.config}/wecom-mcp-v2/zoop_wecom_zhycit.local.json`，并从实例配置内部自动验证 Schema 路径。配置与三项 GNAS 环境齐备后，Agent 使用 Release 内受校验的配置助手备份并合并对应客户端配置，然后提示重启客户端完成只读验证。
 
 安装器只接受固定 Release 资产，自动识别 OS/CPU 架构并校验 `SHA256SUMS`。macOS/Linux 保留旧版本并原子切换 `~/.mcp/wecom-mcp-v2/current`；Windows 由 Release 内的 `install.ps1` 按宿主客户端安装。TRAE SOLO CN 和 TRAE Work CN 使用 `%LOCALAPPDATA%` 下彼此隔离的用户级目录，WorkBuddy 使用用户级 `.codebuddy/mcp-servers`，普通终端才使用 `.mcp`。Windows 不创建链接。它将 `installed`、`configured`、`loaded`、`verified` 分开报告；没有本地受保护配置时可以只安装二进制，但不会伪装服务已可用。
 
@@ -48,7 +44,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.Z -Client standalone
 ```
 
-它会自动探查既有的本地实例配置；如果该本地配置不存在，安装器只安装二进制并明确报告 `configured=no`，不会复制示例配置、凭据或伪装服务已可用。macOS/Linux 可将受保护的既有配置传给 `install.sh`；Windows `install.ps1` 只安装二进制，配置文件绝对路径在之后的客户端 MCP 注册中作为 `--config` 参数使用。首次安装时所需的本地配置、Schema 镜像、三项私密运行环境及各客户端的后续步骤，以 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md) 为准。
+它会自动探查既有客户端引用和固定用户级位置；如果组织配置不存在，安装器只安装二进制并明确报告 `configured=no`，不会复制示例配置、凭据或伪装服务已可用。macOS/Linux 安装器和 Release 内配置助手会自动使用固定配置位置；Windows `install.ps1` 只安装二进制，后续由 Agent 调用受校验的配置助手自动发现固定位置并注册。普通用户不提供配置或 Schema 路径。技术配置包与各客户端后续步骤以 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md) 为准。
 
 TRAE SOLO CN 使用官方用户级 `%APPDATA%/TRAE SOLO CN/User/mcp.json`；TRAE Work CN 使用项目级 `<workspace>/.trae/mcp.json`；WorkBuddy 使用官方用户级 `~/.codebuddy/.mcp.json`。配置助手只备份并合并固定实例，不覆盖未知 JSON。`mcp-servers/wecom-mcp-v2` 是本项目定义的二进制子目录。当前支持矩阵、回滚规则和发布前门禁见 [便携安装说明](PORTABLE_INSTALL.md)。
 

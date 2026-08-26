@@ -39,6 +39,7 @@ EOF
 version=""
 client="auto"
 service_config=""
+service_config_discovered=no
 prefix="${HOME:-}/.mcp/wecom-mcp-v2"
 prefix_explicit=no
 rollback=""
@@ -67,6 +68,25 @@ while [ "$#" -gt 0 ]; do
     *) usage ;;
   esac
 done
+
+if [ -z "$service_config" ]; then
+  canonical_service_config=""
+  if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+    case "$XDG_CONFIG_HOME" in
+      /*) canonical_service_config="$XDG_CONFIG_HOME/wecom-mcp-v2/$INSTANCE_NAME.local.json" ;;
+    esac
+  elif [ -n "${HOME:-}" ]; then
+    canonical_service_config="$HOME/.config/wecom-mcp-v2/$INSTANCE_NAME.local.json"
+  fi
+  legacy_service_config="${HOME:-}/.trae/mcp-config/wecom/$INSTANCE_NAME.local.json"
+  if [ -n "$canonical_service_config" ] && [ -f "$canonical_service_config" ]; then
+    service_config=$canonical_service_config
+    service_config_discovered=yes
+  elif [ -n "${HOME:-}" ] && [ -f "$legacy_service_config" ]; then
+    service_config=$legacy_service_config
+    service_config_discovered=yes
+  fi
+fi
 
 redact_path() {
   redact_value=$1
@@ -451,14 +471,12 @@ binary_path="$prefix/current/bin/wecom-mcp-v2"
 binary_sha256=$(sha256 "$binary_path")
 evidence="Release manifest, SHA256SUMS, archive, and local manifest/helper/config-example hashes verified; runtime not exercised"
 
-configuration_detail="no local --config supplied; binary installed but no client was registered"
+configuration_detail="no managed local instance configuration detected; binary installed but no client was registered"
+if [ "$service_config_discovered" = yes ]; then
+  configuration_detail="using automatically detected managed local instance configuration"
+fi
 if [ "$client" = none ]; then
   configuration_detail="client registration explicitly skipped"
-elif [ -z "$service_config" ] && [ -n "${HOME:-}" ] && [ -f "$HOME/.trae/mcp-config/wecom/$INSTANCE_NAME.local.json" ]; then
-  service_config="$HOME/.trae/mcp-config/wecom/$INSTANCE_NAME.local.json"
-  [ ! -L "$service_config" ] || blocked "detected local instance config is a symlink; provide the real protected file path" 3
-  [ -r "$service_config" ] || blocked "detected local instance config is not readable; fix permissions without printing its contents" 3
-  configuration_detail="using detected local instance configuration"
 fi
 if [ -n "$service_config" ]; then
   set -- --client "$client" --binary "$prefix/current/bin/wecom-mcp-v2" --config "$service_config"

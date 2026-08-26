@@ -12,6 +12,7 @@ $previousTestMode = $env:WECOM_MCP_INSTALLER_TEST
 $previousTestHome = $env:WECOM_MCP_INSTALLER_TEST_HOME
 $previousTestLocalAppData = $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA
 $previousAppData = $env:APPDATA
+$previousLocalAppData = $env:LOCALAPPDATA
 
 function Sha([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Assert-Line([string[]]$Lines, [string]$Wanted) {
@@ -79,6 +80,7 @@ try {
     $env:WECOM_MCP_INSTALLER_TEST = '1'
     $env:WECOM_MCP_INSTALLER_TEST_HOME = Join-Path $root 'user-home'
     $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA = Join-Path $root 'local-appdata'
+    $env:LOCALAPPDATA = $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA
     $env:APPDATA = Join-Path $root 'appdata'
     $staleStage = Join-Path $prefix 'releases\.staging-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     New-Item -ItemType Directory -Path $staleStage -Force | Out-Null
@@ -123,6 +125,9 @@ try {
         state_path = $statePath
         api_whitelist = @{ read = @('get_records') }
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $serviceConfig
+    $managedServiceConfig = Join-Path $env:LOCALAPPDATA 'wecom-mcp-v2\config\zoop_wecom_zhycit.local.json'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $managedServiceConfig) -Force | Out-Null
+    Copy-Item -LiteralPath $serviceConfig -Destination $managedServiceConfig
     $solo = @(& $installer -Version $version -Client trae-solo-cn -ReleaseBase $baseUrl)
     Assert-Line $solo 'result=passed'
     Assert-Line $solo 'client=trae-solo-cn'
@@ -132,7 +137,7 @@ try {
     if (-not (Test-Path -LiteralPath $soloBinary -PathType Leaf)) { throw 'TRAE SOLO CN user-scoped binary is missing' }
     New-Item -ItemType Directory -Path (Split-Path -Parent $soloConfig) -Force | Out-Null
     $soloConfigure = Join-Path (Split-Path -Parent $soloBinary) 'wecom-mcp-v2-configure.exe'
-    $soloRegistration = @(& $soloConfigure -client trae-solo-cn -binary $soloBinary -config $serviceConfig)
+    $soloRegistration = @(& $soloConfigure -client trae-solo-cn -binary $soloBinary)
     if ($LASTEXITCODE -ne 0) { throw ("TRAE SOLO CN registration failed: " + ($soloRegistration -join '; ')) }
     if (($soloRegistration -join "`n") -notmatch '"configured": true') { throw 'TRAE SOLO CN registration did not report configured=true' }
     if (-not (Test-Path -LiteralPath $soloConfig -PathType Leaf)) { throw 'TRAE SOLO CN user mcp.json was not created' }
@@ -160,6 +165,7 @@ finally {
     $env:WECOM_MCP_INSTALLER_TEST_HOME = $previousTestHome
     $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA = $previousTestLocalAppData
     $env:APPDATA = $previousAppData
+    $env:LOCALAPPDATA = $previousLocalAppData
     if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
 }
