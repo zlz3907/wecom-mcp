@@ -23,7 +23,8 @@ usage() {
 usage: install.sh [--version vX.Y.Z] [options]
 
 Options:
-  --client auto|codex|trae-solo-cn|workbuddy|none  Register a known client (default: auto)
+  --client auto|codex|trae-solo-cn|workbuddy|generic|none
+                                                   Select an adapter or install-only client mode
   --config /absolute/path/to/zoop_wecom_zhycit.local.json
                                                    Existing local instance configuration; never copied
   --prefix /absolute/path                         Installation prefix (default: $HOME/.mcp/wecom-mcp-v2)
@@ -31,7 +32,7 @@ Options:
   --uninstall                                     Remove only the current symlink; retain releases/configuration
   --release-base URL                              HTTPS release base, or file:// for offline tests only
   --codex-config PATH | --trae-config PATH        Explicit known-client config paths
-  --workbuddy-config PATH                         Reports blocked: WorkBuddy contract is not verified
+  --workbuddy-config PATH                         Reserved for a confirmed WorkBuddy adapter
 EOF
   exit 2
 }
@@ -119,6 +120,7 @@ emit() {
   echo "operation=$operation"
   echo "release_version=$release_version"
   echo "platform=$platform"
+  echo "client=$client"
   echo "installed=$installed"
   echo "configured=$configured"
   echo "loaded=$loaded"
@@ -147,7 +149,7 @@ failed() {
 }
 
 case "$prefix" in /*) ;; *) failed "--prefix must be absolute" 2 ;; esac
-case "$client" in auto|codex|trae-solo-cn|workbuddy|none) ;; *) blocked "unsupported --client; choose auto, codex, trae-solo-cn, or none" 2 ;; esac
+case "$client" in auto|codex|trae-solo-cn|workbuddy|generic|none) ;; *) blocked "unsupported --client; choose auto, codex, trae-solo-cn, workbuddy, generic, or none" 2 ;; esac
 if [ "$prefix_explicit" = no ] && [ -z "${HOME:-}" ]; then
   blocked "HOME is unset; supply an explicit absolute --prefix" 3
 fi
@@ -161,9 +163,8 @@ if [ -n "$service_config" ]; then
   [ -r "$service_config" ] || blocked "local instance config is not readable; fix permissions without printing its contents" 3
   [ ! -L "$service_config" ] || blocked "local instance config must not be a symlink; provide the real protected file path" 3
 fi
-if [ "$client" = workbuddy ]; then
-  blocked "WorkBuddy MCP configuration contract is unverified; inspect its official client contract and add a reviewed adapter before retrying" 3
-fi
+registration_deferred=no
+case "$client" in generic|workbuddy|none) registration_deferred=yes ;; esac
 
 sha256() {
   if command -v shasum >/dev/null 2>&1; then
@@ -475,10 +476,10 @@ configuration_detail="no managed local instance configuration detected; binary i
 if [ "$service_config_discovered" = yes ]; then
   configuration_detail="using automatically detected managed local instance configuration"
 fi
-if [ "$client" = none ]; then
+if [ "$registration_deferred" = yes ]; then
   configuration_detail="client registration explicitly skipped"
 fi
-if [ -n "$service_config" ] && [ "$client" != none ]; then
+if [ -n "$service_config" ] && [ "$registration_deferred" = no ]; then
   set -- --client "$client" --binary "$prefix/current/bin/wecom-mcp-v2" --config "$service_config"
   [ -n "$codex_config" ] && set -- "$@" --codex-config "$codex_config"
   [ -n "$trae_config" ] && set -- "$@" --trae-config "$trae_config"

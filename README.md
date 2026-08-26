@@ -18,6 +18,8 @@ Windows Agent 必须根据当前宿主明确暴露的产品身份区分 Codex De
 
 MCP 二进制遵循通用 stdio 协议，客户端名称不在预置列表中不等于不支持。像豆包 Work 这类其他客户端，只要端上 Agent 能确认本机 stdio MCP 能力，就先完成通用二进制安装；Agent 能从当前客户端自身确认“添加 MCP”的入口或配置契约时继续自动注册，无法确认时则如实报告 `installed=yes、configured=no`，不会再因为产品名未知而整套阻断，也不会猜用其他客户端的配置路径。
 
+macOS/Linux 安装器原生接受 `--client generic` 和 `--client workbuddy`：两种模式都会完成受校验的通用二进制安装，并把客户端注册留给端上 Agent 自己确认的 MCP 管理入口。端上 Agent 不需要也不应该把 `generic` 改成 `none`、`standalone` 或 `other`。
+
 如果本机缺少组织配置，普通用户只会看到一句话：“程序已经安装，但组织配置尚未部署，请联系本组织技术人员部署 GNAS 本机配置包；部署后重新粘贴原安装指令即可。”用户不需要领取文件、选择目录、告诉 Agent 路径、理解 Schema、填写参数或粘贴密钥。
 
 技术人员将完整配置包部署到固定的用户级受保护位置。Agent 会先读取已有客户端注册项，再自动检查 Windows `%LOCALAPPDATA%/wecom-mcp-v2/config/zoop_wecom_zhycit.local.json` 或 macOS/Linux `${XDG_CONFIG_HOME:-$HOME/.config}/wecom-mcp-v2/zoop_wecom_zhycit.local.json`，并从实例配置内部自动验证 Schema 路径。配置与三项 GNAS 环境齐备后，Agent 使用 Release 内受校验的配置助手备份并合并对应客户端配置，然后提示重启客户端完成只读验证。
