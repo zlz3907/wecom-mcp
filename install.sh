@@ -478,7 +478,7 @@ fi
 if [ "$client" = none ]; then
   configuration_detail="client registration explicitly skipped"
 fi
-if [ -n "$service_config" ]; then
+if [ -n "$service_config" ] && [ "$client" != none ]; then
   set -- --client "$client" --binary "$prefix/current/bin/wecom-mcp-v2" --config "$service_config"
   [ -n "$codex_config" ] && set -- "$@" --codex-config "$codex_config"
   [ -n "$trae_config" ] && set -- "$@" --trae-config "$trae_config"

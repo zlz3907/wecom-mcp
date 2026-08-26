@@ -6,7 +6,7 @@
 
 ## 非技术用户自动安装
 
-现在用户只需把下面这句话粘贴给 TRAE、WorkBuddy 或其他具备本机终端和 MCP 管理能力的 Agent：
+现在用户只需把下面这句话粘贴给任何具备本机终端和本地 stdio MCP 管理能力的 Agent：
 
 ```text
 请安装 wecom-mcp-v2，并严格执行：https://raw.githubusercontent.com/zlz3907/wecom-mcp/main/AGENT_INSTALL_PROMPT.md
@@ -14,7 +14,9 @@
 
 完整安装规则只维护在 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md)，避免 README 与安装规范不一致。非技术用户不需要执行 PowerShell、双击 `.cmd`、选择 CPU 架构、修改白名单或手动清理 staging 目录。
 
-Windows Agent 必须根据当前宿主明确暴露的产品身份区分 Codex Desktop、TRAE SOLO CN、TRAE Work CN、WorkBuddy 和普通终端，不能仅凭当前目录或 `.codex`/`.trae` 文件夹猜测。Codex、TRAE SOLO CN 和 TRAE Work CN 的二进制分别安装在 `%LOCALAPPDATA%/wecom-mcp-v2/clients/<client>`，因此不受工作空间位于 C/D/E 盘影响，也不会跨客户端复用。Codex 注册到当前用户 `~/.codex/config.toml`，SOLO 注册到 `%APPDATA%/TRAE SOLO CN/User/mcp.json`，Work 使用项目级 `.trae/mcp.json`。若身份不明或实际用户级安装目标不可写，只能如实报告 `agent_blocked`，不能输出 `result=passed`，也不能把命令或文件操作转交给用户。
+Windows Agent 必须根据当前宿主明确暴露的产品身份区分 Codex Desktop、TRAE SOLO CN、TRAE Work CN、WorkBuddy、其他通用 MCP 客户端和普通终端，不能仅凭当前目录或 `.codex`/`.trae` 文件夹猜测。Codex、TRAE SOLO CN、TRAE Work CN 和 generic 的二进制分别安装在 `%LOCALAPPDATA%/wecom-mcp-v2/clients/<client>`，因此不受工作空间位于 C/D/E 盘影响。Codex 注册到当前用户 `~/.codex/config.toml`，SOLO 注册到 `%APPDATA%/TRAE SOLO CN/User/mcp.json`，Work 使用项目级 `.trae/mcp.json`。只有实际用户级安装目标不可写、平台不支持或宿主不具备本地 stdio MCP/终端能力时才报告 `agent_blocked`；无法确认某个通用客户端的注册路径，不再阻止二进制安装。
+
+MCP 二进制遵循通用 stdio 协议，客户端名称不在预置列表中不等于不支持。像豆包 Work 这类其他客户端，只要端上 Agent 能确认本机 stdio MCP 能力，就先完成通用二进制安装；Agent 能从当前客户端自身确认“添加 MCP”的入口或配置契约时继续自动注册，无法确认时则如实报告 `installed=yes、configured=no`，不会再因为产品名未知而整套阻断，也不会猜用其他客户端的配置路径。
 
 如果本机缺少组织配置，普通用户只会看到一句话：“程序已经安装，但组织配置尚未部署，请联系本组织技术人员部署 GNAS 本机配置包；部署后重新粘贴原安装指令即可。”用户不需要领取文件、选择目录、告诉 Agent 路径、理解 Schema、填写参数或粘贴密钥。
 
@@ -39,6 +41,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.
 
 # WorkBuddy 用户级安装
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.Z -Client workbuddy
+
+# 其他已确认支持本地 stdio MCP 的客户端
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.Z -Client generic
 
 # Codex Desktop / CLI / IDE extension：用户级隔离安装
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.Z -Client codex
