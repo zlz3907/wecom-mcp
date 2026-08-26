@@ -209,10 +209,24 @@ func configureCodex(opt options) result {
 }
 
 func codexBlock(binary, serviceConfig string) (string, error) {
-	if strings.ContainsAny(binary+serviceConfig, "\\\"\n\r") {
-		return "", errors.New("paths containing backslashes, quotes, or newlines are not supported for TOML registration")
+	binaryValue, err := tomlBasicString(binary)
+	if err != nil {
+		return "", fmt.Errorf("invalid binary path for Codex registration: %w", err)
 	}
-	return fmt.Sprintf("%s\n[mcp_servers.%s]\ncommand = \"%s\"\nargs = [\"--config\", \"%s\"]\nenabled = true\n%s\n", beginMarker, instanceName, binary, serviceConfig, endMarker), nil
+	configValue, err := tomlBasicString(serviceConfig)
+	if err != nil {
+		return "", fmt.Errorf("invalid configuration path for Codex registration: %w", err)
+	}
+	return fmt.Sprintf("%s\n[mcp_servers.%s]\ncommand = %s\nargs = [\"--config\", %s]\nenabled = true\n%s\n", beginMarker, instanceName, binaryValue, configValue, endMarker), nil
+}
+
+func tomlBasicString(value string) (string, error) {
+	if strings.ContainsAny(value, "\n\r") {
+		return "", errors.New("path contains a newline")
+	}
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	return `"` + value + `"`, nil
 }
 
 func configureTRAE(opt options) result {
