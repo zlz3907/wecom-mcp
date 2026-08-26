@@ -14,13 +14,13 @@
 
 完整安装规则只维护在 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md)，避免 README 与安装规范不一致。非技术用户不需要执行 PowerShell、双击 `.cmd`、选择 CPU 架构、修改白名单或手动清理 staging 目录。
 
-Windows Agent 必须根据当前宿主明确暴露的产品身份区分 TRAE SOLO CN、TRAE Work CN、WorkBuddy 和普通终端，不能仅凭当前目录或 `.trae` 文件夹猜测。TRAE SOLO CN 和 TRAE Work CN 的二进制分别安装在 `%LOCALAPPDATA%/wecom-mcp-v2/clients/<client>`，因此不受工作空间位于 C/D/E 盘影响，也不会跨客户端复用。SOLO 注册到官方用户配置 `%APPDATA%/TRAE SOLO CN/User/mcp.json`；Work 使用项目级 `.trae/mcp.json`。若身份不明或实际用户级安装目标不可写，只能如实报告 `agent_blocked`，不能输出 `result=passed`，也不能把命令或文件操作转交给用户。
+Windows Agent 必须根据当前宿主明确暴露的产品身份区分 Codex Desktop、TRAE SOLO CN、TRAE Work CN、WorkBuddy 和普通终端，不能仅凭当前目录或 `.codex`/`.trae` 文件夹猜测。Codex、TRAE SOLO CN 和 TRAE Work CN 的二进制分别安装在 `%LOCALAPPDATA%/wecom-mcp-v2/clients/<client>`，因此不受工作空间位于 C/D/E 盘影响，也不会跨客户端复用。Codex 注册到当前用户 `~/.codex/config.toml`，SOLO 注册到 `%APPDATA%/TRAE SOLO CN/User/mcp.json`，Work 使用项目级 `.trae/mcp.json`。若身份不明或实际用户级安装目标不可写，只能如实报告 `agent_blocked`，不能输出 `result=passed`，也不能把命令或文件操作转交给用户。
 
 如果本机缺少组织配置，普通用户只会看到一句话：“程序已经安装，但组织配置尚未部署，请联系本组织技术人员部署 GNAS 本机配置包；部署后重新粘贴原安装指令即可。”用户不需要领取文件、选择目录、告诉 Agent 路径、理解 Schema、填写参数或粘贴密钥。
 
 技术人员将完整配置包部署到固定的用户级受保护位置。Agent 会先读取已有客户端注册项，再自动检查 Windows `%LOCALAPPDATA%/wecom-mcp-v2/config/zoop_wecom_zhycit.local.json` 或 macOS/Linux `${XDG_CONFIG_HOME:-$HOME/.config}/wecom-mcp-v2/zoop_wecom_zhycit.local.json`，并从实例配置内部自动验证 Schema 路径。配置与三项 GNAS 环境齐备后，Agent 使用 Release 内受校验的配置助手备份并合并对应客户端配置，然后提示重启客户端完成只读验证。
 
-安装器只接受固定 Release 资产，自动识别 OS/CPU 架构并校验 `SHA256SUMS`。macOS/Linux 保留旧版本并原子切换 `~/.mcp/wecom-mcp-v2/current`；Windows 由 Release 内的 `install.ps1` 按宿主客户端安装。TRAE SOLO CN 和 TRAE Work CN 使用 `%LOCALAPPDATA%` 下彼此隔离的用户级目录，WorkBuddy 使用用户级 `.codebuddy/mcp-servers`，普通终端才使用 `.mcp`。Windows 不创建链接。它将 `installed`、`configured`、`loaded`、`verified` 分开报告；没有本地受保护配置时可以只安装二进制，但不会伪装服务已可用。
+安装器只接受固定 Release 资产，自动识别 OS/CPU 架构并校验 `SHA256SUMS`。macOS/Linux 保留旧版本并原子切换 `~/.mcp/wecom-mcp-v2/current`；Windows 由 Release 内的 `install.ps1` 按宿主客户端安装。Codex、TRAE SOLO CN 和 TRAE Work CN 使用 `%LOCALAPPDATA%` 下彼此隔离的用户级目录，WorkBuddy 使用用户级 `.codebuddy/mcp-servers`，普通终端才使用 `.mcp`。Windows 不创建链接。它将 `installed`、`configured`、`loaded`、`verified` 分开报告；没有本地受保护配置时可以只安装二进制，但不会伪装服务已可用。
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/zlz3907/wecom-mcp/vX.Y.Z/install.sh | sh -s -- --version vX.Y.Z --client auto
@@ -40,13 +40,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.
 # WorkBuddy 用户级安装
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.Z -Client workbuddy
 
+# Codex Desktop / CLI / IDE extension：用户级隔离安装
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.Z -Client codex
+
 # 普通独立终端
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version vX.Y.Z -Client standalone
 ```
 
 它会自动探查既有客户端引用和固定用户级位置；如果组织配置不存在，安装器只安装二进制并明确报告 `configured=no`，不会复制示例配置、凭据或伪装服务已可用。macOS/Linux 安装器和 Release 内配置助手会自动使用固定配置位置；Windows `install.ps1` 只安装二进制，后续由 Agent 调用受校验的配置助手自动发现固定位置并注册。普通用户不提供配置或 Schema 路径。技术配置包与各客户端后续步骤以 [AGENT_INSTALL_PROMPT.md](AGENT_INSTALL_PROMPT.md) 为准。
 
-TRAE SOLO CN 使用官方用户级 `%APPDATA%/TRAE SOLO CN/User/mcp.json`；TRAE Work CN 使用项目级 `<workspace>/.trae/mcp.json`；WorkBuddy 使用官方用户级 `~/.codebuddy/.mcp.json`。配置助手只备份并合并固定实例，不覆盖未知 JSON。`mcp-servers/wecom-mcp-v2` 是本项目定义的二进制子目录。当前支持矩阵、回滚规则和发布前门禁见 [便携安装说明](PORTABLE_INSTALL.md)。
+Codex 使用当前用户 `~/.codex/config.toml`；TRAE SOLO CN 使用官方用户级 `%APPDATA%/TRAE SOLO CN/User/mcp.json`；TRAE Work CN 使用项目级 `<workspace>/.trae/mcp.json`；WorkBuddy 使用官方用户级 `~/.codebuddy/.mcp.json`。配置助手只备份并合并固定实例，不覆盖未知配置。`mcp-servers/wecom-mcp-v2` 是本项目定义的二进制子目录。当前支持矩阵、回滚规则和发布前门禁见 [便携安装说明](PORTABLE_INSTALL.md)。
 
 ## 30 秒 Quick Start
 
@@ -126,7 +129,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 - 系统：macOS、Linux、Windows amd64。
 - 客户端：Codex、TRAE。
 - WorkBuddy：支持官方 MCP 设置入口的引导式配置；未知本机文件契约时低层安装器会阻断，不猜路径、不覆盖配置。
-- Windows：提供 amd64 Release 包；通过 Windows CI 原生构建，并用 PowerShell 5.1 分别验证 standalone、TRAE SOLO CN 用户级隔离安装/注册、TRAE Work CN 用户级隔离安装与项目级配置目标、WorkBuddy 用户级安装及重复安装。
+- Windows：提供 amd64 Release 包；通过 Windows CI 原生构建，并用 PowerShell 5.1 分别验证 standalone、Codex 用户级隔离安装/注册、TRAE SOLO CN 用户级隔离安装/注册、TRAE Work CN 用户级隔离安装与项目级配置目标、WorkBuddy 用户级安装及重复安装。
 
 本服务使用 stdio JSON-RPC，每个进程连接一个由本机配置固定的企业微信实例。
 

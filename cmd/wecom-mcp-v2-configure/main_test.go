@@ -31,6 +31,22 @@ func TestCodexBlockIsIdempotentAndBackedUp(t *testing.T) {
 	}
 }
 
+func TestCodexBlockEscapesWindowsPaths(t *testing.T) {
+	block, err := codexBlock(
+		`C:\Users\test\AppData\Local\wecom-mcp-v2\wecom-mcp-v2.exe`,
+		`C:\Users\test\AppData\Local\wecom-mcp-v2\zoop_wecom_zhycit.local.json`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(block, `command = "C:\\Users\\test\\AppData\\Local\\wecom-mcp-v2\\wecom-mcp-v2.exe"`) {
+		t.Fatalf("Windows command path was not TOML escaped: %s", block)
+	}
+	if !strings.Contains(block, `"C:\\Users\\test\\AppData\\Local\\wecom-mcp-v2\\zoop_wecom_zhycit.local.json"`) {
+		t.Fatalf("Windows config path was not TOML escaped: %s", block)
+	}
+}
+
 func TestTRAERegistrationRejectsConflict(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcp.json")

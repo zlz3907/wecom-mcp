@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^v[0-9][A-Za-z0-9._-]*$')]
     [string]$Version,
-    [ValidateSet('standalone', 'trae-solo-cn', 'trae-work-cn', 'workbuddy')]
+    [ValidateSet('standalone', 'codex', 'trae-solo-cn', 'trae-work-cn', 'workbuddy')]
     [string]$Client = 'standalone',
     [string]$Workspace = '',
     [string]$Prefix = '',
@@ -146,6 +146,11 @@ try {
         if (-not [IO.Path]::IsPathRooted($Prefix)) { throw '-Prefix must be an absolute path' }
     } else {
         switch ($Client) {
+            'codex' {
+                $Prefix = Join-Path $localAppData 'wecom-mcp-v2\clients\codex'
+                $configPaths = Join-Path $userHome '.codex\config.toml'
+                $nextAction = 'locate the organization instance configuration and approved persistent GNAS environment, then use the verified configuration helper to merge the shared Codex config.toml'
+            }
             'trae-solo-cn' {
                 if ($Workspace) {
                     if (-not [IO.Path]::IsPathRooted($Workspace)) {

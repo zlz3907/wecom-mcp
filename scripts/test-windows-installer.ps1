@@ -111,6 +111,15 @@ try {
     if (Test-Path -LiteralPath (Join-Path $traeWorkspace '.trae\mcp-servers')) { throw 'TRAE Work installation wrote binaries into the workspace' }
     if (Test-Path -LiteralPath (Join-Path $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA 'wecom-mcp-v2\clients\trae-work-cn\current')) { throw 'TRAE Work install created a current path' }
 
+    $codex = @(& $installer -Version $version -Client codex -ReleaseBase $baseUrl)
+    Assert-Line $codex 'result=passed'
+    Assert-Line $codex 'client=codex'
+    $codexConfig = Join-Path $env:WECOM_MCP_INSTALLER_TEST_HOME '.codex\config.toml'
+    Assert-Line $codex ("config_paths=" + $codexConfig)
+    $codexBinary = Join-Path $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA "wecom-mcp-v2\clients\codex\releases\${version}-windows-amd64\bin\wecom-mcp-v2.exe"
+    if (-not (Test-Path -LiteralPath $codexBinary -PathType Leaf)) { throw 'Codex user-scoped binary is missing' }
+    if (Test-Path -LiteralPath (Join-Path $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA 'wecom-mcp-v2\clients\codex\current')) { throw 'Codex install created a current path' }
+
     $schemaPath = Join-Path $root 'schema.json'
     Set-Content -LiteralPath $schemaPath -Value '{"version":1,"digest":"test","roles":{}}' -NoNewline
     $statePath = Join-Path $root 'state.json'
@@ -128,6 +137,15 @@ try {
     $managedServiceConfig = Join-Path $env:LOCALAPPDATA 'wecom-mcp-v2\config\zoop_wecom_zhycit.local.json'
     New-Item -ItemType Directory -Path (Split-Path -Parent $managedServiceConfig) -Force | Out-Null
     Copy-Item -LiteralPath $serviceConfig -Destination $managedServiceConfig
+    New-Item -ItemType Directory -Path (Split-Path -Parent $codexConfig) -Force | Out-Null
+    Set-Content -LiteralPath $codexConfig -Value 'model = "test"'
+    $codexConfigure = Join-Path (Split-Path -Parent $codexBinary) 'wecom-mcp-v2-configure.exe'
+    $codexRegistration = @(& $codexConfigure -client codex -binary $codexBinary -config $managedServiceConfig -codex-config $codexConfig)
+    if ($LASTEXITCODE -ne 0) { throw ("Codex registration failed: " + ($codexRegistration -join '; ')) }
+    if (($codexRegistration -join "`n") -notmatch '"configured": true') { throw 'Codex registration did not report configured=true' }
+    if ((Get-Content -LiteralPath $codexConfig -Raw) -notmatch 'zoop_wecom_zhycit') { throw 'Codex MCP registration is missing the fixed instance' }
+    if ((Get-Content -LiteralPath $codexConfig -Raw) -notmatch '\\\\Users\\\\') { throw 'Codex MCP registration did not TOML-escape Windows paths' }
+
     $solo = @(& $installer -Version $version -Client trae-solo-cn -ReleaseBase $baseUrl)
     Assert-Line $solo 'result=passed'
     Assert-Line $solo 'client=trae-solo-cn'
