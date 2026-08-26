@@ -140,7 +140,7 @@ try {
     New-Item -ItemType Directory -Path (Split-Path -Parent $codexConfig) -Force | Out-Null
     Set-Content -LiteralPath $codexConfig -Value 'model = "test"'
     $codexConfigure = Join-Path (Split-Path -Parent $codexBinary) 'wecom-mcp-v2-configure.exe'
-    $codexRegistration = @(& $codexConfigure -client codex -binary $codexBinary)
+    $codexRegistration = @(& $codexConfigure -client codex -binary $codexBinary -config $managedServiceConfig -codex-config $codexConfig)
     if ($LASTEXITCODE -ne 0) { throw ("Codex registration failed: " + ($codexRegistration -join '; ')) }
     if (($codexRegistration -join "`n") -notmatch '"configured": true') { throw 'Codex registration did not report configured=true' }
     if ((Get-Content -LiteralPath $codexConfig -Raw) -notmatch 'zoop_wecom_zhycit') { throw 'Codex MCP registration is missing the fixed instance' }
