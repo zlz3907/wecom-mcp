@@ -114,6 +114,19 @@ grep -qx 'result=passed' "$test_root/auto-config.txt"
 grep -qx 'configured=yes' "$test_root/auto-config.txt"
 grep -qF "$auto_config_home/.config/wecom-mcp-v2/zoop_wecom_zhycit.local.json" "$auto_config_home/.codex/config.toml"
 
+# A generic MCP-capable host installs with registration disabled. Even when the
+# managed service configuration is discovered, the installer must not claim a
+# client registration that the host Agent has not performed itself.
+generic_home="$test_root/generic-home"
+generic_prefix="$generic_home/.mcp/wecom-mcp-v2"
+mkdir -p "$generic_home/.config/wecom-mcp-v2"
+cp "$service_config" "$generic_home/.config/wecom-mcp-v2/zoop_wecom_zhycit.local.json"
+HOME="$generic_home" XDG_CONFIG_HOME="$generic_home/.config" "$installer" --version v0.0.0-test1 --prefix "$generic_prefix" --client none --release-base "file://$test_root/release1" > "$test_root/generic-install.txt"
+grep -qx 'result=passed' "$test_root/generic-install.txt"
+grep -qx 'installed=yes' "$test_root/generic-install.txt"
+grep -qx 'configured=no' "$test_root/generic-install.txt"
+grep -q 'client registration explicitly skipped' "$test_root/generic-install.txt"
+
 # No configuration is fail-closed: a binary may be installed, but it is neither
 # registered nor claimed to be loaded/verified.
 no_config_home="$test_root/no-config-home"

@@ -120,6 +120,15 @@ try {
     if (-not (Test-Path -LiteralPath $codexBinary -PathType Leaf)) { throw 'Codex user-scoped binary is missing' }
     if (Test-Path -LiteralPath (Join-Path $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA 'wecom-mcp-v2\clients\codex\current')) { throw 'Codex install created a current path' }
 
+    $generic = @(& $installer -Version $version -Client generic -ReleaseBase $baseUrl)
+    Assert-Line $generic 'result=passed'
+    Assert-Line $generic 'client=generic'
+    Assert-Line $generic 'configured=no'
+    Assert-Line $generic 'config_paths=none'
+    $genericBinary = Join-Path $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA "wecom-mcp-v2\clients\generic\releases\${version}-windows-amd64\bin\wecom-mcp-v2.exe"
+    if (-not (Test-Path -LiteralPath $genericBinary -PathType Leaf)) { throw 'generic MCP client user-scoped binary is missing' }
+    if (Test-Path -LiteralPath (Join-Path $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA 'wecom-mcp-v2\clients\generic\current')) { throw 'generic MCP client install created a current path' }
+
     $schemaPath = Join-Path $root 'schema.json'
     Set-Content -LiteralPath $schemaPath -Value '{"version":1,"digest":"test","roles":{}}' -NoNewline
     $statePath = Join-Path $root 'state.json'

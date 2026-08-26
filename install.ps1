@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^v[0-9][A-Za-z0-9._-]*$')]
     [string]$Version,
-    [ValidateSet('standalone', 'codex', 'trae-solo-cn', 'trae-work-cn', 'workbuddy')]
+    [ValidateSet('standalone', 'generic', 'codex', 'trae-solo-cn', 'trae-work-cn', 'workbuddy')]
     [string]$Client = 'standalone',
     [string]$Workspace = '',
     [string]$Prefix = '',
@@ -146,6 +146,11 @@ try {
         if (-not [IO.Path]::IsPathRooted($Prefix)) { throw '-Prefix must be an absolute path' }
     } else {
         switch ($Client) {
+            'generic' {
+                $Prefix = Join-Path $localAppData 'wecom-mcp-v2\clients\generic'
+                $configPaths = 'none'
+                $nextAction = 'use the current MCP-capable client own confirmed Add MCP interface or configuration contract to register binary_path; if the contract is unavailable, keep the verified binary installed and report configured=no'
+            }
             'codex' {
                 $Prefix = Join-Path $localAppData 'wecom-mcp-v2\clients\codex'
                 $configPaths = Join-Path $userHome '.codex\config.toml'

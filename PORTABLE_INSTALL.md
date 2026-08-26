@@ -18,7 +18,7 @@
 ./scripts/test-github-installer.sh
 ```
 
-它执行 shell 静态检查、Go 测试/vet/build、五个平台发布资产构建、临时 HOME 安装、配置备份/幂等、checksum 篡改拒绝、回滚与无本地配置 fail-closed；Windows CI 另运行 `scripts/test-windows-installer.ps1`，覆盖 standalone、Codex 自动安装/用户级注册、TRAE SOLO CN 自动安装/用户级注册、TRAE Work CN 与 WorkBuddy；这些测试都不访问线上企业微信。
+它执行 shell 静态检查、Go 测试/vet/build、五个平台发布资产构建、临时 HOME 安装、通用客户端仅安装不误报注册、配置备份/幂等、checksum 篡改拒绝、回滚与无本地配置 fail-closed；Windows CI 另运行 `scripts/test-windows-installer.ps1`，覆盖 standalone、generic、Codex 自动安装/用户级注册、TRAE SOLO CN 自动安装/用户级注册、TRAE Work CN 与 WorkBuddy；这些测试都不访问线上企业微信。
 
 ## 前提与边界
 
