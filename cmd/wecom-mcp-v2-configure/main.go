@@ -47,9 +47,10 @@ func main() {
 	opt := options{}
 	var switchPrefix, switchRelease string
 	defaultTRAEConfig := defaultTRAEConfigPath(home, os.Getenv("APPDATA"), runtime.GOOS)
+	defaultServiceConfig := defaultServiceConfigPath(home, os.Getenv("LOCALAPPDATA"), os.Getenv("XDG_CONFIG_HOME"), runtime.GOOS)
 	flag.StringVar(&opt.client, "client", "auto", "auto|codex|trae-solo-cn|trae-work-cn|workbuddy|none")
 	flag.StringVar(&opt.binary, "binary", "", "absolute MCP binary path")
-	flag.StringVar(&opt.serviceConfig, "config", "", "absolute instance configuration path")
+	flag.StringVar(&opt.serviceConfig, "config", defaultServiceConfig, "absolute instance configuration path; defaults to the managed per-user location")
 	flag.StringVar(&opt.codexConfig, "codex-config", filepath.Join(home, ".codex", "config.toml"), "Codex config.toml path")
 	flag.StringVar(&opt.traeConfig, "trae-config", defaultTRAEConfig, "TRAE mcp.json path")
 	flag.StringVar(&opt.workBuddyConfig, "workbuddy-config", "", "reserved: WorkBuddy config path")
@@ -109,6 +110,16 @@ func defaultTRAEConfigPath(home, appData, goos string) string {
 		return filepath.Join(appData, "TRAE SOLO CN", "User", "mcp.json")
 	}
 	return filepath.Join(home, "Library", "Application Support", "TRAE SOLO CN", "User", "mcp.json")
+}
+
+func defaultServiceConfigPath(home, localAppData, xdgConfigHome, goos string) string {
+	if goos == "windows" && strings.TrimSpace(localAppData) != "" {
+		return filepath.Join(localAppData, "wecom-mcp-v2", "config", "zoop_wecom_zhycit.local.json")
+	}
+	if strings.TrimSpace(xdgConfigHome) != "" && filepath.IsAbs(xdgConfigHome) {
+		return filepath.Join(xdgConfigHome, "wecom-mcp-v2", "zoop_wecom_zhycit.local.json")
+	}
+	return filepath.Join(home, ".config", "wecom-mcp-v2", "zoop_wecom_zhycit.local.json")
 }
 
 func atomicSwitchCurrent(prefix, release string) error {

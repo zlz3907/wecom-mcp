@@ -74,6 +74,25 @@ func TestDefaultTRAEConfigPathUsesWindowsAppData(t *testing.T) {
 	}
 }
 
+func TestDefaultServiceConfigPathUsesManagedPerUserLocation(t *testing.T) {
+	windows := defaultServiceConfigPath(
+		`C:\Users\test`,
+		`C:\Users\test\AppData\Local`,
+		"",
+		"windows",
+	)
+	windowsWant := filepath.Join(`C:\Users\test\AppData\Local`, "wecom-mcp-v2", "config", "zoop_wecom_zhycit.local.json")
+	if windows != windowsWant {
+		t.Fatalf("Windows service config path=%q want=%q", windows, windowsWant)
+	}
+
+	posix := defaultServiceConfigPath("/Users/test", "", "/private/config", "darwin")
+	posixWant := filepath.Join("/private/config", "wecom-mcp-v2", "zoop_wecom_zhycit.local.json")
+	if posix != posixWant {
+		t.Fatalf("POSIX service config path=%q want=%q", posix, posixWant)
+	}
+}
+
 func TestAtomicSwitchCurrentReplacesSymlink(t *testing.T) {
 	prefix := t.TempDir()
 	for _, release := range []string{"old", "new"} {
