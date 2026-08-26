@@ -10,6 +10,7 @@ $prefix = Join-Path $root 'prefix'
 $server = $null
 $previousTestMode = $env:WECOM_MCP_INSTALLER_TEST
 $previousTestHome = $env:WECOM_MCP_INSTALLER_TEST_HOME
+$previousTestLocalAppData = $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA
 $previousAppData = $env:APPDATA
 
 function Sha([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
@@ -77,6 +78,7 @@ try {
 
     $env:WECOM_MCP_INSTALLER_TEST = '1'
     $env:WECOM_MCP_INSTALLER_TEST_HOME = Join-Path $root 'user-home'
+    $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA = Join-Path $root 'local-appdata'
     $env:APPDATA = Join-Path $root 'appdata'
     $staleStage = Join-Path $prefix 'releases\.staging-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     New-Item -ItemType Directory -Path $staleStage -Force | Out-Null
@@ -102,9 +104,10 @@ try {
     Assert-Line $trae 'result=passed'
     Assert-Line $trae 'client=trae-work-cn'
     Assert-Line $trae ("config_paths=" + (Join-Path $traeWorkspace '.trae\mcp.json'))
-    $traeBinary = Join-Path $traeWorkspace ".trae\mcp-servers\wecom-mcp-v2\releases\${version}-windows-amd64\bin\wecom-mcp-v2.exe"
-    if (-not (Test-Path -LiteralPath $traeBinary -PathType Leaf)) { throw 'TRAE project-scoped binary is missing' }
-    if (Test-Path -LiteralPath (Join-Path $traeWorkspace '.trae\mcp-servers\wecom-mcp-v2\current')) { throw 'TRAE install created a current path' }
+    $traeBinary = Join-Path $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA "wecom-mcp-v2\clients\trae-work-cn\releases\${version}-windows-amd64\bin\wecom-mcp-v2.exe"
+    if (-not (Test-Path -LiteralPath $traeBinary -PathType Leaf)) { throw 'TRAE Work user-scoped binary is missing' }
+    if (Test-Path -LiteralPath (Join-Path $traeWorkspace '.trae\mcp-servers')) { throw 'TRAE Work installation wrote binaries into the workspace' }
+    if (Test-Path -LiteralPath (Join-Path $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA 'wecom-mcp-v2\clients\trae-work-cn\current')) { throw 'TRAE Work install created a current path' }
 
     $schemaPath = Join-Path $root 'schema.json'
     Set-Content -LiteralPath $schemaPath -Value '{"version":1,"digest":"test","roles":{}}' -NoNewline
@@ -120,15 +123,13 @@ try {
         state_path = $statePath
         api_whitelist = @{ read = @('get_records') }
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $serviceConfig
-    $soloWorkspace = Join-Path $root 'trae-solo-workspace'
-    New-Item -ItemType Directory -Path $soloWorkspace | Out-Null
-    $solo = @(& $installer -Version $version -Client trae-solo-cn -Workspace $soloWorkspace -ReleaseBase $baseUrl)
+    $solo = @(& $installer -Version $version -Client trae-solo-cn -ReleaseBase $baseUrl)
     Assert-Line $solo 'result=passed'
     Assert-Line $solo 'client=trae-solo-cn'
     $soloConfig = Join-Path $env:APPDATA 'TRAE SOLO CN\User\mcp.json'
     Assert-Line $solo ("config_paths=" + $soloConfig)
-    $soloBinary = Join-Path $soloWorkspace ".trae\mcp-servers\wecom-mcp-v2\releases\${version}-windows-amd64\bin\wecom-mcp-v2.exe"
-    if (-not (Test-Path -LiteralPath $soloBinary -PathType Leaf)) { throw 'TRAE SOLO CN workspace-scoped binary is missing' }
+    $soloBinary = Join-Path $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA "wecom-mcp-v2\clients\trae-solo-cn\releases\${version}-windows-amd64\bin\wecom-mcp-v2.exe"
+    if (-not (Test-Path -LiteralPath $soloBinary -PathType Leaf)) { throw 'TRAE SOLO CN user-scoped binary is missing' }
     New-Item -ItemType Directory -Path (Split-Path -Parent $soloConfig) -Force | Out-Null
     $soloConfigure = Join-Path (Split-Path -Parent $soloBinary) 'wecom-mcp-v2-configure.exe'
     $soloRegistration = @(& $soloConfigure -client trae-solo-cn -binary $soloBinary -config $serviceConfig)
@@ -157,6 +158,7 @@ try {
 finally {
     $env:WECOM_MCP_INSTALLER_TEST = $previousTestMode
     $env:WECOM_MCP_INSTALLER_TEST_HOME = $previousTestHome
+    $env:WECOM_MCP_INSTALLER_TEST_LOCALAPPDATA = $previousTestLocalAppData
     $env:APPDATA = $previousAppData
     if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
