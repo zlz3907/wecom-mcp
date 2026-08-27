@@ -45,6 +45,20 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 	if input.OwnerAuthorization != "create_and_persist_default_registry" {
 		return nil, fmt.Errorf("仅接受 Owner 的 SMART_SHEETS_IDS 缺省初始化授权")
 	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	release, err := acquireStateFileLock(instanceLifecycleLockPath(runtime))
+	if err != nil {
+		return nil, fmt.Errorf("获取实例生命周期锁失败")
+	}
+	defer release()
+	if s.store == nil {
+		return nil, fmt.Errorf("实例配置 store 不可用")
+	}
+	runtime, err = s.store.BootstrapCandidate()
+	if err != nil {
+		return nil, fmt.Errorf("锁内重新加载实例配置失败")
+	}
 	if runtime.RegistryDocumentID != "" {
 		return map[string]any{
 			"state": "already_configured", "created": false, "config_updated": false,

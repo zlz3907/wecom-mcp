@@ -1,19 +1,22 @@
 {
-  "version": 4,
-  "base_commit": "e3e4fd2cfb60976d205b120c46eda8ed5e409a58",
-  "scope": "P0 transitive capability-gap closure for Registry recovery before downstream Zoop business creation",
+  "version": 5,
+  "base_commit": "45407ec16077d1c4f5857766906c507a7579f32c",
+  "scope": "Bounded recovery hardening: uncertain sentinels, shared lifecycle lock, protected local identity, exact sheet ownership, and observed Registry field count",
   "digest_algorithm": "sha256 of the listed path=sha256 lines in array order, each LF-terminated",
-  "evidence_digest": "adc0260b9d01dbf56793581ea42cea21257358229aec671a7961287c87c731f0",
+  "evidence_digest": "30274ab3b397351b15a4d8104a1130b6eabb5fad27075cc2268c0aed55f8ff10",
   "artifacts": [
-    {"path": "internal/mcp/instance_initialize.go", "sha256": "b7a0bbbb7d95523e1423a0afe1b6f13894c4a4d1e06f534d2a80e3c1538c0cae"},
-    {"path": "internal/mcp/instance_initialize_test.go", "sha256": "6790de6edd1967c93c88866381b15fd2d07ee8274edfc68b752e0a593adc2e66"}
+    {"path": "internal/mcp/instance_initialize.go", "sha256": "20a35563aba8795a8a4f956aafa63b33ebc73b020fa41ba99eaca24002d1acbf"},
+    {"path": "internal/mcp/instance_initialize_test.go", "sha256": "5d87da2e4357d9298058fb62b6cb9f9c427179edf3f51c042a99888c34d99b02"},
+    {"path": "internal/mcp/registry_bootstrap.go", "sha256": "028b98a74719c6e8f0060c3dc1fec80c2cc09adc01e216e57db23bc6d059bcfb"},
+    {"path": "internal/mcp/server.go", "sha256": "8e97c3ab4f5af40fd01b65e4568ba413874ea67e8e008babb2d5b8094ca730b4"}
   ],
   "reproduction": [
     "go test ./...",
     "go test -race ./...",
     "go vet ./...",
-    "test -z \"$(gofmt -l internal/mcp/instance_initialize.go internal/mcp/instance_initialize_test.go)\"",
-    "git diff --check"
+    "test -z \"$(gofmt -l internal/mcp/instance_initialize.go internal/mcp/instance_initialize_test.go internal/mcp/registry_bootstrap.go internal/mcp/server.go)\"",
+    "git diff --check",
+    "GOOS=windows GOARCH=amd64 go build ./..."
   ],
   "boundaries": {
     "real_enterprise_wecom_writes": false,
@@ -24,6 +27,12 @@
     "formula_api_capability_proven": true,
     "zoop_progress_formula_model_known": false,
     "remote_creation_fail_closed_on_current_catalog": true,
+    "resolving_phase_recreate_allowed": false,
+    "shared_instance_lifecycle_lock": true,
+    "local_initializer_identity_required_for_remote_plan": true,
+    "sheet_cleanup_requires_journal_sheet_id": true,
+    "uncertain_field_write_blind_retry_allowed": false,
+    "registry_field_count_is_observed": true,
     "production_deployed": false,
     "owner_accepted": false
   }

@@ -360,7 +360,7 @@ func TestInstanceInitializeBusinessRecoverySentinelBindsAndVerifiesSameDocument(
 		t.Fatal(err)
 	}
 	input := json.RawMessage(`{"recovery_business_document_id":"business-doc"}`)
-	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, input)
+	result, err := (&Server{initializeLocalUser: func() (string, error) { return "symbolic-admin", nil }}).instanceInitializeStatus(context.Background(), runtime, fake, nil, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +384,7 @@ func TestInstanceInitializeBusinessRecoveryUsesJournalDocumentID(t *testing.T) {
 	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
 		t.Fatal(err)
 	}
-	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	result, err := (&Server{initializeLocalUser: func() (string, error) { return "symbolic-admin", nil }}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,6 +392,73 @@ func TestInstanceInitializeBusinessRecoveryUsesJournalDocumentID(t *testing.T) {
 	observed := output["observed"].(map[string]any)
 	if output["state"] != "recovery_required" || output["next_required_input"] != "" || observed["business_document_resolved"] != true || observed["role_sheet_count"] != 9 {
 		t.Fatalf("journal business document was not verified as the recovery asset: %#v", output)
+	}
+}
+
+func TestInstanceInitializeBusinessResolvingRequiresCandidateAndNeverRecreates(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	fake.activeRows = nil
+	journal := instanceInitializeJournal{
+		Version: instanceInitializeJournalV1, Phase: "business_resolving", AssetKind: "business", OperationID: "sent-request-no-response",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{initializeLocalUser: func() (string, error) { return "symbolic-admin", nil }}
+	withoutCandidate, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output := withoutCandidate.(map[string]any); output["state"] != "recovery_required" || output["preview_id"] != "" || output["next_required_input"] != "recovery_business_document_id" {
+		t.Fatalf("business resolving sentinel was not fail-closed: %#v", output)
+	}
+	before := len(fake.operations)
+	withCandidate, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{"recovery_business_document_id":"business-doc"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output := withCandidate.(map[string]any); output["state"] != "recovery_required" || output["preview_id"] == "" {
+		t.Fatalf("verified resolving candidate did not produce executable recovery: %#v", output)
+	}
+	for _, operation := range fake.operations[before:] {
+		if operation == "create_smartsheet" {
+			t.Fatal("resolving sentinel retried document creation")
+		}
+	}
+}
+
+func TestInstanceInitializeRemotePlanRequiresProtectedLocalIdentity(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	fake.activeRows = nil
+	journal := instanceInitializeJournal{
+		Version: instanceInitializeJournalV1, Phase: "recovery_required", AssetKind: "business", OperationID: "identity-gate",
+		BusinessDocumentID: fake.businessDocumentID, UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{initializeLocalUser: func() (string, error) { return "different-admin", nil }}
+	result, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := result.(map[string]any)
+	if output["state"] != "capability_gap" || output["preview_id"] != "" || !strings.Contains(fmt.Sprint(output["conflicts"]), "initializer_local_identity_unverified") {
+		t.Fatalf("unprotected local identity received a write preview: %#v", output)
+	}
+}
+
+func TestInstanceInitializeReportsActualRegistryFieldCount(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	fake.registryFields = append(fake.registryFields, map[string]any{"field_title": "extra", "field_id": "extra-id", "field_type": "FIELD_TYPE_TEXT"})
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := result.(map[string]any)["observed"].(map[string]any)
+	if observed["registry_field_count"] != len(registryBootstrapFields)+1 {
+		t.Fatalf("registry field count is not the observed count: %#v", observed)
 	}
 }
 
@@ -430,7 +497,8 @@ func TestInstanceInitializeManagementPermissionFailsClosedOnGuessedAuthField(t *
 func TestInstanceInitializeApplyReadyIsIdempotentAndNeverWritesRemote(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
 	configPath := filepath.Join(t.TempDir(), "instance.json")
-	if err := os.WriteFile(configPath, []byte(`{"sentinel":"unchanged"}`), 0600); err != nil {
+	runtimeJSON, _ := json.MarshalIndent(runtime, "", "  ")
+	if err := os.WriteFile(configPath, append(runtimeJSON, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
 	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "ready", UpdatedAt: "2026-08-27T00:00:00Z"}
@@ -499,7 +567,7 @@ func TestInstanceInitializePreviewInvalidatesWhenJournalChanges(t *testing.T) {
 	}
 	previewID := status.(map[string]any)["preview_id"].(string)
 	expiresAt := status.(map[string]any)["expires_at"].(string)
-	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "registry_resolving", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "registry_resolving", AssetKind: "registry", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
 		t.Fatal(err)
 	}
@@ -809,15 +877,16 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 		properties, _ := body["properties"].(map[string]any)
 		name, _ := properties["title"].(string)
 		defaultFieldID := f.nextID("default-field")
+		createdSheetID := f.nextID("sheet")
 		document.sheets = append(document.sheets, &initializeLifecycleSheet{
-			id: f.nextID("sheet"), name: name,
+			id: createdSheetID, name: name,
 			fields:  []any{map[string]any{"field_id": defaultFieldID, "field_title": "默认主字段", "field_type": "FIELD_TYPE_TEXT"}},
 			records: []any{map[string]any{"record_id": f.nextID("empty-record"), "values": map[string]any{defaultFieldID: []any{}}}},
 		})
 		if f.shouldFail(operation) {
 			return nil, fmt.Errorf("injected uncertain add_sheet")
 		}
-		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "sheet_id": createdSheetID}}, nil
 	case "get_fields":
 		sheet, err := f.sheet(documentID, sheetID)
 		if err != nil {
@@ -934,7 +1003,10 @@ func initializeLifecycleFixture(t *testing.T) (config.Config, zoopschema.Catalog
 		Snapshot: initializeSnapshot{InstanceName: runtime.InstanceName, ConfigDigest: runtime.Digest(), CatalogDigest: digestValue(catalog), CatalogVersion: catalog.Version, CatalogCreationComplete: true, RoleSheetIDs: map[string]string{}, RoleFieldsDigests: map[string]string{}},
 	}
 	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", CatalogDigest: digestValue(catalog), ConfigDigest: runtime.Digest(), UpdatedAt: "2026-08-27T00:00:00Z"}
-	return runtime, catalog, fake, &Server{store: config.NewStore(configPath), initializeCatalog: func() (zoopschema.Catalog, error) { return catalog, nil }}, observation, journal
+	return runtime, catalog, fake, &Server{
+		store: config.NewStore(configPath), initializeCatalog: func() (zoopschema.Catalog, error) { return catalog, nil },
+		initializeLocalUser: func() (string, error) { return "test-admin", nil },
+	}, observation, journal
 }
 
 func publicInitializeStatusAndApply(t *testing.T, server *Server, runtime config.Config, fake wecomRequester, input map[string]string) (map[string]any, any, error) {
@@ -1041,6 +1113,19 @@ func TestRemoteInitializerRecoversPartialAssetsWithoutDuplicateCreate(t *testing
 			if fake.createCount != expectedCreates {
 				t.Fatalf("recovery created wrong number of documents: failure=%s before=%d after=%d", failure, createdBeforeRecovery, fake.createCount)
 			}
+			if failure == "add_sheet" {
+				preservedUnownedTemplate := false
+				for _, document := range fake.documents {
+					for _, sheet := range document.sheets {
+						if strings.HasPrefix(sheet.name, "Z-S02｜") && len(sheet.records) == 1 && len(sheet.fields) > 0 && sheet.fields[0].(map[string]any)["field_title"] == "默认主字段" {
+							preservedUnownedTemplate = true
+						}
+					}
+				}
+				if !preservedUnownedTemplate {
+					t.Fatal("uncertain add_sheet response was incorrectly treated as owned and cleaned")
+				}
+			}
 		})
 	}
 }
@@ -1125,10 +1210,10 @@ func TestInstanceInitializeRecoveryCandidateWithoutJournalDocIDRemainsUnowned(t 
 		t.Fatal(err)
 	}
 	registryID := initializeCreatedDocumentID(registryResponse)
-	if _, err := reconcileInitializeRegistry(context.Background(), fake, registryID, true); err != nil {
+	bootstrapJournal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "registry_identity_known", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if _, err := reconcileInitializeRegistry(context.Background(), fake, registryID, true, &bootstrapJournal, instanceInitializeJournalPath(runtime)); err != nil {
 		t.Fatal(err)
 	}
-	runtime.RegistryDocumentID = registryID
 	businessResponse, err := fake.Request(context.Background(), "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "Zoop｜test-registry"})
 	if err != nil {
 		t.Fatal(err)

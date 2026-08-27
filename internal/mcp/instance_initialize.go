@@ -24,6 +24,7 @@ var initializeIdentifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,256}$`)
 var initializeJournalPhases = map[string]struct{}{
 	"registry_resolving": {}, "registry_identity_known": {}, "registry_schema_verified": {},
 	"business_resolving": {}, "business_identity_known": {}, "zoop_sheets_reconciled": {}, "registry_row_verified": {},
+	"business_sheet_resolving": {}, "business_sheet_identity_known": {}, "fields_resolving": {}, "fields_verified": {},
 	"schema_staged": {}, "candidate_smoke_verified": {}, "config_committed": {}, "final_smoke_verified": {}, "ready": {}, "recovery_required": {},
 	"conflict": {}, "environment_unavailable": {},
 }
@@ -41,19 +42,24 @@ type initializePreview struct {
 }
 
 type instanceInitializeJournal struct {
-	Version            string `json:"version"`
-	Phase              string `json:"phase"`
-	AssetKind          string `json:"asset_kind,omitempty"`
-	OperationID        string `json:"operation_id,omitempty"`
-	RegistryDocumentID string `json:"registry_document_id,omitempty"`
-	BusinessDocumentID string `json:"business_document_id,omitempty"`
-	RegistryOwned      bool   `json:"registry_owned_by_create,omitempty"`
-	BusinessOwned      bool   `json:"business_owned_by_create,omitempty"`
-	PreviewID          string `json:"preview_id,omitempty"`
-	CatalogDigest      string `json:"catalog_digest,omitempty"`
-	ConfigDigest       string `json:"config_digest,omitempty"`
-	LastErrorCode      string `json:"last_error_code,omitempty"`
-	UpdatedAt          string `json:"updated_at"`
+	Version            string            `json:"version"`
+	Phase              string            `json:"phase"`
+	AssetKind          string            `json:"asset_kind,omitempty"`
+	OperationID        string            `json:"operation_id,omitempty"`
+	RegistryDocumentID string            `json:"registry_document_id,omitempty"`
+	BusinessDocumentID string            `json:"business_document_id,omitempty"`
+	RegistryOwned      bool              `json:"registry_owned_by_create,omitempty"`
+	BusinessOwned      bool              `json:"business_owned_by_create,omitempty"`
+	OwnedRoleSheetIDs  map[string]string `json:"owned_role_sheet_ids,omitempty"`
+	PendingSheetRole   string            `json:"pending_sheet_role,omitempty"`
+	PendingSheetOp     string            `json:"pending_sheet_operation_id,omitempty"`
+	PendingFieldRole   string            `json:"pending_field_role,omitempty"`
+	PendingFieldTitles []string          `json:"pending_field_titles,omitempty"`
+	PreviewID          string            `json:"preview_id,omitempty"`
+	CatalogDigest      string            `json:"catalog_digest,omitempty"`
+	ConfigDigest       string            `json:"config_digest,omitempty"`
+	LastErrorCode      string            `json:"last_error_code,omitempty"`
+	UpdatedAt          string            `json:"updated_at"`
 }
 
 type initializeStatusInput struct {
@@ -77,6 +83,7 @@ type initializeSnapshot struct {
 	RegistryIdentityDigest   string            `json:"registry_identity_digest"`
 	RegistryAuthDigest       string            `json:"registry_auth_digest"`
 	RegistrySheetID          string            `json:"registry_sheet_id"`
+	RegistryFieldCount       int               `json:"registry_field_count"`
 	RegistryFieldsDigest     string            `json:"registry_fields_digest"`
 	RegistryRecordsComplete  bool              `json:"registry_records_complete"`
 	ActiveRegistryCount      int               `json:"active_registry_count"`
@@ -113,6 +120,33 @@ func (s *Server) currentInitializeCatalog() (zoopschema.Catalog, error) {
 	return zoopschema.Current()
 }
 
+func (s *Server) verifyInitializeLocalIdentity(runtime config.Config) error {
+	resolver := currentSchemaAdminUser
+	if s != nil && s.initializeLocalUser != nil {
+		resolver = s.initializeLocalUser
+	}
+	if runtime.SchemaAdminUser == "" {
+		return fmt.Errorf("实例未配置受保护 initializer 本机身份")
+	}
+	current, err := resolver()
+	if err != nil || current != runtime.SchemaAdminUser {
+		return fmt.Errorf("当前本机身份不是已登记的 initializer 管理员")
+	}
+	return nil
+}
+
+func (s *Server) enforceInitializeLocalIdentity(runtime config.Config, observation initializeObservation) initializeObservation {
+	if !hasRemoteInitializePlan(observation.PlannedOperations) {
+		return observation
+	}
+	if err := s.verifyInitializeLocalIdentity(runtime); err != nil {
+		observation.State = "capability_gap"
+		observation.Conflicts = append(observation.Conflicts, "initializer_local_identity_unverified")
+		return finalizeInitializeObservation(observation)
+	}
+	return observation
+}
+
 func executableInitializeRecovery(observation initializeObservation) bool {
 	if observation.State != "recovery_required" || !observation.SnapshotComplete || len(observation.Conflicts) != 0 {
 		return false
@@ -127,6 +161,21 @@ func executableInitializeRecovery(observation initializeObservation) bool {
 		return observation.Snapshot.RegistryDocumentID != "" && observation.Snapshot.RegistryIdentityDigest != "" && observation.Snapshot.RegistrySheetID != ""
 	case "business":
 		return observation.Snapshot.BusinessDocumentID != "" && observation.Snapshot.BusinessIdentityDigest != ""
+	default:
+		return false
+	}
+}
+
+func registryInitializeRecoveryPending(journal instanceInitializeJournal) bool {
+	return (journal.Phase == "registry_resolving" || journal.Phase == "fields_resolving" || journal.Phase == "fields_verified" || journal.Phase == "recovery_required") && journal.AssetKind == "registry"
+}
+
+func businessInitializeRecoveryPending(journal instanceInitializeJournal) bool {
+	switch journal.Phase {
+	case "business_resolving", "business_identity_known", "business_sheet_resolving", "business_sheet_identity_known", "fields_resolving", "fields_verified", "zoop_sheets_reconciled":
+		return journal.AssetKind == "business"
+	case "recovery_required":
+		return journal.AssetKind == "business"
 	default:
 		return false
 	}
@@ -167,6 +216,7 @@ func (s *Server) instanceInitializeStatus(ctx context.Context, runtime config.Co
 	}
 	catalog, catalogErr := s.currentInitializeCatalog()
 	observation := observeInstanceInitializationWithCatalog(ctx, runtime, client, clientErr, input, catalog, catalogErr)
+	observation = s.enforceInitializeLocalIdentity(runtime, observation)
 	snapshotDigest := initializeObservationDigest(observation)
 	expiresAt := time.Now().UTC().Add(instanceInitializePreviewTTL)
 	expiresAtText := ""
@@ -249,6 +299,7 @@ func (s *Server) instanceInitializeApply(ctx context.Context, runtime config.Con
 		RecoveryRegistryDocumentID: input.RecoveryRegistryDocumentID,
 		RecoveryBusinessDocumentID: input.RecoveryBusinessDocumentID,
 	}, catalog, catalogErr)
+	observation = s.enforceInitializeLocalIdentity(runtime, observation)
 	if initializeObservationDigest(observation) != preview.SnapshotDigest {
 		return nil, fmt.Errorf("实例初始化预览已失效，请重新执行只读 status")
 	}
@@ -260,11 +311,36 @@ func (s *Server) instanceInitializeApply(ctx context.Context, runtime config.Con
 	}
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	release, err := acquireStateFileLock(runtime.StatePath + ".instance-initialize")
+	release, err := acquireStateFileLock(instanceLifecycleLockPath(runtime))
 	if err != nil {
 		return nil, fmt.Errorf("获取实例初始化锁失败")
 	}
 	defer release()
+
+	if s.store == nil {
+		return nil, fmt.Errorf("实例配置 store 不可用")
+	}
+	lockedRuntime, err := s.store.BootstrapCandidate()
+	if err != nil {
+		return nil, fmt.Errorf("锁内重新加载实例配置失败")
+	}
+	lockedCatalog, lockedCatalogErr := s.currentInitializeCatalog()
+	lockedObservation := observeInstanceInitializationWithCatalog(ctx, lockedRuntime, client, clientErr, initializeStatusInput{
+		RegistryDocumentID:         input.RegistryDocumentID,
+		RecoveryRegistryDocumentID: input.RecoveryRegistryDocumentID,
+		RecoveryBusinessDocumentID: input.RecoveryBusinessDocumentID,
+	}, lockedCatalog, lockedCatalogErr)
+	lockedObservation = s.enforceInitializeLocalIdentity(lockedRuntime, lockedObservation)
+	if initializeObservationDigest(lockedObservation) != preview.SnapshotDigest {
+		return nil, fmt.Errorf("实例初始化锁内快照已变化，请重新执行只读 status")
+	}
+	if lockedObservation.State != "ready" && lockedObservation.State != "changes_planned" && !executableInitializeRecovery(lockedObservation) {
+		return nil, fmt.Errorf("实例初始化锁内状态 %s 不可执行", lockedObservation.State)
+	}
+	if len(lockedObservation.Conflicts) != 0 || !lockedObservation.SnapshotComplete {
+		return nil, fmt.Errorf("实例初始化锁内观察不完整或存在冲突，拒绝写入")
+	}
+	runtime, catalog, catalogErr, observation = lockedRuntime, lockedCatalog, lockedCatalogErr, lockedObservation
 
 	if catalogErr != nil {
 		return nil, fmt.Errorf("实例初始化 catalog 无效")
@@ -447,7 +523,7 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 		registryCreated = true
 	}
 	registryOwnedByOperation := registryCreated || observation.Snapshot.RegistryOwnedByJournal && observation.Snapshot.RegistryDocumentID == registryID
-	registrySheetID, err := reconcileInitializeRegistry(ctx, client, registryID, registryOwnedByOperation)
+	registrySheetID, err := reconcileInitializeRegistry(ctx, client, registryID, registryOwnedByOperation, &journal, instanceInitializeJournalPath(runtime))
 	if err != nil {
 		return nil, persistRecovery("registry", "registry_reconcile_failed", err)
 	}
@@ -497,7 +573,7 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 		businessCreated = true
 	}
 	businessOwnedByOperation := businessCreated || observation.Snapshot.BusinessOwnedByJournal && observation.Snapshot.BusinessDocumentID == businessID
-	roleSheetIDs, err := reconcileInitializeBusiness(ctx, client, businessID, businessCreated, businessOwnedByOperation, catalog)
+	roleSheetIDs, err := reconcileInitializeBusiness(ctx, client, businessID, businessCreated, businessOwnedByOperation, catalog, &journal, instanceInitializeJournalPath(runtime))
 	if err != nil {
 		journal.BusinessDocumentID = businessID
 		return nil, persistRecovery("business", "business_reconcile_failed", err)
@@ -542,7 +618,7 @@ func initializeCreatedDocumentID(response map[string]any) string {
 	return documentID
 }
 
-func reconcileInitializeRegistry(ctx context.Context, client wecomRequester, documentID string, ownedByOperation bool) (string, error) {
+func reconcileInitializeRegistry(ctx context.Context, client wecomRequester, documentID string, ownedByOperation bool, journal *instanceInitializeJournal, journalPath string) (string, error) {
 	response, err := client.Request(ctx, "get_sheet", map[string]any{"docid": documentID})
 	if err != nil || apiError(response) != nil {
 		return "", fmt.Errorf("Registry 子表回读失败")
@@ -575,14 +651,32 @@ func reconcileInitializeRegistry(ctx context.Context, client wecomRequester, doc
 		missing = append(missing, map[string]any{"field_title": title, "field_type": "FIELD_TYPE_TEXT"})
 	}
 	if len(missing) > 0 {
+		if journal.PendingFieldRole == "REGISTRY" {
+			return "", fmt.Errorf("Registry 字段创建结果不确定，回读仍有缺失；禁止盲目重试")
+		}
+		journal.Phase, journal.AssetKind, journal.PendingFieldRole = "fields_resolving", "registry", "REGISTRY"
+		journal.PendingFieldTitles = initializeWireFieldTitles(missing)
+		journal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := saveInstanceInitializeJournal(journalPath, *journal); err != nil {
+			return "", err
+		}
 		result, err := client.Request(ctx, "add_fields", map[string]any{"docid": documentID, "sheet_id": sheets[0].ID, "fields": missing})
 		if err != nil || apiError(result) != nil {
-			return "", fmt.Errorf("Registry 缺失字段补齐失败")
+			journal.Phase, journal.LastErrorCode, journal.UpdatedAt = "recovery_required", "field_create_result_uncertain", time.Now().UTC().Format(time.RFC3339Nano)
+			_ = saveInstanceInitializeJournal(journalPath, *journal)
+			return "", fmt.Errorf("Registry 缺失字段创建结果不确定")
 		}
 	}
 	verified, err := registryFieldDefinitions(ctx, client, documentID, sheets[0].ID)
 	if err != nil || len(verified) < len(registryBootstrapFields) {
 		return "", fmt.Errorf("Registry 字段回读未通过")
+	}
+	if journal.PendingFieldRole == "REGISTRY" {
+		journal.PendingFieldRole, journal.PendingFieldTitles = "", nil
+		journal.Phase, journal.UpdatedAt = "fields_verified", time.Now().UTC().Format(time.RFC3339Nano)
+		if err := saveInstanceInitializeJournal(journalPath, *journal); err != nil {
+			return "", err
+		}
 	}
 	return sheets[0].ID, nil
 }
@@ -601,7 +695,7 @@ func initializeActiveBusiness(records []any, fields map[string]config.Field, reg
 	return businessID, count
 }
 
-func reconcileInitializeBusiness(ctx context.Context, client wecomRequester, documentID string, documentCreated, ownedByOperation bool, catalog zoopschema.Catalog) (map[string]string, error) {
+func reconcileInitializeBusiness(ctx context.Context, client wecomRequester, documentID string, documentCreated, ownedByOperation bool, catalog zoopschema.Catalog, journal *instanceInitializeJournal, journalPath string) (map[string]string, error) {
 	response, err := client.Request(ctx, "get_sheet", map[string]any{"docid": documentID})
 	if err != nil || apiError(response) != nil {
 		return nil, fmt.Errorf("业务文档子表回读失败")
@@ -609,6 +703,12 @@ func reconcileInitializeBusiness(ctx context.Context, client wecomRequester, doc
 	sheets := smartSheetIdentities(response)
 	roleSheetIDs := map[string]string{}
 	ownedSheets := map[string]bool{}
+	if journal.OwnedRoleSheetIDs == nil {
+		journal.OwnedRoleSheetIDs = map[string]string{}
+	}
+	for _, sheetID := range journal.OwnedRoleSheetIDs {
+		ownedSheets[sheetID] = true
+	}
 	if documentCreated {
 		if len(sheets) != 1 {
 			return nil, fmt.Errorf("本次新建业务文档的默认子表不唯一")
@@ -617,48 +717,13 @@ func reconcileInitializeBusiness(ctx context.Context, client wecomRequester, doc
 			return nil, err
 		}
 		ownedSheets[sheets[0].ID] = true
-	}
-	if ownedByOperation && !documentCreated {
-		matchedIDs := map[string]bool{}
-		for _, role := range catalog.Roles {
-			for _, sheet := range sheets {
-				if strings.HasPrefix(sheet.Name, role.Role+"｜") {
-					matchedIDs[sheet.ID] = true
-					ownedSheets[sheet.ID] = true
-				}
-			}
-		}
-		zS01Present := false
-		for _, sheet := range sheets {
-			if strings.HasPrefix(sheet.Name, catalog.Roles[0].Role+"｜") {
-				zS01Present = true
-			}
-		}
-		if !zS01Present {
-			unclaimed := []sheetIdentity{}
-			for _, sheet := range sheets {
-				if !matchedIDs[sheet.ID] {
-					unclaimed = append(unclaimed, sheet)
-				}
-			}
-			if len(unclaimed) != 1 {
-				return nil, fmt.Errorf("恢复业务文档的默认 Z-S01 候选不唯一")
-			}
-			expected := initializeRoleFieldTypes(catalog.Roles[0])
-			if err := normalizeOwnedInitializeSheetContract(ctx, client, documentID, unclaimed[0].ID, catalog.Roles[0].PrimaryFieldTitle, expected); err != nil {
-				return nil, fmt.Errorf("恢复 Z-S01 默认模板异常: %w", err)
-			}
-			if err := renameInitializeSheetAndVerify(ctx, client, documentID, unclaimed[0].ID, catalog.Roles[0].SheetTitle); err != nil {
-				return nil, err
-			}
-			ownedSheets[unclaimed[0].ID] = true
-		}
-		for _, sheet := range sheets {
-			if !matchedIDs[sheet.ID] && !(ownedSheets[sheet.ID] && !zS01Present) {
-				return nil, fmt.Errorf("恢复业务文档存在来源不明子表")
-			}
+		journal.OwnedRoleSheetIDs[catalog.Roles[0].Role] = sheets[0].ID
+		journal.Phase, journal.AssetKind, journal.UpdatedAt = "business_sheet_identity_known", "business", time.Now().UTC().Format(time.RFC3339Nano)
+		if err := saveInstanceInitializeJournal(journalPath, *journal); err != nil {
+			return nil, fmt.Errorf("默认子表 ID journal 写入失败；禁止推断所有权")
 		}
 	}
+	_ = ownedByOperation // Document ownership never implies sheet ownership.
 	for _, role := range catalog.Roles {
 		response, err = client.Request(ctx, "get_sheet", map[string]any{"docid": documentID})
 		if err != nil || apiError(response) != nil {
@@ -674,16 +739,32 @@ func reconcileInitializeBusiness(ctx context.Context, client wecomRequester, doc
 			return nil, fmt.Errorf("%s 子表不唯一", role.Role)
 		}
 		if len(matches) == 0 {
+			journal.Phase, journal.AssetKind = "business_sheet_resolving", "business"
+			journal.PendingSheetRole = role.Role
+			journal.PendingSheetOp = digestValue(map[string]string{"document": documentID, "role": role.Role})
+			journal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			if err := saveInstanceInitializeJournal(journalPath, *journal); err != nil {
+				return nil, err
+			}
 			result, err := client.Request(ctx, "add_sheet", map[string]any{"docid": documentID, "properties": map[string]any{"title": role.SheetTitle}})
-			if err != nil || apiError(result) != nil {
-				return nil, fmt.Errorf("新增 %s 子表失败", role.Role)
+			createdSheetID := initializeCreatedSheetID(result)
+			if err != nil || apiError(result) != nil || createdSheetID == "" {
+				journal.Phase, journal.LastErrorCode, journal.UpdatedAt = "recovery_required", "sheet_create_result_uncertain", time.Now().UTC().Format(time.RFC3339Nano)
+				_ = saveInstanceInitializeJournal(journalPath, *journal)
+				return nil, fmt.Errorf("新增 %s 子表结果不确定", role.Role)
+			}
+			journal.OwnedRoleSheetIDs[role.Role] = createdSheetID
+			journal.PendingSheetRole, journal.PendingSheetOp = "", ""
+			journal.Phase, journal.UpdatedAt = "business_sheet_identity_known", time.Now().UTC().Format(time.RFC3339Nano)
+			if err := saveInstanceInitializeJournal(journalPath, *journal); err != nil {
+				return nil, fmt.Errorf("子表已创建但 ID journal 写入失败；禁止重试创建")
 			}
 			response, err = client.Request(ctx, "get_sheet", map[string]any{"docid": documentID})
 			if err != nil || apiError(response) != nil {
 				return nil, fmt.Errorf("新增 %s 后回读失败", role.Role)
 			}
 			for _, sheet := range smartSheetIdentities(response) {
-				if sheet.Name == role.SheetTitle {
+				if sheet.ID == createdSheetID && sheet.Name == role.SheetTitle {
 					matches = append(matches, sheet)
 				}
 			}
@@ -691,6 +772,13 @@ func reconcileInitializeBusiness(ctx context.Context, client wecomRequester, doc
 				return nil, fmt.Errorf("新增 %s 后未找到唯一子表", role.Role)
 			}
 			ownedSheets[matches[0].ID] = true
+		}
+		if journal.PendingSheetRole == role.Role && len(matches) == 1 {
+			journal.PendingSheetRole, journal.PendingSheetOp = "", ""
+			journal.Phase, journal.UpdatedAt = "business_sheet_identity_known", time.Now().UTC().Format(time.RFC3339Nano)
+			if err := saveInstanceInitializeJournal(journalPath, *journal); err != nil {
+				return nil, err
+			}
 		}
 		roleSheetIDs[role.Role] = matches[0].ID
 	}
@@ -704,16 +792,27 @@ func reconcileInitializeBusiness(ctx context.Context, client wecomRequester, doc
 	// Phase one creates tenant-independent fields. References are deferred until
 	// every target sheet and primary field ID has been read back.
 	for _, role := range catalog.Roles {
-		if err := addMissingInitializeFields(ctx, client, documentID, roleSheetIDs[role.Role], role, roleSheetIDs, false); err != nil {
+		if err := addMissingInitializeFields(ctx, client, documentID, roleSheetIDs[role.Role], role, roleSheetIDs, false, journal, journalPath); err != nil {
 			return nil, err
 		}
 	}
 	for _, role := range catalog.Roles {
-		if err := addMissingInitializeFields(ctx, client, documentID, roleSheetIDs[role.Role], role, roleSheetIDs, true); err != nil {
+		if err := addMissingInitializeFields(ctx, client, documentID, roleSheetIDs[role.Role], role, roleSheetIDs, true, journal, journalPath); err != nil {
 			return nil, err
 		}
 	}
 	return roleSheetIDs, nil
+}
+
+func initializeCreatedSheetID(response map[string]any) string {
+	result, _ := response["result"].(map[string]any)
+	for _, key := range []string{"sheet_id", "sub_id"} {
+		id, _ := result[key].(string)
+		if initializeIdentifier.MatchString(id) {
+			return id
+		}
+	}
+	return ""
 }
 
 func renameInitializeSheetAndVerify(ctx context.Context, client wecomRequester, documentID, sheetID, title string) error {
@@ -855,7 +954,7 @@ func initializeRecordValuesEmpty(values map[string]any) bool {
 	return true
 }
 
-func addMissingInitializeFields(ctx context.Context, client wecomRequester, documentID, sheetID string, role zoopschema.Role, roleSheetIDs map[string]string, references bool) error {
+func addMissingInitializeFields(ctx context.Context, client wecomRequester, documentID, sheetID string, role zoopschema.Role, roleSheetIDs map[string]string, references bool, journal *instanceInitializeJournal, journalPath string) error {
 	response, err := client.Request(ctx, "get_fields", map[string]any{"docid": documentID, "sheet_id": sheetID})
 	if err != nil || apiError(response) != nil {
 		return fmt.Errorf("%s 字段回读失败", role.Role)
@@ -889,12 +988,55 @@ func addMissingInitializeFields(ctx context.Context, client wecomRequester, docu
 		missing = append(missing, wire)
 	}
 	if len(missing) > 0 {
+		if journal.PendingFieldRole == role.Role {
+			return fmt.Errorf("%s 字段创建结果不确定，回读仍有缺失；禁止盲目重试", role.Role)
+		}
+		journal.Phase, journal.AssetKind, journal.PendingFieldRole = "fields_resolving", "business", role.Role
+		journal.PendingFieldTitles = initializeWireFieldTitles(missing)
+		journal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := saveInstanceInitializeJournal(journalPath, *journal); err != nil {
+			return err
+		}
 		result, err := client.Request(ctx, "add_fields", map[string]any{"docid": documentID, "sheet_id": sheetID, "fields": missing})
 		if err != nil || apiError(result) != nil {
-			return fmt.Errorf("%s 缺失字段新增失败", role.Role)
+			journal.Phase, journal.LastErrorCode, journal.UpdatedAt = "recovery_required", "field_create_result_uncertain", time.Now().UTC().Format(time.RFC3339Nano)
+			_ = saveInstanceInitializeJournal(journalPath, *journal)
+			return fmt.Errorf("%s 缺失字段创建结果不确定", role.Role)
+		}
+		readback, err := client.Request(ctx, "get_fields", map[string]any{"docid": documentID, "sheet_id": sheetID})
+		if err != nil || apiError(readback) != nil {
+			return fmt.Errorf("%s 字段创建后回读失败；保留不确定哨兵", role.Role)
+		}
+		verified, err := mirrorFieldsFromAny(resultSlice(readback, "fields"))
+		if err != nil {
+			return err
+		}
+		for _, title := range journal.PendingFieldTitles {
+			if verified[title].ID == "" {
+				return fmt.Errorf("%s 字段 %s 创建后回读未收敛；保留不确定哨兵", role.Role, title)
+			}
+		}
+	}
+	if journal.PendingFieldRole == role.Role {
+		journal.PendingFieldRole, journal.PendingFieldTitles = "", nil
+		journal.Phase, journal.UpdatedAt = "fields_verified", time.Now().UTC().Format(time.RFC3339Nano)
+		if err := saveInstanceInitializeJournal(journalPath, *journal); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func initializeWireFieldTitles(fields []any) []string {
+	titles := make([]string, 0, len(fields))
+	for _, raw := range fields {
+		field, _ := raw.(map[string]any)
+		if title, _ := field["field_title"].(string); title != "" {
+			titles = append(titles, title)
+		}
+	}
+	sort.Strings(titles)
+	return titles
 }
 
 func initializeFieldWire(ctx context.Context, client wecomRequester, documentID string, field zoopschema.Field, roleSheetIDs map[string]string) (map[string]any, error) {
@@ -1002,9 +1144,16 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	}
 	if journalExists {
 		observation.JournalPhase = journal.Phase
-		if journal.Phase == "recovery_required" {
+		if registryInitializeRecoveryPending(journal) || businessInitializeRecoveryPending(journal) {
 			observation.State = "recovery_required"
 			observation.RecoveryAssetKind = journal.AssetKind
+			if observation.RecoveryAssetKind == "" {
+				if registryInitializeRecoveryPending(journal) {
+					observation.RecoveryAssetKind = "registry"
+				} else {
+					observation.RecoveryAssetKind = "business"
+				}
+			}
 			observation.RecoveryOperation = journal.OperationID
 		}
 	}
@@ -1020,7 +1169,7 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	if registryDocumentID == "" && legacyExists && legacy.DocumentID != "" {
 		registryDocumentID = legacy.DocumentID
 	}
-	registryRecoveryAllowed := (journalExists && journal.Phase == "recovery_required" && journal.AssetKind == "registry") || (legacyExists && legacy.Phase == "creating" && legacy.DocumentID == "")
+	registryRecoveryAllowed := journalExists && registryInitializeRecoveryPending(journal) || (legacyExists && legacy.Phase == "creating" && legacy.DocumentID == "")
 	if registryRecoveryAllowed && observation.RecoveryAssetKind == "" {
 		observation.RecoveryAssetKind = "registry"
 		observation.RecoveryOperation = "legacy-registry-bootstrap"
@@ -1044,7 +1193,7 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 		}
 	}
 	snapshot.RegistryOwnedByJournal = journalExists && journal.RegistryOwned && journal.RegistryDocumentID != "" && journal.RegistryDocumentID == registryDocumentID
-	businessRecoveryAllowed := journalExists && journal.Phase == "recovery_required" && journal.AssetKind == "business"
+	businessRecoveryAllowed := journalExists && businessInitializeRecoveryPending(journal)
 	businessRecoveryDocumentID := ""
 	if businessRecoveryAllowed {
 		businessRecoveryDocumentID = journal.BusinessDocumentID
@@ -1140,6 +1289,7 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 		return finalizeInitializeObservation(observation)
 	}
 	snapshot.RegistryFieldsDigest = digestValue(fields)
+	snapshot.RegistryFieldCount = len(fields)
 	missingRegistryFields := 0
 	for _, title := range registryBootstrapFields {
 		field, ok := fields[title]
@@ -1152,6 +1302,9 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 		}
 	}
 	if missingRegistryFields > 0 {
+		if journal.PendingFieldRole == "REGISTRY" {
+			observation.Conflicts = append(observation.Conflicts, "registry_field_create_result_uncertain_unresolved")
+		}
 		observation.PlannedOperations = append(observation.PlannedOperations, "add_missing_registry_fields")
 		observation.SnapshotComplete = true
 		// Until the Registry keys are complete, status cannot prove that a
@@ -1257,6 +1410,10 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 			continue
 		}
 		if len(matches) == 0 {
+			if journal.PendingSheetRole == expected.Role {
+				observation.Conflicts = append(observation.Conflicts, "role_sheet_create_result_uncertain_unresolved:"+expected.Role)
+				continue
+			}
 			observation.PlannedOperations = append(observation.PlannedOperations, "add_role_sheet:"+expected.Role)
 			continue
 		}
@@ -1293,6 +1450,10 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 		for _, field := range expected.Fields {
 			observedType, exists := observedFields[field.Title]
 			if !exists {
+				if journal.PendingFieldRole == expected.Role {
+					observation.Conflicts = append(observation.Conflicts, "role_field_create_result_uncertain_unresolved:"+expected.Role+":"+field.Title)
+					continue
+				}
 				operation := "add_role_field:" + expected.Role + ":" + field.Title
 				observation.PlannedOperations = append(observation.PlannedOperations, operation)
 				if field.UnsupportedForCreate {
@@ -1389,7 +1550,7 @@ func publicInitializeObservation(observation initializeObservation) map[string]a
 	return map[string]any{
 		"registry_document_resolved": observation.Snapshot.RegistryDocumentID != "",
 		"registry_sheet_resolved":    observation.Snapshot.RegistrySheetID != "",
-		"registry_field_count":       len(registryBootstrapFields),
+		"registry_field_count":       observation.Snapshot.RegistryFieldCount,
 		"registry_records_complete":  observation.Snapshot.RegistryRecordsComplete,
 		"active_registry_row_count":  observation.Snapshot.ActiveRegistryCount,
 		"business_document_resolved": observation.Snapshot.BusinessDocumentID != "",
@@ -1515,7 +1676,7 @@ func initializeInteger(value any) (int, bool) {
 
 func hasRemoteInitializePlan(operations []string) bool {
 	for _, operation := range operations {
-		if operation != "generate_schema" && operation != "commit_local_config" && operation != "z_s01_read_only_smoke" && !strings.HasPrefix(operation, "refresh_local_schema_") {
+		if !strings.HasPrefix(operation, "bind_recovery_") && operation != "verify_recovered_business_document" && operation != "generate_schema" && operation != "commit_local_config" && operation != "z_s01_read_only_smoke" && !strings.HasPrefix(operation, "refresh_local_schema_") {
 			return true
 		}
 	}
@@ -1689,6 +1850,10 @@ func instanceInitializeJournalPath(runtime config.Config) string {
 	return runtime.StatePath + ".instance-initialize.json"
 }
 
+func instanceLifecycleLockPath(runtime config.Config) string {
+	return runtime.StatePath + ".instance-lifecycle"
+}
+
 func loadInstanceInitializeJournal(path string) (instanceInitializeJournal, string, bool, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -1735,6 +1900,14 @@ func validateInstanceInitializeJournal(journal instanceInitializeJournal) error 
 	}
 	if journal.Phase == "recovery_required" && journal.AssetKind != "registry" && journal.AssetKind != "business" {
 		return fmt.Errorf("实例初始化 recovery journal 缺少受控 asset_kind")
+	}
+	if journal.Phase == "registry_resolving" && journal.AssetKind != "registry" || journal.Phase == "business_resolving" && journal.AssetKind != "business" {
+		return fmt.Errorf("实例初始化 resolving journal 缺少受控 asset_kind")
+	}
+	for role, sheetID := range journal.OwnedRoleSheetIDs {
+		if !strings.HasPrefix(role, "Z-S") || !initializeIdentifier.MatchString(sheetID) {
+			return fmt.Errorf("实例初始化 journal owned sheet 无效")
+		}
 	}
 	return nil
 }
