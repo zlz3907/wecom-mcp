@@ -618,6 +618,11 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 		return nil, fmt.Errorf("旧版未绑定 operator 的 pending journal 禁止继续远程写入")
 	}
 	journal.OperatorDigest = operatorDigest
+	if journal.PendingAdminOp != "" {
+		if err := ensureInitializeOperatorAdmin(ctx, client, journal.PendingAdminDocID, runtime.WecomOperatorUserID, journal.PendingAdminAssetKind, &journal, instanceInitializeJournalPath(runtime)); err != nil {
+			return nil, err
+		}
+	}
 	persistRecovery := func(assetKind, errorCode string, cause error) error {
 		journal.Phase, journal.AssetKind, journal.LastErrorCode = "recovery_required", assetKind, errorCode
 		journal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
