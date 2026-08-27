@@ -104,6 +104,67 @@ func TestInitializerUncertainAdminRepairNeverBlindlyRetries(t *testing.T) {
 	}
 }
 
+func TestInitializerAdminPendingCannotDriftToAnotherDocument(t *testing.T) {
+	fake := &operatorBindingFake{auth: 1, grantErr: fmt.Errorf("uncertain")}
+	path := filepath.Join(t.TempDir(), "journal.json")
+	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", OperatorDigest: digestValue("operator-byte-exact"), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := ensureInitializeOperatorAdmin(context.Background(), fake, "document-a", "operator-byte-exact", "business", &journal, path); err == nil {
+		t.Fatal("uncertain grant was accepted")
+	}
+	reads, grants := fake.authReads, fake.grantCalls
+	fake.auth = 7
+	if err := ensureInitializeOperatorAdmin(context.Background(), fake, "document-b", "operator-byte-exact", "registry", &journal, path); err == nil {
+		t.Fatal("cross-document pending drift was accepted")
+	}
+	if fake.authReads != reads || fake.grantCalls != grants {
+		t.Fatalf("drift touched remote state: reads=%d grants=%d", fake.authReads-reads, fake.grantCalls-grants)
+	}
+}
+
+func TestInitializerAdminPendingClearsOnlyAfterExactTargetReadback(t *testing.T) {
+	fake := &operatorBindingFake{auth: 1, grantErr: fmt.Errorf("uncertain")}
+	path := filepath.Join(t.TempDir(), "journal.json")
+	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", OperatorDigest: digestValue("operator-byte-exact"), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	_ = ensureInitializeOperatorAdmin(context.Background(), fake, "document-a", "operator-byte-exact", "business", &journal, path)
+	fake.auth = 7
+	fake.grantErr = nil
+	if err := ensureInitializeOperatorAdmin(context.Background(), fake, "document-a", "operator-byte-exact", "business", &journal, path); err != nil {
+		t.Fatal(err)
+	}
+	if journal.PendingAdminOp != "" || fake.grantCalls != 1 {
+		t.Fatalf("exact recovery did not clear once: journal=%#v grants=%d", journal, fake.grantCalls)
+	}
+}
+
+func TestOperatorAdminRequiresUniqueIdentityEntry(t *testing.T) {
+	auth := map[string]any{"doc_member_list": []any{
+		map[string]any{"type": float64(1), "userid": "operator-byte-exact", "auth": float64(1)},
+		map[string]any{"type": float64(1), "userid": "operator-byte-exact", "auth": float64(7)},
+	}}
+	if initializeDocumentMemberHasAuth(auth, "operator-byte-exact", 7) {
+		t.Fatal("duplicate operator identities were accepted")
+	}
+}
+
+func TestOldUnboundResolvingJournalsAreUncertain(t *testing.T) {
+	for _, journal := range []instanceInitializeJournal{
+		{Phase: "registry_resolving", AssetKind: "registry"},
+		{Phase: "business_resolving", AssetKind: "business"},
+		{Phase: "schema_staged", PendingSheetOp: "pending"},
+	} {
+		if !initializeJournalHasUncertainWrites(journal) {
+			t.Fatalf("old unbound journal was treated as safe: %#v", journal)
+		}
+	}
+}
+
+func TestInitializeApplyResultIncludesOperatorAudit(t *testing.T) {
+	result := initializeApplyResult("ready", initializeObservation{Snapshot: initializeSnapshot{InstanceName: "test"}}, true, true, "", "operator-byte-exact")
+	if result["business_operator_userid"] != "operator-byte-exact" || result["native_api_actor"] != "application" {
+		t.Fatalf("initializer audit missing: %#v", result)
+	}
+}
+
 func TestInitializerAPIErrorCanResolveByExactAuthReadback(t *testing.T) {
 	fake := &operatorBindingFake{auth: 1, grantErr: fmt.Errorf("transport lost"), grantVisible: true}
 	path := filepath.Join(t.TempDir(), "journal.json")

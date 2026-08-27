@@ -21,6 +21,7 @@ import (
 )
 
 var initializeIdentifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,256}$`)
+var initializeSHA256Digest = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 var initializeJournalPhases = map[string]struct{}{
 	"registry_resolving": {}, "registry_identity_known": {}, "registry_schema_verified": {},
@@ -43,30 +44,33 @@ type initializePreview struct {
 }
 
 type instanceInitializeJournal struct {
-	Version            string            `json:"version"`
-	Phase              string            `json:"phase"`
-	AssetKind          string            `json:"asset_kind,omitempty"`
-	OperationID        string            `json:"operation_id,omitempty"`
-	RegistryDocumentID string            `json:"registry_document_id,omitempty"`
-	BusinessDocumentID string            `json:"business_document_id,omitempty"`
-	RegistryOwned      bool              `json:"registry_owned_by_create,omitempty"`
-	BusinessOwned      bool              `json:"business_owned_by_create,omitempty"`
-	OwnedRoleSheetIDs  map[string]string `json:"owned_role_sheet_ids,omitempty"`
-	PendingSheetRole   string            `json:"pending_sheet_role,omitempty"`
-	PendingSheetOp     string            `json:"pending_sheet_operation_id,omitempty"`
-	PendingFieldRole   string            `json:"pending_field_role,omitempty"`
-	PendingFieldTitles []string          `json:"pending_field_titles,omitempty"`
-	PendingRegistryRow bool              `json:"pending_registry_row,omitempty"`
-	PendingRegistryOp  string            `json:"pending_registry_row_operation_id,omitempty"`
-	PendingRegistryID  string            `json:"pending_registry_record_id,omitempty"`
-	PendingAdminDocID  string            `json:"pending_admin_document_id,omitempty"`
-	PendingAdminOp     string            `json:"pending_admin_operation_id,omitempty"`
-	PreviewID          string            `json:"preview_id,omitempty"`
-	CatalogDigest      string            `json:"catalog_digest,omitempty"`
-	ConfigDigest       string            `json:"config_digest,omitempty"`
-	OperatorDigest     string            `json:"operator_digest,omitempty"`
-	LastErrorCode      string            `json:"last_error_code,omitempty"`
-	UpdatedAt          string            `json:"updated_at"`
+	Version                    string            `json:"version"`
+	Phase                      string            `json:"phase"`
+	AssetKind                  string            `json:"asset_kind,omitempty"`
+	OperationID                string            `json:"operation_id,omitempty"`
+	RegistryDocumentID         string            `json:"registry_document_id,omitempty"`
+	BusinessDocumentID         string            `json:"business_document_id,omitempty"`
+	RegistryOwned              bool              `json:"registry_owned_by_create,omitempty"`
+	BusinessOwned              bool              `json:"business_owned_by_create,omitempty"`
+	OwnedRoleSheetIDs          map[string]string `json:"owned_role_sheet_ids,omitempty"`
+	PendingSheetRole           string            `json:"pending_sheet_role,omitempty"`
+	PendingSheetOp             string            `json:"pending_sheet_operation_id,omitempty"`
+	PendingFieldRole           string            `json:"pending_field_role,omitempty"`
+	PendingFieldTitles         []string          `json:"pending_field_titles,omitempty"`
+	PendingRegistryRow         bool              `json:"pending_registry_row,omitempty"`
+	PendingRegistryOp          string            `json:"pending_registry_row_operation_id,omitempty"`
+	PendingRegistryID          string            `json:"pending_registry_record_id,omitempty"`
+	PendingAdminDocID          string            `json:"pending_admin_document_id,omitempty"`
+	PendingAdminAssetKind      string            `json:"pending_admin_asset_kind,omitempty"`
+	PendingAdminOperatorDigest string            `json:"pending_admin_operator_digest,omitempty"`
+	PendingAdminPreAuthDigest  string            `json:"pending_admin_pre_auth_digest,omitempty"`
+	PendingAdminOp             string            `json:"pending_admin_operation_id,omitempty"`
+	PreviewID                  string            `json:"preview_id,omitempty"`
+	CatalogDigest              string            `json:"catalog_digest,omitempty"`
+	ConfigDigest               string            `json:"config_digest,omitempty"`
+	OperatorDigest             string            `json:"operator_digest,omitempty"`
+	LastErrorCode              string            `json:"last_error_code,omitempty"`
+	UpdatedAt                  string            `json:"updated_at"`
 }
 
 type initializeStatusInput struct {
@@ -190,6 +194,10 @@ func businessInitializeRecoveryPending(journal instanceInitializeJournal) bool {
 	default:
 		return false
 	}
+}
+
+func initializeJournalHasUncertainWrites(journal instanceInitializeJournal) bool {
+	return registryInitializeRecoveryPending(journal) || businessInitializeRecoveryPending(journal) || journal.PendingAdminOp != "" || journal.PendingRegistryRow || journal.PendingRegistryOp != "" || journal.PendingSheetOp != "" || journal.PendingFieldRole != ""
 }
 
 func instanceInitializeStatusToolSchema() map[string]any {
@@ -477,12 +485,12 @@ func (s *Server) instanceInitializeApply(ctx context.Context, runtime config.Con
 		return s.applyRemoteInstanceInitialization(ctx, runtime, client, observation, catalog, journal)
 	}
 	if observation.State == "ready" {
-		return initializeApplyResult("ready", observation, false, false, ""), nil
+		return initializeApplyResult("ready", observation, false, false, "", runtime.WecomOperatorUserID), nil
 	}
 	return s.commitObservedInstanceInitialization(ctx, runtime, client, observation, catalog, journal, false)
 }
 
-func initializeApplyResult(state string, observation initializeObservation, remoteUpdated, localUpdated bool, backupPath string) map[string]any {
+func initializeApplyResult(state string, observation initializeObservation, remoteUpdated, localUpdated bool, backupPath, operatorUserID string) map[string]any {
 	result := map[string]any{
 		"state": state, "instance_name": observation.Snapshot.InstanceName,
 		"registry_verified":        observation.Snapshot.RegistryDocumentID != "" && observation.Snapshot.RegistrySheetID != "",
@@ -495,7 +503,7 @@ func initializeApplyResult(state string, observation initializeObservation, remo
 	if backupPath != "" {
 		result["config_backup_created"] = true
 	}
-	return result
+	return withOperatorAudit(result, operatorUserID)
 }
 
 func (s *Server) commitObservedInstanceInitialization(ctx context.Context, runtime config.Config, client wecomRequester, observation initializeObservation, catalog zoopschema.Catalog, journal instanceInitializeJournal, remoteUpdated bool) (any, error) {
@@ -553,7 +561,7 @@ func (s *Server) commitObservedInstanceInitialization(ctx context.Context, runti
 	}
 	observation.Snapshot.LocalSchemaDigest = generationDigest
 	observation.Snapshot.SmokeVerified = true
-	return initializeApplyResult("ready", observation, remoteUpdated, true, backupPath), nil
+	return initializeApplyResult("ready", observation, remoteUpdated, true, backupPath, runtime.WecomOperatorUserID), nil
 }
 
 func readInitializeFieldsByRole(ctx context.Context, client wecomRequester, documentID string, roleSheetIDs map[string]string) (map[string][]config.Field, error) {
@@ -606,7 +614,7 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 	if journal.OperatorDigest != "" && journal.OperatorDigest != operatorDigest {
 		return nil, fmt.Errorf("初始化 journal 已绑定其他 business operator")
 	}
-	if journal.OperatorDigest == "" && (journal.Phase == "recovery_required" || journal.PendingAdminOp != "" || journal.PendingRegistryOp != "" || journal.PendingSheetOp != "" || journal.PendingFieldRole != "") {
+	if journal.OperatorDigest == "" && initializeJournalHasUncertainWrites(journal) {
 		return nil, fmt.Errorf("旧版未绑定 operator 的 pending journal 禁止继续远程写入")
 	}
 	journal.OperatorDigest = operatorDigest
@@ -750,6 +758,12 @@ func initializeCreatedDocumentID(response map[string]any) string {
 }
 
 func ensureInitializeOperatorAdmin(ctx context.Context, client wecomRequester, documentID, operatorUserID, assetKind string, journal *instanceInitializeJournal, journalPath string) error {
+	operatorDigest := digestValue(operatorUserID)
+	if journal.PendingAdminOp != "" {
+		if journal.PendingAdminDocID != documentID || journal.PendingAdminAssetKind != assetKind || journal.PendingAdminOperatorDigest != operatorDigest {
+			return fmt.Errorf("operator 管理员权限 pending journal 与当前恢复目标不一致；禁止继续")
+		}
+	}
 	readAuth := func() (bool, string, error) {
 		response, err := client.Request(ctx, "get_doc_auth", map[string]any{"docid": documentID})
 		if err != nil || apiError(response) != nil {
@@ -769,14 +783,20 @@ func ensureInitializeOperatorAdmin(ctx context.Context, client wecomRequester, d
 		return err
 	}
 	if verified {
-		journal.PendingAdminDocID, journal.PendingAdminOp = "", ""
-		return nil
+		if journal.PendingAdminOp != "" && preAuthDigest == journal.PendingAdminPreAuthDigest {
+			return fmt.Errorf("operator 管理员权限 pending journal 的权限快照未发生变化；禁止误判恢复完成")
+		}
+		clearInitializePendingAdmin(journal)
+		return saveInstanceInitializeJournal(journalPath, *journal)
 	}
 	if journal.PendingAdminOp != "" {
 		return fmt.Errorf("operator 管理员权限写入结果仍不确定；禁止盲目重试")
 	}
 	journal.PendingAdminDocID = documentID
-	journal.PendingAdminOp = digestValue(map[string]string{"document": documentID, "operator": operatorUserID, "auth": "7", "pre_auth": preAuthDigest})
+	journal.PendingAdminAssetKind = assetKind
+	journal.PendingAdminOperatorDigest = operatorDigest
+	journal.PendingAdminPreAuthDigest = preAuthDigest
+	journal.PendingAdminOp = digestValue(map[string]string{"document": documentID, "asset": assetKind, "operator_digest": operatorDigest, "auth": "7", "pre_auth": preAuthDigest})
 	journal.Phase, journal.AssetKind, journal.UpdatedAt = "recovery_required", assetKind, time.Now().UTC().Format(time.RFC3339Nano)
 	if err := saveInstanceInitializeJournal(journalPath, *journal); err != nil {
 		return err
@@ -787,13 +807,21 @@ func ensureInitializeOperatorAdmin(ctx context.Context, client wecomRequester, d
 	})
 	verified, _, readErr := readAuth()
 	if verified && readErr == nil {
-		journal.PendingAdminDocID, journal.PendingAdminOp = "", ""
+		clearInitializePendingAdmin(journal)
 		return saveInstanceInitializeJournal(journalPath, *journal)
 	}
 	if writeErr != nil || apiError(response) != nil {
 		return fmt.Errorf("operator 管理员权限写入结果不确定；已保留 durable journal")
 	}
 	return fmt.Errorf("operator 管理员权限写后回读未收敛；已保留 durable journal")
+}
+
+func clearInitializePendingAdmin(journal *instanceInitializeJournal) {
+	journal.PendingAdminDocID = ""
+	journal.PendingAdminAssetKind = ""
+	journal.PendingAdminOperatorDigest = ""
+	journal.PendingAdminPreAuthDigest = ""
+	journal.PendingAdminOp = ""
 }
 
 func reconcileInitializeRegistry(ctx context.Context, client wecomRequester, documentID string, ownedByOperation bool, journal *instanceInitializeJournal, journalPath string) (string, error) {
@@ -1469,13 +1497,11 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 			capabilityMissing = true
 		}
 	}
-	if runtime.WecomOperatorUserID == "" {
+	operatorMissing := runtime.WecomOperatorUserID == ""
+	if operatorMissing {
 		observation.Conflicts = append(observation.Conflicts, "wecom_operator_userid_missing")
-		observation.State = "conflict"
-		observation.Snapshot = snapshot
-		return finalizeInitializeObservation(observation)
 	}
-	if len(observation.Conflicts) == 0 && !(registryDocumentID == "" && registryRecoveryAllowed) && !capabilityMissing && clientErr == nil && client != nil {
+	if len(observation.Conflicts) == 0 && !operatorMissing && !(registryDocumentID == "" && registryRecoveryAllowed) && !capabilityMissing && clientErr == nil && client != nil {
 		directoryEvidence, err := verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID)
 		if err != nil {
 			observation.Conflicts = append(observation.Conflicts, "wecom_operator_not_verified_in_tenant")
@@ -1515,7 +1541,7 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 		observation.Snapshot = snapshot
 		return finalizeInitializeObservation(observation)
 	}
-	if len(observation.Conflicts) > 0 {
+	if initializeHasConflictOtherThan(observation.Conflicts, "wecom_operator_userid_missing") {
 		observation.State = "conflict"
 		observation.Snapshot = snapshot
 		return finalizeInitializeObservation(observation)
@@ -1536,7 +1562,7 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	snapshot.RegistryIdentityDigest = digestValue(registryIdentity)
 	snapshot.RegistryAuthDigest = digestValue(registryAuthorization)
 	snapshot.RegistryOperatorAdmin, _ = registryAuthorization["configured_operator_is_admin"].(bool)
-	if !snapshot.RegistryOperatorAdmin {
+	if !operatorMissing && !snapshot.RegistryOperatorAdmin {
 		observation.PlannedOperations = append(observation.PlannedOperations, "grant_registry_operator_admin")
 		if !runtime.AllowsInGroup(instanceInitializeGroup, "grant_doc_readers") {
 			observation.Conflicts = append(observation.Conflicts, "instance_initialize_capability_missing:grant_doc_readers")
@@ -1681,7 +1707,7 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	snapshot.BusinessIdentityDigest = digestValue(businessIdentity)
 	snapshot.BusinessAuthDigest = digestValue(businessAuthorization)
 	snapshot.BusinessOperatorAdmin, _ = businessAuthorization["configured_operator_is_admin"].(bool)
-	if !snapshot.BusinessOperatorAdmin {
+	if !operatorMissing && !snapshot.BusinessOperatorAdmin {
 		observation.PlannedOperations = append(observation.PlannedOperations, "grant_business_operator_admin")
 		if !runtime.AllowsInGroup(instanceInitializeGroup, "grant_doc_readers") {
 			observation.Conflicts = append(observation.Conflicts, "instance_initialize_capability_missing:grant_doc_readers")
@@ -1952,6 +1978,7 @@ func initializeDocumentMemberHasAuth(auth map[string]any, operatorUserID string,
 		return false
 	}
 	matches := 0
+	identityMatches := 0
 	for _, raw := range members {
 		member, ok := raw.(map[string]any)
 		if !ok {
@@ -1959,11 +1986,23 @@ func initializeDocumentMemberHasAuth(auth map[string]any, operatorUserID string,
 		}
 		userid, _ := member["userid"].(string)
 		authValue, valid := initializeInteger(member["auth"])
-		if userid == operatorUserID && valid && authValue == expectedAuth {
-			matches++
+		if userid == operatorUserID {
+			identityMatches++
+			if valid && authValue == expectedAuth {
+				matches++
+			}
 		}
 	}
-	return matches == 1
+	return identityMatches == 1 && matches == 1
+}
+
+func initializeHasConflictOtherThan(conflicts []string, allowed string) bool {
+	for _, conflict := range conflicts {
+		if conflict != allowed {
+			return true
+		}
+	}
+	return false
 }
 
 // verifyInitializeManagementAuthorization follows the response contract for
@@ -2275,6 +2314,17 @@ func validateInstanceInitializeJournal(journal instanceInitializeJournal) error 
 	}
 	if journal.PendingRegistryRow && (journal.AssetKind != "business" || journal.PendingRegistryOp == "") {
 		return fmt.Errorf("实例初始化 journal active row pending 哨兵无效")
+	}
+	if journal.PendingAdminOp != "" {
+		if !initializeIdentifier.MatchString(journal.PendingAdminDocID) || (journal.PendingAdminAssetKind != "registry" && journal.PendingAdminAssetKind != "business") || !initializeSHA256Digest.MatchString(journal.PendingAdminOperatorDigest) || !initializeSHA256Digest.MatchString(journal.PendingAdminPreAuthDigest) {
+			return fmt.Errorf("实例初始化 operator admin pending 哨兵无效")
+		}
+		expected := digestValue(map[string]string{"document": journal.PendingAdminDocID, "asset": journal.PendingAdminAssetKind, "operator_digest": journal.PendingAdminOperatorDigest, "auth": "7", "pre_auth": journal.PendingAdminPreAuthDigest})
+		if journal.PendingAdminOp != expected {
+			return fmt.Errorf("实例初始化 operator admin pending operation id 无效")
+		}
+	} else if journal.PendingAdminDocID != "" || journal.PendingAdminAssetKind != "" || journal.PendingAdminOperatorDigest != "" || journal.PendingAdminPreAuthDigest != "" {
+		return fmt.Errorf("实例初始化 operator admin pending 哨兵不完整")
 	}
 	return nil
 }

@@ -83,7 +83,7 @@ func (s *Server) reconcileRequirementProgress(ctx context.Context, runtime confi
 		}
 	}
 	if len(affected) == 0 {
-		return map[string]any{"state": "up_to_date", "requirement_count": 0, "readback_verified": true}, nil
+		return withOperatorAudit(map[string]any{"state": "up_to_date", "requirement_count": 0, "readback_verified": true}, runtime.WecomOperatorUserID), nil
 	}
 	digestData, _ := json.Marshal(map[string]any{"operation": "reconcile_requirement_progress", "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "business_operator_userid": runtime.WecomOperatorUserID, "native_api_actor": "application"})
 	digestSum := sha256.Sum256(digestData)
