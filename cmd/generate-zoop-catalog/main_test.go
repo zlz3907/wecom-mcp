@@ -9,12 +9,12 @@ func TestConvertStripsTenantIDsAndMarksFormulaUnsupported(t *testing.T) {
 	}{}}
 	for index := 1; index <= 9; index++ {
 		role := "Z-S0" + string(rune('0'+index))
-		fields := []sourceField{{Title: primaryFieldTitles[role], Type: "FIELD_TYPE_TEXT"}}
+		fields := []sourceField{{Title: primaryFieldTitles[role], ID: "SYMBOLIC_PRIMARY_" + role, Type: "FIELD_TYPE_TEXT"}}
 		if role == "Z-S01" {
 			fields = append(fields,
-				sourceField{Title: "阶段", Type: "FIELD_TYPE_SINGLE_SELECT", Options: map[string]string{"待确认": "secret-option-id"}},
-				sourceField{Title: "项目", Type: "FIELD_TYPE_REFERENCE", ReferenceTargetSheetID: "CRHIKw", ReferenceTargetFieldID: "secret-field-id", ReferenceIsMultiple: &multiple},
-				sourceField{Title: "进度", Type: "FIELD_TYPE_FORMULA"},
+				sourceField{Title: "阶段", ID: "SYMBOLIC_STAGE_FIELD", Type: "FIELD_TYPE_SINGLE_SELECT", Options: map[string]string{"待确认": "SYMBOLIC_OPTION_TOKEN"}},
+				sourceField{Title: "所属项目", ID: "SYMBOLIC_REFERENCE_FIELD", Type: "FIELD_TYPE_REFERENCE", ReferenceTargetSheetID: "SYMBOLIC_SHEET_TOKEN", ReferenceTargetFieldID: "SYMBOLIC_PRIMARY_Z-S07", ReferenceIsMultiple: &multiple},
+				sourceField{Title: "进度", ID: "SYMBOLIC_FORMULA_FIELD", Type: "FIELD_TYPE_FORMULA"},
 			)
 		}
 		source.Roles[role] = struct {
@@ -36,5 +36,45 @@ func TestConvertStripsTenantIDsAndMarksFormulaUnsupported(t *testing.T) {
 	}
 	if reference == nil || reference.Role != "Z-S07" {
 		t.Fatalf("tenant reference was not translated: %#v", got.Roles[0].Fields)
+	}
+}
+
+func TestConvertRejectsReferenceNotInLogicalTopology(t *testing.T) {
+	source := sourceMirror{Version: 1, Roles: map[string]struct {
+		Fields []sourceField `json:"fields"`
+	}{}}
+	for index := 1; index <= 9; index++ {
+		role := "Z-S0" + string(rune('0'+index))
+		source.Roles[role] = struct {
+			Fields []sourceField `json:"fields"`
+		}{Fields: []sourceField{{Title: primaryFieldTitles[role], ID: "SYMBOLIC_PRIMARY_" + role, Type: "FIELD_TYPE_TEXT"}}}
+	}
+	role := source.Roles["Z-S08"]
+	role.Fields = append(role.Fields, sourceField{Title: "未授权关联", ID: "SYMBOLIC_UNMODELLED_FIELD", Type: "FIELD_TYPE_REFERENCE", ReferenceTargetSheetID: "SYMBOLIC_SHEET_TOKEN"})
+	source.Roles["Z-S08"] = role
+	if _, err := convert(source); err == nil {
+		t.Fatal("unmodelled reference must fail closed")
+	}
+}
+
+func TestConvertRejectsMisdirectedProtectedReference(t *testing.T) {
+	multiple := false
+	source := sourceMirror{Version: 1, Roles: map[string]struct {
+		Fields []sourceField `json:"fields"`
+	}{}}
+	for index := 1; index <= 9; index++ {
+		role := "Z-S0" + string(rune('0'+index))
+		source.Roles[role] = struct {
+			Fields []sourceField `json:"fields"`
+		}{Fields: []sourceField{{Title: primaryFieldTitles[role], ID: "SYMBOLIC_PRIMARY_" + role, Type: "FIELD_TYPE_TEXT"}}}
+	}
+	role := source.Roles["Z-S01"]
+	role.Fields = append(role.Fields, sourceField{
+		Title: "所属项目", ID: "SYMBOLIC_REFERENCE_FIELD", Type: "FIELD_TYPE_REFERENCE",
+		ReferenceTargetSheetID: "SYMBOLIC_SHEET_TOKEN", ReferenceTargetFieldID: "SYMBOLIC_PRIMARY_Z-S09", ReferenceIsMultiple: &multiple,
+	})
+	source.Roles["Z-S01"] = role
+	if _, err := convert(source); err == nil {
+		t.Fatal("misdirected protected reference must fail closed")
 	}
 }

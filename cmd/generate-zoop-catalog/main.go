@@ -21,6 +21,7 @@ type sourceMirror struct {
 
 type sourceField struct {
 	Title                  string            `json:"field_title"`
+	ID                     string            `json:"field_id"`
 	Type                   string            `json:"field_type"`
 	Options                map[string]string `json:"select_options"`
 	ReferenceTargetSheetID string            `json:"reference_target_sheet_id"`
@@ -68,13 +69,26 @@ var sheetTitles = map[string]string{
 	"Z-S09": "Z-S09｜协作主体表",
 }
 
-// These IDs appear only in the one-time source mirror. They are translated to
-// logical references and never copied to the generated catalog.
-var sourceSheetRoles = map[string]string{
-	"q979lj": "Z-S01",
-	"lC40b5": "Z-S03",
-	"CRHIKw": "Z-S07",
-	"GiEyRl": "Z-S09",
+// referenceTopology is copied from the Owner-authorized relationship model as
+// logical names only. Source tenant identifiers are used solely as an
+// indication that the source field is a reference; they are never matched,
+// embedded, logged, or copied into generated/runtime artifacts.
+var referenceTopology = map[string]logicalReference{
+	"Z-S01\x00所属项目":   {Role: "Z-S07", FieldTitle: "项目编号与名称", Multiple: false},
+	"Z-S01\x00需求提出主体": {Role: "Z-S09", FieldTitle: "主体编号", Multiple: false},
+	"Z-S02\x00主需求":    {Role: "Z-S01", FieldTitle: "需求编号", Multiple: false},
+	"Z-S02\x00决策主体":   {Role: "Z-S09", FieldTitle: "主体编号", Multiple: false},
+	"Z-S02\x00受影响任务":  {Role: "Z-S03", FieldTitle: "任务编号", Multiple: true},
+	"Z-S03\x00主需求":    {Role: "Z-S01", FieldTitle: "需求编号", Multiple: false},
+	"Z-S03\x00任务执行主体": {Role: "Z-S09", FieldTitle: "主体编号", Multiple: true},
+	"Z-S03\x00任务责任主体": {Role: "Z-S09", FieldTitle: "主体编号", Multiple: false},
+	"Z-S04\x00操作主体":   {Role: "Z-S09", FieldTitle: "主体编号", Multiple: false},
+	"Z-S05\x00调度主体":   {Role: "Z-S09", FieldTitle: "主体编号", Multiple: false},
+	"Z-S06\x00发起主体":   {Role: "Z-S09", FieldTitle: "主体编号", Multiple: false},
+	"Z-S06\x00所属项目":   {Role: "Z-S07", FieldTitle: "项目编号与名称", Multiple: false},
+	"Z-S06\x00执行主体":   {Role: "Z-S09", FieldTitle: "主体编号", Multiple: false},
+	"Z-S07\x00参与主体":   {Role: "Z-S09", FieldTitle: "主体编号", Multiple: true},
+	"Z-S09\x00参与项目":   {Role: "Z-S07", FieldTitle: "项目编号与名称", Multiple: true},
 }
 
 var primaryFieldTitles = map[string]string{
@@ -119,6 +133,20 @@ func main() {
 
 func convert(source sourceMirror) (catalog, error) {
 	result := catalog{Version: "zoop-v1", SourceContract: "owner-authorized-online-schema-v1", CompleteForCreation: true}
+	fieldTargets := map[string]map[string]string{}
+	for role, sourceRole := range source.Roles {
+		fieldTargets[role] = map[string]string{}
+		for _, field := range sourceRole.Fields {
+			if field.ID == "" {
+				return catalog{}, fmt.Errorf("%s.%s has no protected source field identifier", role, field.Title)
+			}
+			if _, duplicate := fieldTargets[role][field.ID]; duplicate {
+				return catalog{}, fmt.Errorf("protected source field identifier is not unique within %s", role)
+			}
+			fieldTargets[role][field.ID] = field.Title
+		}
+	}
+	sheetRoleClaims := map[string]string{}
 	for index := 1; index <= 9; index++ {
 		role := fmt.Sprintf("Z-S%02d", index)
 		sourceRole, ok := source.Roles[role]
@@ -132,16 +160,25 @@ func convert(source sourceMirror) (catalog, error) {
 				converted.Options = append(converted.Options, label)
 			}
 			sort.Strings(converted.Options)
-			if field.ReferenceTargetSheetID != "" {
-				targetRole := sourceSheetRoles[field.ReferenceTargetSheetID]
-				if targetRole == "" {
-					return catalog{}, fmt.Errorf("%s.%s has unknown reference target", role, field.Title)
+			expectedReference, topologyHasReference := referenceTopology[role+"\x00"+field.Title]
+			sourceHasReference := field.ReferenceTargetSheetID != "" || field.ReferenceTargetFieldID != "" || field.ReferenceIsMultiple != nil
+			if topologyHasReference != sourceHasReference {
+				return catalog{}, fmt.Errorf("%s.%s reference presence differs from the logical relationship model", role, field.Title)
+			}
+			if topologyHasReference {
+				if field.ReferenceTargetSheetID == "" || field.ReferenceTargetFieldID == "" || field.ReferenceIsMultiple == nil || *field.ReferenceIsMultiple != expectedReference.Multiple {
+					return catalog{}, fmt.Errorf("%s.%s reference properties differ from the logical relationship model", role, field.Title)
 				}
-				multiple := false
-				if field.ReferenceIsMultiple != nil {
-					multiple = *field.ReferenceIsMultiple
+				targetTitle, found := fieldTargets[expectedReference.Role][field.ReferenceTargetFieldID]
+				if !found || targetTitle != expectedReference.FieldTitle {
+					return catalog{}, fmt.Errorf("%s.%s reference target differs from the logical relationship model", role, field.Title)
 				}
-				converted.Reference = &logicalReference{Role: targetRole, FieldTitle: primaryFieldTitles[targetRole], Multiple: multiple}
+				if claimedRole, claimed := sheetRoleClaims[field.ReferenceTargetSheetID]; claimed && claimedRole != expectedReference.Role {
+					return catalog{}, fmt.Errorf("protected source sheet identifier maps to multiple roles")
+				}
+				sheetRoleClaims[field.ReferenceTargetSheetID] = expectedReference.Role
+				reference := expectedReference
+				converted.Reference = &reference
 			}
 			if field.Type == "FIELD_TYPE_FORMULA" {
 				converted.UnsupportedForCreate = true

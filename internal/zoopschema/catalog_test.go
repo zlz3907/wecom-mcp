@@ -33,7 +33,7 @@ func TestEmbeddedCatalogIsTenantNeutralAndCompleteAsObserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"field_id", "sheet_id", "docid", "option_id", "f04Gwj", "q979lj", "o09ow6"} {
+	for _, forbidden := range []string{"field_id", "sheet_id", "docid", "option_id"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("tenant-specific identifier leaked into embedded catalog: %s", forbidden)
 		}

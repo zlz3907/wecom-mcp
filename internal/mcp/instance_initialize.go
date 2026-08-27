@@ -156,7 +156,9 @@ func (s *Server) instanceInitializeStatus(ctx context.Context, runtime config.Co
 	}
 	nextRequiredInput := ""
 	if observation.State == "recovery_required" && observation.RecoveryAssetKind != "" {
-		nextRequiredInput = "recovery_" + observation.RecoveryAssetKind + "_document_id"
+		if observation.RecoveryAssetKind != "business" || observation.Snapshot.BusinessDocumentID == "" {
+			nextRequiredInput = "recovery_" + observation.RecoveryAssetKind + "_document_id"
+		}
 	}
 
 	return map[string]any{
@@ -286,8 +288,19 @@ func observeInstanceInitialization(ctx context.Context, runtime config.Config, c
 			registryDocumentID = input.RecoveryRegistryDocumentID
 		}
 	}
-	if input.RecoveryBusinessDocumentID != "" && !(journalExists && journal.Phase == "recovery_required" && journal.AssetKind == "business") {
-		observation.Conflicts = append(observation.Conflicts, "business_recovery_without_matching_sentinel")
+	businessRecoveryAllowed := journalExists && journal.Phase == "recovery_required" && journal.AssetKind == "business"
+	businessRecoveryDocumentID := ""
+	if businessRecoveryAllowed {
+		businessRecoveryDocumentID = journal.BusinessDocumentID
+	}
+	if input.RecoveryBusinessDocumentID != "" {
+		if !businessRecoveryAllowed {
+			observation.Conflicts = append(observation.Conflicts, "business_recovery_without_matching_sentinel")
+		} else if businessRecoveryDocumentID != "" && businessRecoveryDocumentID != input.RecoveryBusinessDocumentID {
+			observation.Conflicts = append(observation.Conflicts, "business_recovery_id_conflict")
+		} else {
+			businessRecoveryDocumentID = input.RecoveryBusinessDocumentID
+		}
 	}
 	capabilityMissing := false
 	for _, operation := range []string{"get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records"} {
@@ -333,7 +346,7 @@ func observeInstanceInitialization(ctx context.Context, runtime config.Config, c
 		return finalizeInitializeObservation(observation)
 	}
 
-	registryIdentity, registryAuthorization, err := readInitializeDocumentIdentity(ctx, client, registryDocumentID, "SMART_SHEETS_IDS")
+	registryIdentity, registryAuthorization, err := readInitializeDocumentIdentity(ctx, client, registryDocumentID, "SMART_SHEETS_IDS", runtime.SchemaAdminUser)
 	if err != nil {
 		observation.Conflicts = append(observation.Conflicts, "registry_identity_or_auth_unverified")
 		observation.Snapshot = snapshot
@@ -418,13 +431,24 @@ func observeInstanceInitialization(ctx context.Context, runtime config.Config, c
 		return finalizeInitializeObservation(observation)
 	}
 	if snapshot.ActiveRegistryCount == 0 {
-		observation.PlannedOperations = append(observation.PlannedOperations, "resolve_business_document", "reconcile_zoop_nine_tables", "register_unique_active_row", "generate_schema", "commit_local_config", "z_s01_read_only_smoke")
-		if !catalog.CompleteForCreation {
-			observation.Conflicts = append(observation.Conflicts, "catalog_not_complete_for_creation")
+		if businessRecoveryAllowed {
+			observation.State = "recovery_required"
+			if businessRecoveryDocumentID == "" {
+				observation.PlannedOperations = append(observation.PlannedOperations, "bind_recovery_business_document_id")
+				observation.Snapshot = snapshot
+				return finalizeInitializeObservation(observation)
+			}
+			snapshot.BusinessDocumentID = businessRecoveryDocumentID
+			observation.PlannedOperations = append(observation.PlannedOperations, "verify_recovered_business_document", "register_unique_active_row")
+		} else {
+			observation.PlannedOperations = append(observation.PlannedOperations, "resolve_business_document", "reconcile_zoop_nine_tables", "register_unique_active_row", "generate_schema", "commit_local_config", "z_s01_read_only_smoke")
+			if !catalog.CompleteForCreation {
+				observation.Conflicts = append(observation.Conflicts, "catalog_not_complete_for_creation")
+			}
+			observation.SnapshotComplete = true
+			observation.Snapshot = snapshot
+			return finalizeInitializeObservation(observation)
 		}
-		observation.SnapshotComplete = true
-		observation.Snapshot = snapshot
-		return finalizeInitializeObservation(observation)
 	}
 	if input.RecoveryBusinessDocumentID != "" && input.RecoveryBusinessDocumentID != snapshot.BusinessDocumentID {
 		observation.Conflicts = append(observation.Conflicts, "business_recovery_id_conflict")
@@ -432,7 +456,7 @@ func observeInstanceInitialization(ctx context.Context, runtime config.Config, c
 		return finalizeInitializeObservation(observation)
 	}
 
-	businessIdentity, businessAuthorization, err := readInitializeDocumentIdentity(ctx, client, snapshot.BusinessDocumentID, "")
+	businessIdentity, businessAuthorization, err := readInitializeDocumentIdentity(ctx, client, snapshot.BusinessDocumentID, "", runtime.SchemaAdminUser)
 	if err != nil {
 		observation.Conflicts = append(observation.Conflicts, "business_identity_or_auth_unverified")
 		observation.Snapshot = snapshot
@@ -532,13 +556,22 @@ func observeInstanceInitialization(ctx context.Context, runtime config.Config, c
 			}
 		}
 	}
-	if len(snapshot.RoleSheetIDs) == 9 && len(observation.Conflicts) == 0 && len(observation.PlannedOperations) == 0 {
+	if len(snapshot.RoleSheetIDs) == 9 && len(observation.Conflicts) == 0 && !hasRemoteInitializePlan(observation.PlannedOperations) {
 		local, localErr := config.LoadSchema(runtime.SchemaMirrorPath)
 		if localErr != nil {
 			observation.PlannedOperations = append(observation.PlannedOperations, "generate_schema", "commit_local_config")
 		} else {
 			snapshot.LocalSchemaDigest = local.Digest
-			if runtime.SchemaDigest != "" && runtime.SchemaDigest != local.Digest {
+			if differences := compareInitializeSchema(local, observedFieldContracts); len(differences) > 0 {
+				observation.PlannedOperations = append(observation.PlannedOperations, "generate_schema", "commit_local_config")
+				for _, difference := range differences {
+					observation.PlannedOperations = append(observation.PlannedOperations, "refresh_"+difference)
+				}
+			}
+			metadataComplete := runtime.InitializationGeneration != "" && runtime.SchemaVersion != "" && runtime.SchemaDigest != "" && runtime.RegistrySheetID != "" && runtime.InitializedState == "config_committed"
+			if !metadataComplete {
+				observation.PlannedOperations = append(observation.PlannedOperations, "commit_local_config")
+			} else if runtime.SchemaDigest != local.Digest {
 				observation.Conflicts = append(observation.Conflicts, "config_schema_digest_conflict")
 			}
 			if runtime.SchemaVersion != "" && runtime.SchemaVersion != catalog.Version {
@@ -546,7 +579,7 @@ func observeInstanceInitialization(ctx context.Context, runtime config.Config, c
 			}
 		}
 	}
-	if len(snapshot.RoleSheetIDs) == 9 && len(observation.Conflicts) == 0 && len(observation.PlannedOperations) == 0 {
+	if len(snapshot.RoleSheetIDs) == 9 && len(observation.Conflicts) == 0 && !hasRemoteInitializePlan(observation.PlannedOperations) {
 		smoke, smokeErr := client.Request(ctx, "get_records", map[string]any{"docid": snapshot.BusinessDocumentID, "sheet_id": snapshot.RoleSheetIDs["Z-S01"], "key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID", "limit": 1})
 		if smokeErr != nil || apiError(smoke) != nil {
 			observation.Conflicts = append(observation.Conflicts, "z_s01_smoke_failed")
@@ -622,7 +655,7 @@ func sheetNameForInitialize(sheet map[string]any) (string, bool) {
 	return "", false
 }
 
-func readInitializeDocumentIdentity(ctx context.Context, client wecomRequester, documentID, expectedName string) (map[string]any, map[string]any, error) {
+func readInitializeDocumentIdentity(ctx context.Context, client wecomRequester, documentID, expectedName, expectedManagerUser string) (map[string]any, map[string]any, error) {
 	base, err := client.Request(ctx, "get_doc_base_info", map[string]any{"docid": documentID})
 	if err != nil || apiError(base) != nil {
 		return nil, nil, fmt.Errorf("document base info unavailable")
@@ -637,16 +670,119 @@ func readInitializeDocumentIdentity(ctx context.Context, client wecomRequester, 
 		return nil, nil, fmt.Errorf("document authorization unavailable")
 	}
 	authResult, _ := authorization["result"].(map[string]any)
-	authProperties := 0
-	for key := range authResult {
-		if key != "errcode" && key != "errmsg" {
-			authProperties++
+	managementProof, err := verifyInitializeManagementAuthorization(authResult, expectedManagerUser)
+	if err != nil {
+		return nil, nil, err
+	}
+	return map[string]any{"doc_type": docType, "name_digest": digestValue(name), "expected_name_matched": expectedName == "" || name == expectedName}, managementProof, nil
+}
+
+// verifyInitializeManagementAuthorization follows the response contract for
+// Enterprise WeCom's “获取文档权限信息” endpoint (official document path 97461).
+// That endpoint is restricted to documents created by the calling application;
+// a structurally complete successful response therefore proves that the same
+// application owns the API management plane for this document. In addition,
+// the configured schema_admin_user must appear in doc_member_list with the
+// documented manager permission value 7. Arbitrary fields such as
+// auth_type=admin are deliberately not accepted.
+func verifyInitializeManagementAuthorization(auth map[string]any, expectedManagerUser string) (map[string]any, error) {
+	if expectedManagerUser == "" {
+		return nil, fmt.Errorf("document manager identity is not configured")
+	}
+	accessRule, accessOK := auth["access_rule"].(map[string]any)
+	secureSetting, secureOK := auth["secure_setting"].(map[string]any)
+	members, membersOK := auth["doc_member_list"].([]any)
+	departments, departmentsOK := auth["co_auth_list"].([]any)
+	if !accessOK || len(accessRule) == 0 || !secureOK || len(secureSetting) == 0 || !membersOK || !departmentsOK {
+		return nil, fmt.Errorf("document management permission unproven")
+	}
+	managerMatched := false
+	for _, rawMember := range members {
+		member, ok := rawMember.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("document management permission response invalid")
+		}
+		userID, _ := member["userid"].(string)
+		authValue, ok := initializeInteger(member["auth"])
+		if userID == expectedManagerUser && ok && authValue == 7 {
+			managerMatched = true
 		}
 	}
-	if authProperties == 0 {
-		return nil, nil, fmt.Errorf("document authorization incomplete")
+	if !managerMatched {
+		return nil, fmt.Errorf("configured document manager permission unproven")
 	}
-	return map[string]any{"doc_type": docType, "name_digest": digestValue(name), "expected_name_matched": expectedName == "" || name == expectedName}, authResult, nil
+	return map[string]any{
+		"application_document_management_proven": true,
+		"configured_manager_proven":              true,
+		"access_rule_present":                    true,
+		"secure_setting_present":                 true,
+		"document_member_count":                  len(members),
+		"department_rule_count":                  len(departments),
+	}, nil
+}
+
+func initializeInteger(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		if typed != float64(int(typed)) {
+			return 0, false
+		}
+		return int(typed), true
+	case json.Number:
+		parsed, err := intFromJSONNumber(typed)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func hasRemoteInitializePlan(operations []string) bool {
+	for _, operation := range operations {
+		if operation != "generate_schema" && operation != "commit_local_config" && operation != "z_s01_read_only_smoke" && operation != "verify_recovered_business_document" && operation != "register_unique_active_row" {
+			return true
+		}
+	}
+	return false
+}
+
+func compareInitializeSchema(local config.Schema, observed map[string]map[string]config.Field) []string {
+	differences := []string{}
+	for index := 1; index <= 9; index++ {
+		role := fmt.Sprintf("Z-S%02d", index)
+		localFields := local.Roles[role]
+		onlineFields := observed[role]
+		if len(localFields) != len(onlineFields) {
+			differences = append(differences, "local_schema_field_count_stale:"+role)
+		}
+		for title, online := range onlineFields {
+			stored, exists := localFields[title]
+			if !exists || stored.ID != online.ID || stored.Type != online.Type || !equalInitializeOptions(stored.Options, online.Options) || stored.ReferenceTargetSheetID != online.ReferenceTargetSheetID || stored.ReferenceTargetFieldID != online.ReferenceTargetFieldID || !equalInitializeMultiple(stored.ReferenceIsMultiple, online.ReferenceIsMultiple) {
+				differences = append(differences, "local_schema_field_stale:"+role+":"+title)
+			}
+		}
+	}
+	sort.Strings(differences)
+	return differences
+}
+
+func equalInitializeOptions(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for label, id := range left {
+		if right[label] != id {
+			return false
+		}
+	}
+	return true
+}
+
+func equalInitializeMultiple(left, right *bool) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
 }
 
 func findInitializeDocumentMetadata(value any, depth int) (int, string) {

@@ -97,7 +97,9 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 
 ## 当前工具
 
-`wecom_instance_initialize_status` 是首次初始化的只读入口，同时也是 dry-run。它通过专用的 `instance_initialize` capability group 回读 Registry、唯一 active row、Z-S01 至 Z-S09、生成版 Schema、初始化 journal 和 Z-S01 `limit=1` smoke，只输出结构计数、冲突、计划操作、快照摘要、短期 `preview_id` 与 `expires_at`，不返回业务记录内容。`registry_document_id` 是无未决 sentinel 时的既有 Registry 导入候选；`recovery_registry_document_id` / `recovery_business_document_id` 只能绑定已有 uncertain sentinel。任一分页或结构快照不完整时不会签发可用于 apply 的 preview。
+`wecom_instance_initialize_status` 是首次初始化的只读入口，同时也是 dry-run。它通过专用的 `instance_initialize` capability group 回读 Registry、唯一 active row、Z-S01 至 Z-S09、生成版 Schema、初始化 journal 和 Z-S01 `limit=1` smoke，只输出结构计数、冲突、计划操作、快照摘要、短期 `preview_id` 与 `expires_at`，不返回业务记录内容。线上字段的 ID、类型、选项和逻辑关联必须与本地 Schema 逐项一致，且 generation 元数据完整，才可能返回 `ready`。`registry_document_id` 是无未决 sentinel 时的既有 Registry 导入候选；`recovery_registry_document_id` / `recovery_business_document_id` 只能绑定已有 uncertain sentinel；业务恢复会继续核验该 sentinel 指向的同一文档，不会猜测或新建替代资产。任一分页、文档管理权限或结构快照不完整时不会签发可用于 apply 的 preview。
+
+文档权限核验遵循企业微信“获取文档权限信息”（官方文档 path 97461）的实际响应结构，并依赖该接口只能访问调用应用所创建文档的权限约束证明应用管理面；同时，`schema_admin_user` 必须在 `doc_member_list` 中具备管理员权限值 `7`。任意自造的 `auth_type=admin` 等字段不会被视为管理权限证据。
 
 `wecom_instance_initialize_apply` 的 MCP 契约已预留固定 Owner 授权、短期 `preview_id` 和 status 原样返回的 `preview_expires_at` 校验，但当前候选在 Architecture Gate 1 放行前始终失败关闭，不会创建 Registry、业务文档、九表或记录，也不会修改本地配置。已有 `wecom_registry_bootstrap` 和 `wecom_schema_sync` 保持兼容；它们不能替代完整实例初始化。当前嵌入的 `zoop-v1` catalog 已脱敏固化 9 个角色和 147 个逻辑字段，不含任何租户 doc/sheet/field/option ID；Z-S01 公式字段因公开创建契约尚未证明而标为 `unsupported_for_create`，因此 catalog 不会伪报可全量创建。
 

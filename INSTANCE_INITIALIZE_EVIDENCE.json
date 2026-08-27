@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "base_commit": "018cd2d",
+  "scope": "P1 verifier remediation; read-only initializer observer remains fail-closed for apply",
+  "digest_algorithm": "sha256 of the listed path=sha256 lines in array order, each LF-terminated",
+  "evidence_digest": "11f0da56c5cf8f2a0f7bfa1223f80bab47d2893aef0cc01230ebd148bda1fd36",
+  "artifacts": [
+    {"path": "README.md", "sha256": "8e44d2b7ff8f37209c4cbf4d08b426e74b7b148221d4a6d53363e3d875a6d181"},
+    {"path": "cmd/generate-zoop-catalog/main.go", "sha256": "87c3a2a549a08619287acabc5d860b4406079469ceec573d86650b8cbd641e4b"},
+    {"path": "cmd/generate-zoop-catalog/main_test.go", "sha256": "acd41c23801fb714ade008f887ec108083527b2850c5d9f468b228b44b9abda5"},
+    {"path": "internal/mcp/instance_initialize.go", "sha256": "bb1c2ef1eeb3d7158e6f0bf2e8892de46106439d290012422b82bc0c8a231ca5"},
+    {"path": "internal/mcp/instance_initialize_test.go", "sha256": "96607a99febcf6a6d6b8854a251b9226e1070b79a6d580cfcc7cce6e020481b1"},
+    {"path": "internal/zoopschema/catalog/zoop-v1.json", "sha256": "9954fb85a9f28134c374fddcb30e6aaac98c662055fdb5bae8b8264854c582b5"},
+    {"path": "internal/zoopschema/catalog_test.go", "sha256": "d2446a4a491034ea8be32e64e0284c221ac1410766f107fd77e8c8c12e116b7f"}
+  ],
+  "reproduction": [
+    "go clean -testcache && go test ./...",
+    "go test -race ./...",
+    "go vet ./...",
+    "git diff --check",
+    "go run ./cmd/generate-zoop-catalog -input PROTECTED_OWNER_SCHEMA_JSON -output GENERATED_JSON && cmp -s GENERATED_JSON internal/zoopschema/catalog/zoop-v1.json"
+  ],
+  "boundaries": {
+    "enterprise_wecom_writes": false,
+    "apply_reachable": false,
+    "existing_business_document_import_public": false,
+    "formula_creation_proven": false
+  }
+}

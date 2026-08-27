@@ -24,6 +24,7 @@ type initializeFakeClient struct {
 	activeRows         []any
 	registryIncomplete bool
 	operations         []string
+	documentAuth       map[string]any
 }
 
 func (f *initializeFakeClient) Request(_ context.Context, operation string, payload any) (map[string]any, error) {
@@ -39,7 +40,16 @@ func (f *initializeFakeClient) Request(_ context.Context, operation string, payl
 		}
 		return map[string]any{"result": map[string]any{"errcode": float64(0), "doc_type": float64(10), "doc_name": name}}, nil
 	case "get_doc_auth":
-		return map[string]any{"result": map[string]any{"errcode": float64(0), "auth_type": "admin"}}, nil
+		if f.documentAuth != nil {
+			return map[string]any{"result": f.documentAuth}, nil
+		}
+		return map[string]any{"result": map[string]any{
+			"errcode":         float64(0),
+			"access_rule":     map[string]any{"enable_corp_internal": true},
+			"secure_setting":  map[string]any{"enable_readonly_copy": false},
+			"doc_member_list": []any{map[string]any{"type": float64(1), "userid": "symbolic-admin", "auth": float64(7)}},
+			"co_auth_list":    []any{},
+		}}, nil
 	case "get_sheet":
 		if documentID == f.registryDocumentID {
 			return okInitializeResponse("sheet_list", []any{map[string]any{"type": "smartsheet", "sheet_id": f.registrySheetID, "name": "SMART_SHEETS_IDS"}}), nil
@@ -154,10 +164,16 @@ func readyInitializeFixture(t *testing.T) (config.Config, *initializeFakeClient)
 		t.Fatal(err)
 	}
 	runtime := config.Config{
-		Version: 1, InstanceName: "zoop_wecom_zhycit", TenantRoute: "tenant-route", RegistryDocumentID: fake.registryDocumentID,
+		Version: 1, InstanceName: "zoop_wecom_zhycit", TenantRoute: "tenant-route", SchemaAdminUser: "symbolic-admin", RegistryDocumentID: fake.registryDocumentID,
 		RegistryKey: "registry-key", SchemaMirrorPath: schemaPath, StatePath: filepath.Join(directory, "state.json"),
+		InitializationGeneration: "generation-symbolic", SchemaVersion: catalog.Version, RegistrySheetID: fake.registrySheetID, InitializedState: "config_committed",
 		APIWhitelist: map[string][]string{instanceInitializeGroup: {"get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records"}},
 	}
+	local, err := config.LoadSchema(schemaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.SchemaDigest = local.Digest
 	return runtime, fake
 }
 
@@ -208,6 +224,84 @@ func TestInstanceInitializeIncompletePaginationHasNoUsablePreview(t *testing.T) 
 	}
 }
 
+func TestInstanceInitializeStaleLocalSchemaMustNotReturnReady(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	data, err := os.ReadFile(runtime.SchemaMirrorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mirror map[string]any
+	if err := json.Unmarshal(data, &mirror); err != nil {
+		t.Fatal(err)
+	}
+	roles := mirror["roles"].(map[string]any)
+	fields := roles["Z-S01"].(map[string]any)["fields"].([]any)
+	fields[0].(map[string]any)["field_id"] = "SYMBOLIC_STALE_FIELD_ID"
+	changed, _ := json.MarshalIndent(mirror, "", "  ")
+	if err := os.WriteFile(runtime.SchemaMirrorPath, append(changed, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := result.(map[string]any)
+	if output["state"] == "ready" || output["preview_id"] != "" {
+		t.Fatalf("stale local schema was accepted: %#v", output)
+	}
+	plans := fmt.Sprint(output["planned_operations"])
+	if !strings.Contains(plans, "generate_schema") || !strings.Contains(plans, "local_schema_field_stale") {
+		t.Fatalf("stale schema did not produce an explicit repair plan: %#v", output)
+	}
+}
+
+func TestCompareInitializeSchemaChecksEveryFieldContractProperty(t *testing.T) {
+	multiple := true
+	base := config.Field{
+		Title: "符号字段", ID: "SYMBOLIC_FIELD", Type: "FIELD_TYPE_REFERENCE",
+		Options: map[string]string{"符号选项": "SYMBOLIC_OPTION"}, ReferenceTargetSheetID: "SYMBOLIC_SHEET",
+		ReferenceTargetFieldID: "SYMBOLIC_TARGET_FIELD", ReferenceIsMultiple: &multiple,
+	}
+	observed := map[string]map[string]config.Field{"Z-S01": {base.Title: base}}
+	for _, test := range []struct {
+		name   string
+		mutate func(*config.Field)
+	}{
+		{"field id", func(field *config.Field) { field.ID = "SYMBOLIC_OTHER_FIELD" }},
+		{"field type", func(field *config.Field) { field.Type = "FIELD_TYPE_TEXT" }},
+		{"option mapping", func(field *config.Field) { field.Options = map[string]string{"符号选项": "SYMBOLIC_OTHER_OPTION"} }},
+		{"reference sheet", func(field *config.Field) { field.ReferenceTargetSheetID = "SYMBOLIC_OTHER_SHEET" }},
+		{"reference field", func(field *config.Field) { field.ReferenceTargetFieldID = "SYMBOLIC_OTHER_TARGET" }},
+		{"reference multiplicity", func(field *config.Field) { value := false; field.ReferenceIsMultiple = &value }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := base
+			test.mutate(&changed)
+			local := config.Schema{Roles: map[string]map[string]config.Field{"Z-S01": {changed.Title: changed}}}
+			if differences := compareInitializeSchema(local, observed); len(differences) == 0 {
+				t.Fatalf("%s difference was not detected", test.name)
+			}
+		})
+	}
+}
+
+func TestInstanceInitializeMissingGenerationMetadataMustNotReturnReady(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	runtime.InitializationGeneration = ""
+	runtime.SchemaVersion = ""
+	runtime.SchemaDigest = ""
+	runtime.RegistrySheetID = ""
+	runtime.InitializedState = ""
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := result.(map[string]any)
+	if output["state"] == "ready" || !strings.Contains(fmt.Sprint(output["planned_operations"]), "commit_local_config") {
+		t.Fatalf("legacy metadata omission was accepted: %#v", output)
+	}
+}
+
 func TestInstanceInitializeRegistryImportIsSeparateFromRecovery(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
 	runtime.RegistryDocumentID = ""
@@ -252,6 +346,84 @@ func TestInstanceInitializeRecoveryIDRequiresUncertainSentinel(t *testing.T) {
 	}
 	if len(fake.operations) != 0 {
 		t.Fatal("conflicting recovery id must stop before online reads")
+	}
+}
+
+func TestInstanceInitializeBusinessRecoverySentinelBindsAndVerifiesSameDocument(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	fake.activeRows = nil
+	journal := instanceInitializeJournal{
+		Version: instanceInitializeJournalV1, Phase: "recovery_required", AssetKind: "business", OperationID: "SYMBOLIC_OPERATION",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"recovery_business_document_id":"business-doc"}`)
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := result.(map[string]any)
+	observed := output["observed"].(map[string]any)
+	if output["state"] != "recovery_required" || output["snapshot_complete"] != true || output["next_required_input"] != "" || observed["business_document_resolved"] != true || observed["role_sheet_count"] != 9 {
+		t.Fatalf("business recovery was not bound to and verified against the sentinel asset: %#v", output)
+	}
+	if output["preview_id"] != "" || !strings.Contains(fmt.Sprint(output["planned_operations"]), "register_unique_active_row") {
+		t.Fatalf("recovery must remain explicit and fail closed before writes: %#v", output)
+	}
+}
+
+func TestInstanceInitializeBusinessRecoveryUsesJournalDocumentID(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	fake.activeRows = nil
+	journal := instanceInitializeJournal{
+		Version: instanceInitializeJournalV1, Phase: "recovery_required", AssetKind: "business", OperationID: "SYMBOLIC_OPERATION",
+		BusinessDocumentID: fake.businessDocumentID, UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := result.(map[string]any)
+	observed := output["observed"].(map[string]any)
+	if output["state"] != "recovery_required" || output["next_required_input"] != "" || observed["business_document_resolved"] != true || observed["z_s01_smoke_verified"] != true {
+		t.Fatalf("journal business document was not verified as the recovery asset: %#v", output)
+	}
+}
+
+func TestInstanceInitializeBusinessRecoveryRejectsUnknownDocumentBeforeReads(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	fake.activeRows = nil
+	journal := instanceInitializeJournal{
+		Version: instanceInitializeJournalV1, Phase: "recovery_required", AssetKind: "business", OperationID: "SYMBOLIC_OPERATION",
+		BusinessDocumentID: fake.businessDocumentID, UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{"recovery_business_document_id":"unknown-doc"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.(map[string]any)["state"] != "conflict" || len(fake.operations) != 0 {
+		t.Fatalf("unknown recovery document was read or accepted: result=%#v calls=%#v", result, fake.operations)
+	}
+}
+
+func TestInstanceInitializeManagementPermissionFailsClosedOnGuessedAuthField(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	fake.documentAuth = map[string]any{"errcode": float64(0), "auth_type": "admin"}
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := result.(map[string]any)
+	if output["state"] != "conflict" || output["preview_id"] != "" || !strings.Contains(fmt.Sprint(output["conflicts"]), "identity_or_auth_unverified") {
+		t.Fatalf("unproven management permission was accepted: %#v", output)
 	}
 }
 
