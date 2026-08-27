@@ -68,7 +68,7 @@ func TestOperatorDirectoryRequiresOneActiveByteExactEmployee(t *testing.T) {
 func TestInitializerRepairsOperatorAdminAndReadsBackExactly(t *testing.T) {
 	fake := &operatorBindingFake{auth: 1, grantVisible: true}
 	path := filepath.Join(t.TempDir(), "journal.json")
-	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", OperatorDigest: digestValue("operator-byte-exact"), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", BusinessDocumentID: "document-id", OperatorDigest: digestValue("operator-byte-exact"), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err := ensureInitializeOperatorAdmin(context.Background(), fake, "document-id", "operator-byte-exact", "business", &journal, path); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestInitializerRepairsOperatorAdminAndReadsBackExactly(t *testing.T) {
 func TestInitializerUncertainAdminRepairNeverBlindlyRetries(t *testing.T) {
 	fake := &operatorBindingFake{auth: 1, grantErr: fmt.Errorf("uncertain")}
 	path := filepath.Join(t.TempDir(), "journal.json")
-	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", OperatorDigest: digestValue("operator-byte-exact"), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", RegistryDocumentID: "document-id", OperatorDigest: digestValue("operator-byte-exact"), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err := ensureInitializeOperatorAdmin(context.Background(), fake, "document-id", "operator-byte-exact", "registry", &journal, path); err == nil {
 		t.Fatal("uncertain grant was accepted")
 	}
@@ -107,7 +107,7 @@ func TestInitializerUncertainAdminRepairNeverBlindlyRetries(t *testing.T) {
 func TestInitializerAdminPendingCannotDriftToAnotherDocument(t *testing.T) {
 	fake := &operatorBindingFake{auth: 1, grantErr: fmt.Errorf("uncertain")}
 	path := filepath.Join(t.TempDir(), "journal.json")
-	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", OperatorDigest: digestValue("operator-byte-exact"), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", BusinessDocumentID: "document-a", OperatorDigest: digestValue("operator-byte-exact"), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err := ensureInitializeOperatorAdmin(context.Background(), fake, "document-a", "operator-byte-exact", "business", &journal, path); err == nil {
 		t.Fatal("uncertain grant was accepted")
 	}
@@ -124,7 +124,7 @@ func TestInitializerAdminPendingCannotDriftToAnotherDocument(t *testing.T) {
 func TestInitializerAdminPendingClearsOnlyAfterExactTargetReadback(t *testing.T) {
 	fake := &operatorBindingFake{auth: 1, grantErr: fmt.Errorf("uncertain")}
 	path := filepath.Join(t.TempDir(), "journal.json")
-	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", OperatorDigest: digestValue("operator-byte-exact"), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", BusinessDocumentID: "document-a", OperatorDigest: digestValue("operator-byte-exact"), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	_ = ensureInitializeOperatorAdmin(context.Background(), fake, "document-a", "operator-byte-exact", "business", &journal, path)
 	fake.auth = 7
 	fake.grantErr = nil
@@ -158,6 +158,35 @@ func TestOldUnboundResolvingJournalsAreUncertain(t *testing.T) {
 	}
 }
 
+func TestPendingAdminJournalMustMatchOperatorAndAssetIdentity(t *testing.T) {
+	operatorDigest := digestValue("operator-byte-exact")
+	preAuthDigest := digestValue("pre-auth")
+	base := instanceInitializeJournal{
+		Version: instanceInitializeJournalV1, Phase: "recovery_required", AssetKind: "business",
+		BusinessDocumentID: "document-a", OperatorDigest: operatorDigest,
+		PendingAdminDocID: "document-a", PendingAdminAssetKind: "business", PendingAdminOperatorDigest: operatorDigest, PendingAdminPreAuthDigest: preAuthDigest,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	base.PendingAdminOp = digestValue(map[string]string{"document": base.PendingAdminDocID, "asset": base.PendingAdminAssetKind, "operator_digest": base.PendingAdminOperatorDigest, "auth": "7", "pre_auth": base.PendingAdminPreAuthDigest})
+	if err := validateInstanceInitializeJournal(base); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*instanceInitializeJournal){
+		"phase":    func(j *instanceInitializeJournal) { j.Phase = "schema_staged" },
+		"asset":    func(j *instanceInitializeJournal) { j.AssetKind = "registry" },
+		"operator": func(j *instanceInitializeJournal) { j.OperatorDigest = digestValue("other") },
+		"document": func(j *instanceInitializeJournal) { j.BusinessDocumentID = "document-b" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := base
+			mutate(&candidate)
+			if err := validateInstanceInitializeJournal(candidate); err == nil {
+				t.Fatalf("inconsistent pending journal accepted: %#v", candidate)
+			}
+		})
+	}
+}
+
 func TestInitializeApplyResultIncludesOperatorAudit(t *testing.T) {
 	result := initializeApplyResult("ready", initializeObservation{Snapshot: initializeSnapshot{InstanceName: "test"}}, true, true, "", "operator-byte-exact")
 	if result["business_operator_userid"] != "operator-byte-exact" || result["native_api_actor"] != "application" {
@@ -168,7 +197,7 @@ func TestInitializeApplyResultIncludesOperatorAudit(t *testing.T) {
 func TestInitializerAPIErrorCanResolveByExactAuthReadback(t *testing.T) {
 	fake := &operatorBindingFake{auth: 1, grantErr: fmt.Errorf("transport lost"), grantVisible: true}
 	path := filepath.Join(t.TempDir(), "journal.json")
-	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", OperatorDigest: digestValue("operator-byte-exact"), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", BusinessDocumentID: "document-id", OperatorDigest: digestValue("operator-byte-exact"), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err := ensureInitializeOperatorAdmin(context.Background(), fake, "document-id", "operator-byte-exact", "business", &journal, path); err != nil {
 		t.Fatal(err)
 	}

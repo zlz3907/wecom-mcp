@@ -607,9 +607,6 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 	if runtime.WecomOperatorUserID == "" {
 		return nil, fmt.Errorf("实例未配置 wecom_operator_userid，初始化远程变更保持关闭")
 	}
-	if _, err := verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID); err != nil {
-		return nil, fmt.Errorf("wecom_operator_userid 未通过当前固定租户员工目录核验")
-	}
 	operatorDigest := digestValue(runtime.WecomOperatorUserID)
 	if journal.OperatorDigest != "" && journal.OperatorDigest != operatorDigest {
 		return nil, fmt.Errorf("初始化 journal 已绑定其他 business operator")
@@ -618,6 +615,12 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 		return nil, fmt.Errorf("旧版未绑定 operator 的 pending journal 禁止继续远程写入")
 	}
 	journal.OperatorDigest = operatorDigest
+	if err := validateInstanceInitializeJournal(journal); err != nil {
+		return nil, fmt.Errorf("初始化 journal 与当前 operator 或恢复资产不一致；禁止远程读取")
+	}
+	if _, err := verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID); err != nil {
+		return nil, fmt.Errorf("wecom_operator_userid 未通过当前固定租户员工目录核验")
+	}
 	if journal.PendingAdminOp != "" {
 		if err := ensureInitializeOperatorAdmin(ctx, client, journal.PendingAdminDocID, runtime.WecomOperatorUserID, journal.PendingAdminAssetKind, &journal, instanceInitializeJournalPath(runtime)); err != nil {
 			return nil, err
@@ -2321,8 +2324,11 @@ func validateInstanceInitializeJournal(journal instanceInitializeJournal) error 
 		return fmt.Errorf("实例初始化 journal active row pending 哨兵无效")
 	}
 	if journal.PendingAdminOp != "" {
-		if !initializeIdentifier.MatchString(journal.PendingAdminDocID) || (journal.PendingAdminAssetKind != "registry" && journal.PendingAdminAssetKind != "business") || !initializeSHA256Digest.MatchString(journal.PendingAdminOperatorDigest) || !initializeSHA256Digest.MatchString(journal.PendingAdminPreAuthDigest) {
+		if journal.Phase != "recovery_required" || journal.AssetKind != journal.PendingAdminAssetKind || journal.OperatorDigest != journal.PendingAdminOperatorDigest || !initializeIdentifier.MatchString(journal.PendingAdminDocID) || (journal.PendingAdminAssetKind != "registry" && journal.PendingAdminAssetKind != "business") || !initializeSHA256Digest.MatchString(journal.PendingAdminOperatorDigest) || !initializeSHA256Digest.MatchString(journal.PendingAdminPreAuthDigest) {
 			return fmt.Errorf("实例初始化 operator admin pending 哨兵无效")
+		}
+		if journal.PendingAdminAssetKind == "registry" && journal.PendingAdminDocID != journal.RegistryDocumentID || journal.PendingAdminAssetKind == "business" && journal.PendingAdminDocID != journal.BusinessDocumentID {
+			return fmt.Errorf("实例初始化 operator admin pending 文档绑定无效")
 		}
 		expected := digestValue(map[string]string{"document": journal.PendingAdminDocID, "asset": journal.PendingAdminAssetKind, "operator_digest": journal.PendingAdminOperatorDigest, "auth": "7", "pre_auth": journal.PendingAdminPreAuthDigest})
 		if journal.PendingAdminOp != expected {
