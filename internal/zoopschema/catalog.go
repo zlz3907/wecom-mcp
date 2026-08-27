@@ -30,7 +30,24 @@ type Field struct {
 	Type                 string     `json:"field_type"`
 	Options              []string   `json:"options,omitempty"`
 	Reference            *Reference `json:"reference,omitempty"`
+	Formula              *Formula   `json:"formula,omitempty"`
 	UnsupportedForCreate bool       `json:"unsupported_for_create,omitempty"`
+}
+
+type Formula struct {
+	Model     []FormulaToken   `json:"formula_model"`
+	Formatter FormulaFormatter `json:"formatter"`
+}
+
+type FormulaToken struct {
+	Type       string `json:"type"`
+	FieldTitle string `json:"field_title,omitempty"`
+	Text       string `json:"text,omitempty"`
+}
+
+type FormulaFormatter struct {
+	Type          string `json:"type"`
+	DecimalPlaces int    `json:"decimal_places"`
 }
 
 type Reference struct {
@@ -57,9 +74,36 @@ func Current() (Catalog, error) {
 		}
 		seen[role.Role] = struct{}{}
 		primaryFound := false
+		fieldTitles := map[string]struct{}{}
 		for _, field := range role.Fields {
+			if field.Title == "" || field.Type == "" {
+				return Catalog{}, fmt.Errorf("embedded Zoop catalog field is incomplete for %s", role.Role)
+			}
+			fieldTitles[field.Title] = struct{}{}
 			if field.Title == role.PrimaryFieldTitle && field.Type == "FIELD_TYPE_TEXT" {
 				primaryFound = true
+			}
+		}
+		for _, field := range role.Fields {
+			if field.Type != "FIELD_TYPE_FORMULA" {
+				continue
+			}
+			if field.Formula == nil || len(field.Formula.Model) == 0 || field.Formula.Formatter.Type == "" {
+				return Catalog{}, fmt.Errorf("embedded Zoop catalog formula is incomplete for %s.%s", role.Role, field.Title)
+			}
+			for _, token := range field.Formula.Model {
+				switch token.Type {
+				case "FORMULA_TYPE_FIELD":
+					if _, ok := fieldTitles[token.FieldTitle]; !ok || token.FieldTitle == field.Title {
+						return Catalog{}, fmt.Errorf("embedded Zoop catalog formula dependency is invalid for %s.%s", role.Role, field.Title)
+					}
+				case "FORMULA_TYPE_TEXT":
+					if token.Text == "" {
+						return Catalog{}, fmt.Errorf("embedded Zoop catalog formula text is empty for %s.%s", role.Role, field.Title)
+					}
+				default:
+					return Catalog{}, fmt.Errorf("embedded Zoop catalog formula token is invalid for %s.%s", role.Role, field.Title)
+				}
 			}
 		}
 		if !primaryFound {

@@ -14,4 +14,6 @@ go run ./cmd/generate-zoop-catalog \
   -output internal/zoopschema/catalog/zoop-v1.json
 ```
 
-The generator translates source-only tenant sheet IDs into logical `{role, field_title, multiple}` references and removes every document, sheet, field and option ID from the output. Tests reject known source IDs and exact-title drift. `FIELD_TYPE_FORMULA` is retained as observed contract but marked `unsupported_for_create` until an upstream create contract is proved.
+The generator translates source-only tenant sheet IDs into logical `{role, field_title, multiple}` references and removes every document, sheet, field and option ID from the output. Tests reject known source IDs and exact-title drift.
+
+The Owner-authorized read-only formula observation on 2026-08-27 established the Z-S01 `进度条` contract as `已完成任务数 / 当前任务总数`, formatted as `FIELD_TYPE_PROGRESS` with `decimal_places=-1`. The catalog stores only these logical field titles. Runtime creation resolves the current instance field IDs and never embeds observed tenant IDs.

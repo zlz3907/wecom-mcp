@@ -49,7 +49,22 @@ type catalogField struct {
 	Type                 string            `json:"field_type"`
 	Options              []string          `json:"options,omitempty"`
 	Reference            *logicalReference `json:"reference,omitempty"`
+	Formula              *logicalFormula   `json:"formula,omitempty"`
 	UnsupportedForCreate bool              `json:"unsupported_for_create,omitempty"`
+}
+
+type logicalFormula struct {
+	Model     []logicalFormulaToken `json:"formula_model"`
+	Formatter struct {
+		Type          string `json:"type"`
+		DecimalPlaces int    `json:"decimal_places"`
+	} `json:"formatter"`
+}
+
+type logicalFormulaToken struct {
+	Type       string `json:"type"`
+	FieldTitle string `json:"field_title,omitempty"`
+	Text       string `json:"text,omitempty"`
 }
 
 type logicalReference struct {
@@ -102,6 +117,17 @@ var primaryFieldTitles = map[string]string{
 	"Z-S07": "项目编号与名称",
 	"Z-S08": "Schema 条目键与版本",
 	"Z-S09": "主体编号",
+}
+
+func verifiedProgressFormula() *logicalFormula {
+	formula := &logicalFormula{Model: []logicalFormulaToken{
+		{Type: "FORMULA_TYPE_FIELD", FieldTitle: "已完成任务数"},
+		{Type: "FORMULA_TYPE_TEXT", Text: "/"},
+		{Type: "FORMULA_TYPE_FIELD", FieldTitle: "当前任务总数"},
+	}}
+	formula.Formatter.Type = "FIELD_TYPE_PROGRESS"
+	formula.Formatter.DecimalPlaces = -1
+	return formula
 }
 
 func main() {
@@ -183,9 +209,24 @@ func convert(source sourceMirror) (catalog, error) {
 				converted.Reference = &reference
 			}
 			if field.Type == "FIELD_TYPE_FORMULA" {
-				converted.UnsupportedForCreate = true
-				result.CompleteForCreation = false
-				result.UnsupportedForCreate = append(result.UnsupportedForCreate, role+"."+field.Title)
+				if role == "Z-S01" && field.Title == "进度条" {
+					for _, dependencyTitle := range []string{"已完成任务数", "当前任务总数"} {
+						found := false
+						for _, candidate := range sourceRole.Fields {
+							if candidate.Title == dependencyTitle {
+								found = true
+							}
+						}
+						if !found {
+							return catalog{}, fmt.Errorf("%s.%s formula dependency %s is missing", role, field.Title, dependencyTitle)
+						}
+					}
+					converted.Formula = verifiedProgressFormula()
+				} else {
+					converted.UnsupportedForCreate = true
+					result.CompleteForCreation = false
+					result.UnsupportedForCreate = append(result.UnsupportedForCreate, role+"."+field.Title)
+				}
 			}
 			if field.Title == out.PrimaryFieldTitle && field.Type == "FIELD_TYPE_TEXT" {
 				primaryFound = true

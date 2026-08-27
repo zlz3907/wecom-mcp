@@ -835,6 +835,27 @@ func TestNormalizeOwnedSheetNeverDeletesNonEmptyRecord(t *testing.T) {
 	}
 }
 
+func TestInitializeFormulaPayloadFailsClosedWhenDependencyIDMissing(t *testing.T) {
+	field := zoopschema.Field{
+		Title: "进度条", Type: "FIELD_TYPE_FORMULA",
+		Formula: &zoopschema.Formula{
+			Model: []zoopschema.FormulaToken{
+				{Type: "FORMULA_TYPE_FIELD", FieldTitle: "已完成任务数"},
+				{Type: "FORMULA_TYPE_TEXT", Text: "/"},
+				{Type: "FORMULA_TYPE_FIELD", FieldTitle: "当前任务总数"},
+			},
+			Formatter: zoopschema.FormulaFormatter{Type: "FIELD_TYPE_PROGRESS", DecimalPlaces: -1},
+		},
+	}
+	fake := &initializeTemplateFake{fields: []any{map[string]any{"field_id": "completed-id", "field_title": "已完成任务数", "field_type": "FIELD_TYPE_NUMBER"}}}
+	if _, err := initializeFieldWire(context.Background(), fake, "business-doc", "z-s01-sheet", field, map[string]string{}); err == nil || !strings.Contains(err.Error(), "当前任务总数") {
+		t.Fatalf("formula dependency without a current field id was accepted: %v", err)
+	}
+	if got := strings.Join(fake.operations, ","); got != "get_fields" {
+		t.Fatalf("formula dependency failure performed unexpected operations: %s", got)
+	}
+}
+
 func TestRemoteApplyCannotSelfElevateInitializerCapability(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
 	catalog, _ := zoopschema.Current()
@@ -873,6 +894,7 @@ type initializeLifecycleFake struct {
 	addRecordCalls    int
 	hideRegistryReads int
 	hideReadsAfterAdd int
+	formulaPayload    map[string]any
 }
 
 func (f *initializeLifecycleFake) nextID(prefix string) string {
@@ -999,8 +1021,22 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 		items, _ := body["fields"].([]any)
 		for _, itemRaw := range items {
 			item, _ := itemRaw.(map[string]any)
+			if item["field_title"] == "进度条" {
+				f.formulaPayload, _ = item["property_formula"].(map[string]any)
+			}
 			field := map[string]any{"field_id": f.nextID("field"), "field_title": item["field_title"], "field_type": item["field_type"]}
 			for key, value := range item {
+				if key == "property_single_select" {
+					property, _ := value.(map[string]any)
+					options, _ := property["options"].([]any)
+					readbackOptions := make([]any, 0, len(options))
+					for _, rawOption := range options {
+						option, _ := rawOption.(map[string]any)
+						readbackOptions = append(readbackOptions, map[string]any{"id": f.nextID("option"), "name": option["text"]})
+					}
+					field[key] = map[string]any{"options": readbackOptions}
+					continue
+				}
 				if strings.HasPrefix(key, "property_") {
 					field[key] = value
 				}
@@ -1277,19 +1313,26 @@ func TestRemoteInitializerNeverRepeatsTemporarilyInvisibleActiveRowWrite(t *test
 	}
 }
 
-func TestInstanceInitializeNewCreateReportsFormulaCapabilityGapWithoutPreview(t *testing.T) {
-	runtime, _, fake, _, _, _ := initializeLifecycleFixture(t)
-	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+func TestInstanceInitializeFreshPublicMainlineCreatesVerifiedProgressFormula(t *testing.T) {
+	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
+	server.initializeCatalog = nil
+	status, result, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	output := result.(map[string]any)
-	if output["state"] != "capability_gap" || output["capability_gap"] != true || output["preview_id"] != "" || !strings.Contains(fmt.Sprint(output["conflicts"]), "formulaModel") {
-		t.Fatalf("incomplete progress formula did not block a new create preview: %#v", output)
+	if status["state"] != "changes_planned" || status["capability_gap"] != false || result.(map[string]any)["state"] != "ready" {
+		t.Fatalf("fresh real-catalog public mainline did not reach ready: status=%#v result=%#v", status, result)
+	}
+	model, _ := fake.formulaPayload["formula_model"].([]any)
+	formatter, _ := fake.formulaPayload["formatter"].(map[string]any)
+	property, _ := formatter["property"].(map[string]any)
+	progress, _ := property["property_progress"].(map[string]any)
+	if len(model) != 3 || model[0].(map[string]any)["field_id"] == "" || model[0].(map[string]any)["field_title"] != nil || model[1].(map[string]any)["text"] != "/" || model[2].(map[string]any)["field_id"] == "" || formatter["type"] != "FIELD_TYPE_PROGRESS" || progress["decimal_places"] != -1 {
+		t.Fatalf("unexpected formula payload: %#v", fake.formulaPayload)
 	}
 }
 
-func TestInstanceInitializeRegistryRecoveryWithMissingFieldsBlocksTransitiveBusinessCreate(t *testing.T) {
+func TestInstanceInitializeRegistryRecoveryWithMissingFieldsIsExecutableWithCompleteCatalog(t *testing.T) {
 	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
 	server.initializeCatalog = nil
 	registryResponse, err := fake.Request(context.Background(), "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "SMART_SHEETS_IDS"})
@@ -1311,23 +1354,23 @@ func TestInstanceInitializeRegistryRecoveryWithMissingFieldsBlocksTransitiveBusi
 		t.Fatal(err)
 	}
 	status := result.(map[string]any)
-	if status["state"] != "capability_gap" || status["capability_gap"] != true || status["preview_id"] != "" || !strings.Contains(fmt.Sprint(status["conflicts"]), "downstream_business_state_unproven") {
-		t.Fatalf("Registry recovery did not block its unproven downstream business create: %#v", status)
+	if status["state"] != "recovery_required" || status["capability_gap"] != false || status["preview_id"] == "" || len(status["conflicts"].([]string)) != 0 {
+		t.Fatalf("complete formula catalog did not make Registry recovery executable: %#v", status)
 	}
 	applyRaw, _ := json.Marshal(map[string]string{
 		"preview_id": strings.Repeat("0", 64), "preview_expires_at": time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano),
 		"owner_authorization": instanceInitializeAuthorization, "recovery_registry_document_id": registryID,
 	})
 	if _, err := server.instanceInitializeApply(context.Background(), runtime, fake, nil, applyRaw); err == nil {
-		t.Fatal("apply accepted a recovery without a signed preview")
+		t.Fatal("apply accepted an unknown preview")
 	}
 	if fake.createCount != 1 {
-		t.Fatalf("capability gap created a downstream business document: create_count=%d", fake.createCount)
+		t.Fatalf("read-only status created a downstream business document: create_count=%d", fake.createCount)
 	}
 	for _, operation := range fake.operations[operationStart:] {
 		switch operation {
 		case "create_smartsheet", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records":
-			t.Fatalf("capability gap performed remote write %s", operation)
+			t.Fatalf("read-only status performed remote write %s", operation)
 		}
 	}
 }

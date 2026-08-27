@@ -23,10 +23,10 @@ func TestEmbeddedCatalogIsTenantNeutralAndCompleteAsObserved(t *testing.T) {
 			t.Fatalf("%s title=%q want=%q", role.Role, role.SheetTitle, wantTitles[role.Role])
 		}
 	}
-	if catalog.CompleteForCreation {
-		t.Fatal("formula field must keep create-time catalog fail-closed")
+	if !catalog.CompleteForCreation {
+		t.Fatal("verified formula contract must make the catalog complete for creation")
 	}
-	if len(catalog.UnsupportedForCreate) != 1 || catalog.UnsupportedForCreate[0] != "Z-S01.进度条" {
+	if len(catalog.UnsupportedForCreate) != 0 {
 		t.Fatalf("unexpected unsupported fields: %#v", catalog.UnsupportedForCreate)
 	}
 	data, err := json.Marshal(catalog)
@@ -37,6 +37,30 @@ func TestEmbeddedCatalogIsTenantNeutralAndCompleteAsObserved(t *testing.T) {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("tenant-specific identifier leaked into embedded catalog: %s", forbidden)
 		}
+	}
+}
+
+func TestProgressFormulaUsesLogicalFieldTitlesOnly(t *testing.T) {
+	catalog, err := Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var formula *Formula
+	for _, role := range catalog.Roles {
+		if role.Role != "Z-S01" {
+			continue
+		}
+		for _, field := range role.Fields {
+			if field.Title == "进度条" {
+				formula = field.Formula
+			}
+		}
+	}
+	if formula == nil || len(formula.Model) != 3 || formula.Model[0].FieldTitle != "已完成任务数" || formula.Model[1].Text != "/" || formula.Model[2].FieldTitle != "当前任务总数" {
+		t.Fatalf("unexpected progress formula: %#v", formula)
+	}
+	if formula.Formatter.Type != "FIELD_TYPE_PROGRESS" || formula.Formatter.DecimalPlaces != -1 {
+		t.Fatalf("unexpected progress formatter: %#v", formula.Formatter)
 	}
 }
 

@@ -1,10 +1,7 @@
 {
   "version": "zoop-v1",
   "source_contract": "owner-authorized-online-schema-v1",
-  "complete_for_creation": false,
-  "unsupported_for_create": [
-    "Z-S01.进度条"
-  ],
+  "complete_for_creation": true,
   "roles": [
     {
       "role": "Z-S01",
@@ -179,7 +176,26 @@
         {
           "field_title": "进度条",
           "field_type": "FIELD_TYPE_FORMULA",
-          "unsupported_for_create": true
+          "formula": {
+            "formula_model": [
+              {
+                "type": "FORMULA_TYPE_FIELD",
+                "field_title": "已完成任务数"
+              },
+              {
+                "type": "FORMULA_TYPE_TEXT",
+                "text": "/"
+              },
+              {
+                "type": "FORMULA_TYPE_FIELD",
+                "field_title": "当前任务总数"
+              }
+            ],
+            "formatter": {
+              "type": "FIELD_TYPE_PROGRESS",
+              "decimal_places": -1
+            }
+          }
         },
         {
           "field_title": "阻塞任务数",

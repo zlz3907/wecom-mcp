@@ -39,6 +39,45 @@ func TestConvertStripsTenantIDsAndMarksFormulaUnsupported(t *testing.T) {
 	}
 }
 
+func TestConvertAddsVerifiedLogicalProgressFormula(t *testing.T) {
+	source := sourceMirror{Version: 1, Roles: map[string]struct {
+		Fields []sourceField `json:"fields"`
+	}{}}
+	for index := 1; index <= 9; index++ {
+		role := "Z-S0" + string(rune('0'+index))
+		fields := []sourceField{{Title: primaryFieldTitles[role], ID: "SYMBOLIC_PRIMARY_" + role, Type: "FIELD_TYPE_TEXT"}}
+		if role == "Z-S01" {
+			fields = append(fields,
+				sourceField{Title: "已完成任务数", ID: "SYMBOLIC_COMPLETED", Type: "FIELD_TYPE_NUMBER"},
+				sourceField{Title: "当前任务总数", ID: "SYMBOLIC_TOTAL", Type: "FIELD_TYPE_NUMBER"},
+				sourceField{Title: "进度条", ID: "SYMBOLIC_PROGRESS", Type: "FIELD_TYPE_FORMULA"},
+			)
+		}
+		source.Roles[role] = struct {
+			Fields []sourceField `json:"fields"`
+		}{Fields: fields}
+	}
+	got, err := convert(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.CompleteForCreation || len(got.UnsupportedForCreate) != 0 {
+		t.Fatalf("verified formula did not complete catalog: %#v", got)
+	}
+	foundFormula := false
+	for _, field := range got.Roles[0].Fields {
+		if field.Title == "进度条" && (field.Formula == nil || field.Formula.Model[0].FieldTitle != "已完成任务数") {
+			t.Fatalf("logical formula missing: %#v", field)
+		}
+		if field.Title == "进度条" {
+			foundFormula = true
+		}
+	}
+	if !foundFormula {
+		t.Fatal("verified progress formula was not generated")
+	}
+}
+
 func TestConvertRejectsReferenceNotInLogicalTopology(t *testing.T) {
 	source := sourceMirror{Version: 1, Roles: map[string]struct {
 		Fields []sourceField `json:"fields"`

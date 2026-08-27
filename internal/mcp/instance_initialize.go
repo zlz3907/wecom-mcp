@@ -623,7 +623,7 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 	verifiedRuntime.RegistrySheetID = registrySheetID
 	refreshed := observeInstanceInitializationWithCatalog(ctx, verifiedRuntime, client, nil, initializeStatusInput{}, catalog, nil)
 	if !refreshed.SnapshotComplete || len(refreshed.Conflicts) != 0 || hasRemoteInitializePlan(refreshed.PlannedOperations) {
-		return nil, fmt.Errorf("远端初始化写后完整回读未收敛")
+		return nil, fmt.Errorf("远端初始化写后完整回读未收敛: conflicts=%v planned=%v", refreshed.Conflicts, refreshed.PlannedOperations)
 	}
 	if refreshed.Snapshot.BusinessDocumentID != businessID || len(refreshed.Snapshot.RoleSheetIDs) != 9 {
 		return nil, fmt.Errorf("远端初始化写后业务文档或九表回读不一致")
@@ -819,12 +819,19 @@ func reconcileInitializeBusiness(ctx context.Context, client wecomRequester, doc
 	// Phase one creates tenant-independent fields. References are deferred until
 	// every target sheet and primary field ID has been read back.
 	for _, role := range catalog.Roles {
-		if err := addMissingInitializeFields(ctx, client, documentID, roleSheetIDs[role.Role], role, roleSheetIDs, false, journal, journalPath); err != nil {
+		if err := addMissingInitializeFields(ctx, client, documentID, roleSheetIDs[role.Role], role, roleSheetIDs, false, false, journal, journalPath); err != nil {
 			return nil, err
 		}
 	}
 	for _, role := range catalog.Roles {
-		if err := addMissingInitializeFields(ctx, client, documentID, roleSheetIDs[role.Role], role, roleSheetIDs, true, journal, journalPath); err != nil {
+		if err := addMissingInitializeFields(ctx, client, documentID, roleSheetIDs[role.Role], role, roleSheetIDs, true, false, journal, journalPath); err != nil {
+			return nil, err
+		}
+	}
+	// Formula fields are compiled last because their logical title references
+	// must resolve to field IDs created and read back in the earlier phases.
+	for _, role := range catalog.Roles {
+		if err := addMissingInitializeFields(ctx, client, documentID, roleSheetIDs[role.Role], role, roleSheetIDs, false, true, journal, journalPath); err != nil {
 			return nil, err
 		}
 	}
@@ -981,7 +988,7 @@ func initializeRecordValuesEmpty(values map[string]any) bool {
 	return true
 }
 
-func addMissingInitializeFields(ctx context.Context, client wecomRequester, documentID, sheetID string, role zoopschema.Role, roleSheetIDs map[string]string, references bool, journal *instanceInitializeJournal, journalPath string) error {
+func addMissingInitializeFields(ctx context.Context, client wecomRequester, documentID, sheetID string, role zoopschema.Role, roleSheetIDs map[string]string, references, formulas bool, journal *instanceInitializeJournal, journalPath string) error {
 	response, err := client.Request(ctx, "get_fields", map[string]any{"docid": documentID, "sheet_id": sheetID})
 	if err != nil || apiError(response) != nil {
 		return fmt.Errorf("%s 字段回读失败", role.Role)
@@ -996,7 +1003,11 @@ func addMissingInitializeFields(ctx context.Context, client wecomRequester, docu
 		return ordered[i].Title == role.PrimaryFieldTitle && ordered[j].Title != role.PrimaryFieldTitle
 	})
 	for _, field := range ordered {
-		if (field.Reference != nil) != references {
+		if formulas {
+			if field.Type != "FIELD_TYPE_FORMULA" {
+				continue
+			}
+		} else if field.Type == "FIELD_TYPE_FORMULA" || (field.Reference != nil) != references {
 			continue
 		}
 		if current, ok := existing[field.Title]; ok {
@@ -1008,7 +1019,7 @@ func addMissingInitializeFields(ctx context.Context, client wecomRequester, docu
 		if field.UnsupportedForCreate {
 			return fmt.Errorf("%s 字段 %s 缺少已验证创建契约", role.Role, field.Title)
 		}
-		wire, err := initializeFieldWire(ctx, client, documentID, field, roleSheetIDs)
+		wire, err := initializeFieldWire(ctx, client, documentID, sheetID, field, roleSheetIDs)
 		if err != nil {
 			return err
 		}
@@ -1066,7 +1077,7 @@ func initializeWireFieldTitles(fields []any) []string {
 	return titles
 }
 
-func initializeFieldWire(ctx context.Context, client wecomRequester, documentID string, field zoopschema.Field, roleSheetIDs map[string]string) (map[string]any, error) {
+func initializeFieldWire(ctx context.Context, client wecomRequester, documentID, sheetID string, field zoopschema.Field, roleSheetIDs map[string]string) (map[string]any, error) {
 	result := map[string]any{"field_title": field.Title, "field_type": field.Type}
 	switch field.Type {
 	case "FIELD_TYPE_TEXT":
@@ -1103,6 +1114,40 @@ func initializeFieldWire(ctx context.Context, client wecomRequester, documentID 
 			return nil, fmt.Errorf("关联字段 %s 目标主字段不存在", field.Title)
 		}
 		result["property_reference"] = map[string]any{"sub_id": roleSheetIDs[field.Reference.Role], "field_id": target.ID, "is_multiple": field.Reference.Multiple}
+	case "FIELD_TYPE_FORMULA":
+		if field.Formula == nil || len(field.Formula.Model) == 0 {
+			return nil, fmt.Errorf("公式字段 %s 缺少逻辑公式契约", field.Title)
+		}
+		response, err := client.Request(ctx, "get_fields", map[string]any{"docid": documentID, "sheet_id": sheetID})
+		if err != nil || apiError(response) != nil {
+			return nil, fmt.Errorf("公式字段 %s 依赖回读失败", field.Title)
+		}
+		dependencies, err := mirrorFieldsFromAny(resultSlice(response, "fields"))
+		if err != nil {
+			return nil, err
+		}
+		model := make([]any, 0, len(field.Formula.Model))
+		for _, token := range field.Formula.Model {
+			switch token.Type {
+			case "FORMULA_TYPE_FIELD":
+				dependency := dependencies[token.FieldTitle]
+				if dependency.ID == "" {
+					return nil, fmt.Errorf("公式字段 %s 依赖 %s 缺少本次回读 field_id", field.Title, token.FieldTitle)
+				}
+				model = append(model, map[string]any{"type": token.Type, "field_id": dependency.ID})
+			case "FORMULA_TYPE_TEXT":
+				model = append(model, map[string]any{"type": token.Type, "text": token.Text})
+			default:
+				return nil, fmt.Errorf("公式字段 %s token 类型无效", field.Title)
+			}
+		}
+		result["property_formula"] = map[string]any{
+			"formula_model": model,
+			"formatter": map[string]any{
+				"type":     field.Formula.Formatter.Type,
+				"property": map[string]any{"property_progress": map[string]any{"decimal_places": field.Formula.Formatter.DecimalPlaces}},
+			},
+		}
 	default:
 		return nil, fmt.Errorf("字段 %s 类型 %s 缺少已验证创建契约", field.Title, field.Type)
 	}
