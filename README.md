@@ -97,6 +97,26 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 
 ## 当前工具
 
+`wecom_instance_initialize_status` 是首次初始化的只读入口，同时也是 dry-run。它通过专用的 `instance_initialize` capability group 回读 Registry、唯一 active row、Z-S01 至 Z-S09、生成版 Schema、初始化 journal 和 Z-S01 `limit=1` smoke，只输出结构计数、冲突、计划操作、快照摘要、短期 `preview_id` 与 `expires_at`，不返回业务记录内容。`registry_document_id` 是无未决 sentinel 时的既有 Registry 导入候选；`recovery_registry_document_id` / `recovery_business_document_id` 只能绑定已有 uncertain sentinel。任一分页或结构快照不完整时不会签发可用于 apply 的 preview。
+
+`wecom_instance_initialize_apply` 的 MCP 契约已预留固定 Owner 授权、短期 `preview_id` 和 status 原样返回的 `preview_expires_at` 校验，但当前候选在 Architecture Gate 1 放行前始终失败关闭，不会创建 Registry、业务文档、九表或记录，也不会修改本地配置。已有 `wecom_registry_bootstrap` 和 `wecom_schema_sync` 保持兼容；它们不能替代完整实例初始化。当前嵌入的 `zoop-v1` catalog 已脱敏固化 9 个角色和 147 个逻辑字段，不含任何租户 doc/sheet/field/option ID；Z-S01 公式字段因公开创建契约尚未证明而标为 `unsupported_for_create`，因此 catalog 不会伪报可全量创建。
+
+未来 apply 放行后的本地提交顺序固定为：先对候选 generation 执行 runtime loader/smoke，再备份并原子切换完整 config，最后通过正常 Resolver 做 Z-S01 只读 smoke。任何阶段失败都保留 journal 和原配置，不清 sentinel、不盲目重复 create。
+
+WorkBuddy 验收必须逐层报告，不能把安装成功等同于业务可用：
+
+```ini
+installed=yes|no
+configured=yes|no
+loaded=yes|no
+registry_verified=yes|no
+nine_tables_verified=yes|no
+schema_synced=yes|no
+tools_call_verified=yes|no
+owner_accepted=no
+production_deployed=no
+```
+
 `wecom_record_query` 提供固定租户内的只读查询：支持 `record_ids` 精确读取、受控 `filter_spec`、排序、`offset/limit` 分页和 `field_ids` 投影。默认返回紧凑单元格值，并显式返回 `record_count`、`returned_count`、`has_more`、`next_offset` 与 `response_truncated`。调用方不能传入租户、文档、子表或凭据参数。
 
 过滤字段 ID、字段类型、排序字段和投影字段都必须存在于本地只读 Schema 镜像；服务端会补齐并校验企业微信所需的 `field_type`，不把客户端提供的任意对象直接转发到线上。

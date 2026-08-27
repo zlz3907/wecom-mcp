@@ -69,7 +69,7 @@ func LoadSchema(path string) (Schema, error) {
 	if err := scanner.Err(); err != nil {
 		return Schema{}, fmt.Errorf("读取 Schema 镜像失败: %w", err)
 	}
-	for index := 1; index <= 8; index++ {
+	for index := 1; index <= 9; index++ {
 		role := fmt.Sprintf("Z-S0%d", index)
 		if len(result.Roles[role]) == 0 {
 			return Schema{}, fmt.Errorf("Schema 镜像缺少 %s", role)
@@ -103,7 +103,7 @@ func loadJSONSchema(path string) (Schema, error) {
 		return Schema{}, fmt.Errorf("Schema JSON 镜像无效")
 	}
 	result := Schema{Roles: map[string]map[string]Field{}}
-	for index := 1; index <= 8; index++ {
+	for index := 1; index <= 9; index++ {
 		role := fmt.Sprintf("Z-S0%d", index)
 		if source, found := mirror.Roles[role]; !found || len(source.Fields) == 0 {
 			return Schema{}, fmt.Errorf("Schema JSON 镜像缺少 %s", role)
@@ -140,24 +140,59 @@ func loadJSONSchema(path string) (Schema, error) {
 // WriteOnlineMirror atomically persists only the field contract needed by the
 // MCP. It deliberately excludes document and sheet identifiers.
 func WriteOnlineMirror(path string, fields map[string][]Field, capturedAt string) error {
-	roles := make(map[string]mirrorRole, len(fields))
-	for role, items := range fields {
-		copyItems := append([]Field(nil), items...)
-		sort.Slice(copyItems, func(i, j int) bool { return copyItems[i].ID < copyItems[j].ID })
-		roles[role] = mirrorRole{Fields: copyItems}
-	}
-	data, err := json.MarshalIndent(onlineMirror{Version: 1, CapturedAt: capturedAt, Roles: roles}, "", "  ")
+	data, err := marshalOnlineMirror(fields, capturedAt)
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, append(data, '\n'), 0600); err != nil {
-		return err
+	return replaceFile(path, append(data, '\n'), 0600, ".schema-mirror-*.tmp")
+}
+
+// WriteOnlineMirrorGeneration stages one immutable, content-addressed Schema
+// generation beside the instance state. It does not change the active config;
+// Store.CommitInitialized is the later, single local commit point.
+func WriteOnlineMirrorGeneration(statePath string, fields map[string][]Field, capturedAt string) (string, string, error) {
+	data, err := marshalOnlineMirror(fields, capturedAt)
+	if err != nil {
+		return "", "", err
 	}
-	return os.Rename(temporary, path)
+	sum := sha256.Sum256(append(data, '\n'))
+	digest := hex.EncodeToString(sum[:])
+	directory := filepath.Join(filepath.Dir(statePath), "schema-generations")
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		return "", "", err
+	}
+	path := filepath.Join(directory, digest+".json")
+	if existing, readErr := os.ReadFile(path); readErr == nil {
+		if string(existing) != string(append(data, '\n')) {
+			return "", "", fmt.Errorf("Schema generation digest collision")
+		}
+		if _, err := LoadSchema(path); err != nil {
+			return "", "", err
+		}
+		return path, digest, nil
+	} else if !os.IsNotExist(readErr) {
+		return "", "", readErr
+	}
+	if err := replaceFile(path, append(data, '\n'), 0600, ".schema-generation-*.tmp"); err != nil {
+		return "", "", err
+	}
+	if _, err := LoadSchema(path); err != nil {
+		return "", "", fmt.Errorf("Schema generation 回读失败: %w", err)
+	}
+	return path, digest, nil
+}
+
+func marshalOnlineMirror(fields map[string][]Field, capturedAt string) ([]byte, error) {
+	roles := make(map[string]mirrorRole, len(fields))
+	for role, items := range fields {
+		copyItems := append([]Field(nil), items...)
+		sort.Slice(copyItems, func(i, j int) bool { return copyItems[i].ID < copyItems[j].ID })
+		roles[role] = mirrorRole{Fields: copyItems}
+	}
+	return json.MarshalIndent(onlineMirror{Version: 1, CapturedAt: capturedAt, Roles: roles}, "", "  ")
 }
 
 // WriteReadableOnlineMirror writes a human-readable sibling of the generated
@@ -206,11 +241,7 @@ func WriteReadableOnlineMirror(path string, fields map[string][]Field, capturedA
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, []byte(text.String()), 0600); err != nil {
-		return err
-	}
-	return os.Rename(temporary, path)
+	return replaceFile(path, []byte(text.String()), 0600, ".schema-readable-*.tmp")
 }
 
 func readableFieldProperty(field Field) string {

@@ -1,0 +1,911 @@
+{
+  "version": "zoop-v1",
+  "source_contract": "owner-authorized-online-schema-v1",
+  "complete_for_creation": false,
+  "unsupported_for_create": [
+    "Z-S01.进度条"
+  ],
+  "roles": [
+    {
+      "role": "Z-S01",
+      "sheet_title": "Z-S01｜主需求表",
+      "fields": [
+        {
+          "field_title": "AI 分析摘要",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "GNAS Case 引用",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "GNAS Case 状态",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "已生成",
+            "待生成",
+            "生成失败"
+          ]
+        },
+        {
+          "field_title": "下一步动作",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "业务 Owner",
+          "field_type": "FIELD_TYPE_USER"
+        },
+        {
+          "field_title": "业务背景与价值",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "业务验收结果",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "不通过",
+            "有条件通过",
+            "未验收",
+            "通过"
+          ]
+        },
+        {
+          "field_title": "业务验收证据",
+          "field_type": "FIELD_TYPE_URL"
+        },
+        {
+          "field_title": "优先级",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "P0",
+            "P1",
+            "P2",
+            "P3"
+          ]
+        },
+        {
+          "field_title": "原始需求",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "变更摘要",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "实际结果与指标",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "已完成任务数",
+          "field_type": "FIELD_TYPE_NUMBER"
+        },
+        {
+          "field_title": "已知事实与约束",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "当前任务总数",
+          "field_type": "FIELD_TYPE_NUMBER"
+        },
+        {
+          "field_title": "当前焦点",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "当前轮澄清问题",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "待人事项类型",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "作出决策",
+            "完成人工前置",
+            "无",
+            "最终验收",
+            "补充澄清"
+          ]
+        },
+        {
+          "field_title": "所属项目",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S07",
+            "field_title": "项目编号与名称",
+            "multiple": false
+          }
+        },
+        {
+          "field_title": "执行健康",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "待人",
+            "有阻塞",
+            "正常",
+            "需关注"
+          ]
+        },
+        {
+          "field_title": "方法/能力引用",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "来源修订",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "来源链接",
+          "field_type": "FIELD_TYPE_URL"
+        },
+        {
+          "field_title": "澄清回复与结论",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "目标与预期结果",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "结束时间",
+          "field_type": "FIELD_TYPE_DATE_TIME"
+        },
+        {
+          "field_title": "结果观察状态",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "不适用",
+            "已记录",
+            "未开始",
+            "观察中"
+          ]
+        },
+        {
+          "field_title": "自动规划授权",
+          "field_type": "FIELD_TYPE_CHECKBOX"
+        },
+        {
+          "field_title": "范围与非范围",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "计划任务基线",
+          "field_type": "FIELD_TYPE_NUMBER"
+        },
+        {
+          "field_title": "进度更新时间",
+          "field_type": "FIELD_TYPE_DATE_TIME"
+        },
+        {
+          "field_title": "进度条",
+          "field_type": "FIELD_TYPE_FORMULA",
+          "unsupported_for_create": true
+        },
+        {
+          "field_title": "阻塞任务数",
+          "field_type": "FIELD_TYPE_NUMBER"
+        },
+        {
+          "field_title": "阻塞摘要",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "需求提出主体",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S09",
+            "field_title": "主体编号",
+            "multiple": false
+          }
+        },
+        {
+          "field_title": "需求标题",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "需求版本",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "需求确认凭证",
+          "field_type": "FIELD_TYPE_URL"
+        },
+        {
+          "field_title": "需求编号",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "需求阶段",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "已取消",
+            "已完成",
+            "已确认",
+            "待澄清",
+            "待确认",
+            "待验收",
+            "草稿",
+            "进行中"
+          ]
+        },
+        {
+          "field_title": "风险等级",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "R0",
+            "R1",
+            "R2",
+            "R3"
+          ]
+        },
+        {
+          "field_title": "验收标准",
+          "field_type": "FIELD_TYPE_TEXT"
+        }
+      ]
+    },
+    {
+      "role": "Z-S02",
+      "sheet_title": "Z-S02｜决策表",
+      "fields": [
+        {
+          "field_title": "主需求",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S01",
+            "field_title": "需求编号",
+            "multiple": false
+          }
+        },
+        {
+          "field_title": "人的结论与理由",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "决策 Owner",
+          "field_type": "FIELD_TYPE_USER"
+        },
+        {
+          "field_title": "决策主体",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S09",
+            "field_title": "主体编号",
+            "multiple": false
+          }
+        },
+        {
+          "field_title": "决策卡",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "决策幂等键",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "决策时间",
+          "field_type": "FIELD_TYPE_DATE_TIME"
+        },
+        {
+          "field_title": "决策标题",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "决策状态",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "已取消",
+            "已拒绝",
+            "已替代",
+            "已确认",
+            "待决策",
+            "草案"
+          ]
+        },
+        {
+          "field_title": "决策类型",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "业务取舍",
+            "执行例外",
+            "架构取舍",
+            "风险放行"
+          ]
+        },
+        {
+          "field_title": "决策编号",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "受影响任务",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S03",
+            "field_title": "任务编号",
+            "multiple": true
+          }
+        },
+        {
+          "field_title": "后续动作",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "截止时间",
+          "field_type": "FIELD_TYPE_DATE_TIME"
+        },
+        {
+          "field_title": "来源链接与修订",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "确认凭证",
+          "field_type": "FIELD_TYPE_URL"
+        },
+        {
+          "field_title": "被替代决策",
+          "field_type": "FIELD_TYPE_TEXT"
+        }
+      ]
+    },
+    {
+      "role": "Z-S03",
+      "sheet_title": "Z-S03｜任务表",
+      "fields": [
+        {
+          "field_title": "下一步动作",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "主需求",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S01",
+            "field_title": "需求编号",
+            "multiple": false
+          }
+        },
+        {
+          "field_title": "任务包",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "任务幂等键",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "任务执行主体",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S09",
+            "field_title": "主体编号",
+            "multiple": true
+          }
+        },
+        {
+          "field_title": "任务标题",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "任务状态",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "已取消",
+            "已完成",
+            "待执行",
+            "待拆解",
+            "待验证",
+            "执行中",
+            "返工",
+            "阻塞"
+          ]
+        },
+        {
+          "field_title": "任务类型",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "AI 执行",
+            "人工前置",
+            "实验",
+            "工作包",
+            "缺陷修复",
+            "验证与评审"
+          ]
+        },
+        {
+          "field_title": "任务编号",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "任务责任主体",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S09",
+            "field_title": "主体编号",
+            "multiple": false
+          }
+        },
+        {
+          "field_title": "关联决策与依赖",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "完成时间",
+          "field_type": "FIELD_TYPE_DATE_TIME"
+        },
+        {
+          "field_title": "开始时间",
+          "field_type": "FIELD_TYPE_DATE_TIME"
+        },
+        {
+          "field_title": "当前焦点",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "执行摘要",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "执行模式",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "AI 自主",
+            "人工执行",
+            "禁止自动执行"
+          ]
+        },
+        {
+          "field_title": "执行者",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "父任务编号",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "证据包",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "阻塞摘要与恢复动作",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "阻塞路由",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "AI 自行恢复",
+            "S02 决策",
+            "人工前置",
+            "外部依赖"
+          ]
+        },
+        {
+          "field_title": "验证结果",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "不适用",
+            "不通过",
+            "有条件通过",
+            "通过"
+          ]
+        }
+      ]
+    },
+    {
+      "role": "Z-S04",
+      "sheet_title": "Z-S04｜审计表",
+      "fields": [
+        {
+          "field_title": "下次恢复时间",
+          "field_type": "FIELD_TYPE_DATE_TIME"
+        },
+        {
+          "field_title": "发生时间",
+          "field_type": "FIELD_TYPE_DATE_TIME"
+        },
+        {
+          "field_title": "回读证据",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "失败与恢复",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "审计事件编号",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "操作与目标",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "操作主体",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S09",
+            "field_title": "主体编号",
+            "multiple": false
+          }
+        },
+        {
+          "field_title": "操作键",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "来源会话ID",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "结果",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "已升级",
+            "待恢复",
+            "成功",
+            "无变化"
+          ]
+        }
+      ]
+    },
+    {
+      "role": "Z-S05",
+      "sheet_title": "Z-S05｜计划任务表",
+      "fields": [
+        {
+          "field_title": "下次运行时间",
+          "field_type": "FIELD_TYPE_DATE_TIME"
+        },
+        {
+          "field_title": "名称与类型",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "启停状态",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "启用",
+            "已停用",
+            "暂停"
+          ]
+        },
+        {
+          "field_title": "并发键",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "恢复规则",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "最近运行结果",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "治理范围与执行角色",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "触发规则",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "计划任务编号",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "调度主体",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S09",
+            "field_title": "主体编号",
+            "multiple": false
+          }
+        },
+        {
+          "field_title": "运行契约引用",
+          "field_type": "FIELD_TYPE_TEXT"
+        }
+      ]
+    },
+    {
+      "role": "Z-S06",
+      "sheet_title": "Z-S06｜会话表",
+      "fields": [
+        {
+          "field_title": "主关联对象",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "交接与证据引用",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "会话ID",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "会话全局键",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "会话状态",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "冻结",
+            "完成",
+            "已交接",
+            "等待输入",
+            "进行中"
+          ]
+        },
+        {
+          "field_title": "会话编号与标题",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "会话角色",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "AI 主管",
+            "Review AI",
+            "同步协调员",
+            "执行 AI",
+            "研发经理",
+            "验证 AI"
+          ]
+        },
+        {
+          "field_title": "发起主体",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S09",
+            "field_title": "主体编号",
+            "multiple": false
+          }
+        },
+        {
+          "field_title": "工作边界",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "当前焦点与下一步",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "所属项目",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S07",
+            "field_title": "项目编号与名称",
+            "multiple": false
+          }
+        },
+        {
+          "field_title": "执行主体",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S09",
+            "field_title": "主体编号",
+            "multiple": false
+          }
+        },
+        {
+          "field_title": "最后观察时间",
+          "field_type": "FIELD_TYPE_DATE_TIME"
+        },
+        {
+          "field_title": "等待/阻塞引用",
+          "field_type": "FIELD_TYPE_TEXT"
+        }
+      ]
+    },
+    {
+      "role": "Z-S07",
+      "sheet_title": "Z-S07｜项目表",
+      "fields": [
+        {
+          "field_title": "参与主体",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S09",
+            "field_title": "主体编号",
+            "multiple": true
+          }
+        },
+        {
+          "field_title": "工程事实入口",
+          "field_type": "FIELD_TYPE_URL"
+        },
+        {
+          "field_title": "项目 Owner",
+          "field_type": "FIELD_TYPE_USER"
+        },
+        {
+          "field_title": "项目摘要",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "项目状态",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "已取消",
+            "已完成",
+            "暂停新任务",
+            "进行中"
+          ]
+        },
+        {
+          "field_title": "项目目标与边界",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "项目编号与名称",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "默认风险与执行政策",
+          "field_type": "FIELD_TYPE_TEXT"
+        }
+      ]
+    },
+    {
+      "role": "Z-S08",
+      "sheet_title": "Z-S08｜Schema 契约表",
+      "fields": [
+        {
+          "field_title": "Schema 条目键与版本",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "兼容状态",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "不兼容",
+            "已废弃",
+            "待迁移",
+            "有效"
+          ]
+        },
+        {
+          "field_title": "实际字段契约",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "映射说明",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "最后核验",
+          "field_type": "FIELD_TYPE_DATE_TIME"
+        },
+        {
+          "field_title": "状态门槛",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "表与字段定位",
+          "field_type": "FIELD_TYPE_TEXT"
+        }
+      ]
+    },
+    {
+      "role": "Z-S09",
+      "sheet_title": "Z-S09｜协作主体表",
+      "fields": [
+        {
+          "field_title": "AI 实例ID",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "AI 工具平台",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "Codex",
+            "TRAE IDE",
+            "TRAE Work",
+            "Tencent WorkBuddy",
+            "不适用",
+            "其他"
+          ]
+        },
+        {
+          "field_title": "主体名称",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "主体幂等键",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "主体状态",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "停用",
+            "启用",
+            "暂停"
+          ]
+        },
+        {
+          "field_title": "主体类型",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "AI 执行主体",
+            "人员主体",
+            "系统执行主体"
+          ]
+        },
+        {
+          "field_title": "主体编号",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "企业微信成员或责任人",
+          "field_type": "FIELD_TYPE_USER"
+        },
+        {
+          "field_title": "参与项目",
+          "field_type": "FIELD_TYPE_REFERENCE",
+          "reference": {
+            "role": "Z-S07",
+            "field_title": "项目编号与名称",
+            "multiple": true
+          }
+        },
+        {
+          "field_title": "执行模式",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "AI 自主",
+            "AI 辅助",
+            "人工",
+            "确定性系统执行"
+          ]
+        },
+        {
+          "field_title": "最后观察时间",
+          "field_type": "FIELD_TYPE_DATE_TIME"
+        },
+        {
+          "field_title": "最大自主风险等级",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "R0",
+            "R1",
+            "R2",
+            "R3",
+            "不得自主"
+          ]
+        },
+        {
+          "field_title": "来源修订",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "注册来源",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "AI 自注册",
+            "人工登记",
+            "企业微信同步",
+            "系统配置"
+          ]
+        },
+        {
+          "field_title": "能力与职责边界",
+          "field_type": "FIELD_TYPE_TEXT"
+        },
+        {
+          "field_title": "自动化能力状态",
+          "field_type": "FIELD_TYPE_SINGLE_SELECT",
+          "options": [
+            "不适用",
+            "人工触发",
+            "外部调度",
+            "定时唤醒",
+            "待验证"
+          ]
+        }
+      ]
+    }
+  ]
+}
