@@ -29,6 +29,25 @@ func TestLoadAndAllow(t *testing.T) {
 	}
 }
 
+func TestSchemaAdminIdentityAcceptsCanonicalWindowsPrincipalOnly(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  bool
+	}{
+		{value: "zhyc", want: true},
+		{value: `DESKTOP-123\zhyc`, want: true},
+		{value: `CORP.EXAMPLE\zhyc`, want: true},
+		{value: `CORP\`, want: false},
+		{value: `\zhyc`, want: false},
+		{value: `CORP\team\zhyc`, want: false},
+		{value: `CORP/zhyc`, want: false},
+	} {
+		if got := schemaAdminIdentity.MatchString(test.value); got != test.want {
+			t.Fatalf("schemaAdminIdentity.MatchString(%q)=%v, want %v", test.value, got, test.want)
+		}
+	}
+}
+
 func TestCommitInitializedBacksUpAndAtomicallySwitchesGeneration(t *testing.T) {
 	const secretCanary = "SECRET-CANARY-DO-NOT-PERSIST"
 	t.Setenv("GNAS_APP_SECRET", secretCanary)

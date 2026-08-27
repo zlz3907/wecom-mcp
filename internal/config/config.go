@@ -20,6 +20,7 @@ import (
 )
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,256}$`)
+var schemaAdminIdentity = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,256}(?:\\[A-Za-z0-9_.-]{1,256})?$`)
 var sha256Digest = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 var supportedOperations = func() map[string]struct{} {
@@ -78,7 +79,7 @@ func (c Config) validate(requireRegistry bool) error {
 			return fmt.Errorf("配置 %s 非法", name)
 		}
 	}
-	if c.SchemaAdminUser != "" && !identifier.MatchString(c.SchemaAdminUser) {
+	if c.SchemaAdminUser != "" && !schemaAdminIdentity.MatchString(c.SchemaAdminUser) {
 		return fmt.Errorf("配置 schema_admin_user 非法")
 	}
 	if requireRegistry || c.RegistryDocumentID != "" {
