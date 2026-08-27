@@ -1,14 +1,14 @@
 {
-  "version": 6,
-  "base_commit": "4dc83c724eb4f0d112f65ba1172935b6cca20249",
-  "scope": "Bounded active-row uncertainty recovery, all-apply protected local identity, and bootstrap prelock tenant-route drift rejection",
+  "version": 7,
+  "base_commit": "52dda894e71c8793e7b49302dcd11bb2bd538d94",
+  "scope": "Final bounded closure for bootstrap state-path drift and exact active-row pending identity convergence",
   "digest_algorithm": "sha256 of the listed path=sha256 lines in array order, each LF-terminated",
-  "evidence_digest": "fe6fe8f690c862062e0cb2d8cc7b51059cc45573cd203f38d4c518b9d03713ac",
+  "evidence_digest": "cd9b613a62cda5dceb927130036d47a6956a99cbee03eaab9a13080c62f6a6ba",
   "artifacts": [
-    {"path": "internal/mcp/instance_initialize.go", "sha256": "7bd3e62a4125252ac491c74aab43e3c3bc7446b50f1481a941d7f6de2ef36547"},
-    {"path": "internal/mcp/instance_initialize_test.go", "sha256": "2f68360c803c6b722436933b4ef4d8b32326317a2d47bbe6301e4c15aaf592fd"},
-    {"path": "internal/mcp/registry_bootstrap.go", "sha256": "8029800168ee4a896fc9e0bf58f8bd77644f00d72ddc4ca0d545ca2dcf350dbe"},
-    {"path": "internal/mcp/registry_bootstrap_test.go", "sha256": "dd266fa00618ca362ef60c5599ee3fa1ae6ed63b427bc80b5320ffaea270b729"},
+    {"path": "internal/mcp/instance_initialize.go", "sha256": "aac3b05610fb73343672de4ee1276afc39a15fe95181072f9bd9213f57105644"},
+    {"path": "internal/mcp/instance_initialize_test.go", "sha256": "322abea22fcede3c80ee93d5692a75f4daef5c41fdbc9a5db7c2166bbc387677"},
+    {"path": "internal/mcp/registry_bootstrap.go", "sha256": "5fe8235ea5ae66467571bcc76aecba3a2b3c920b74cda4213d14247c0d66b865"},
+    {"path": "internal/mcp/registry_bootstrap_test.go", "sha256": "4649c7dcda291ee0bc592643f2d809d1814c0874ab880fafb1616626d81c27ba"},
     {"path": "internal/mcp/server.go", "sha256": "8e97c3ab4f5af40fd01b65e4568ba413874ea67e8e008babb2d5b8094ca730b4"}
   ],
   "reproduction": [
@@ -37,6 +37,9 @@
     "temporarily_invisible_active_row_add_count": 1,
     "all_initializer_apply_requires_local_identity": true,
     "bootstrap_prelock_tenant_route_drift_writes": 0,
+    "bootstrap_prelock_state_path_drift_writes": 0,
+    "pending_registry_record_id_exact_match_required": true,
+    "ready_noop_pending_journal_cleared_first": true,
     "registry_field_count_is_observed": true,
     "production_deployed": false,
     "owner_accepted": false

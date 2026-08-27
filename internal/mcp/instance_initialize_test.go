@@ -558,6 +558,59 @@ func TestInstanceInitializeApplyReadyIsIdempotentAndNeverWritesRemote(t *testing
 	}
 }
 
+func TestInstanceInitializeReadyNoopPersistsPendingActiveRowConvergence(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	configPath := filepath.Join(t.TempDir(), "instance.json")
+	runtimeJSON, _ := json.MarshalIndent(runtime, "", "  ")
+	if err := os.WriteFile(configPath, append(runtimeJSON, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	journal := instanceInitializeJournal{
+		Version: instanceInitializeJournalV1, Phase: "ready", AssetKind: "business", BusinessDocumentID: fake.businessDocumentID,
+		PendingRegistryRow: true, PendingRegistryOp: "pending-active-row", PendingRegistryID: "registry-row", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: config.NewStore(configPath), initializeLocalUser: func() (string, error) { return "symbolic-admin", nil }}
+	_, result, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{})
+	if err != nil || result.(map[string]any)["state"] != "ready" {
+		t.Fatalf("ready no-op convergence failed: result=%#v err=%v", result, err)
+	}
+	persisted, _, _, err := loadInstanceInitializeJournal(instanceInitializeJournalPath(runtime))
+	if err != nil || persisted.PendingRegistryRow || persisted.Phase != "registry_row_verified" {
+		t.Fatalf("ready no-op returned before pending journal was durably cleared: %#v err=%v", persisted, err)
+	}
+}
+
+func TestInstanceInitializePendingActiveRowIDMismatchFailsClosed(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	journal := instanceInitializeJournal{
+		Version: instanceInitializeJournalV1, Phase: "ready", AssetKind: "business", BusinessDocumentID: fake.businessDocumentID,
+		PendingRegistryRow: true, PendingRegistryOp: "pending-active-row", PendingRegistryID: "different-record", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := result.(map[string]any)
+	if output["state"] != "recovery_required" || output["preview_id"] != "" || !strings.Contains(fmt.Sprint(output["conflicts"]), "registry_row_pending_record_id_mismatch") {
+		t.Fatalf("mismatched pending record id was accepted: %#v", output)
+	}
+	persisted, _, _, err := loadInstanceInitializeJournal(instanceInitializeJournalPath(runtime))
+	if err != nil || !persisted.PendingRegistryRow || persisted.PendingRegistryID != "different-record" {
+		t.Fatalf("mismatched pending journal was modified: %#v err=%v", persisted, err)
+	}
+	for _, operation := range fake.operations {
+		if operation == "add_records" {
+			t.Fatal("mismatched pending record id triggered a write")
+		}
+	}
+}
+
 func TestInstanceInitializeApplyAlwaysRequiresProtectedLocalIdentity(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
 	configPath := filepath.Join(t.TempDir(), "instance.json")

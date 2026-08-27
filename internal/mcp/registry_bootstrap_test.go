@@ -140,6 +140,40 @@ func TestRegistryBootstrapRejectsPrelockTenantRouteChange(t *testing.T) {
 	}
 }
 
+func TestRegistryBootstrapRejectsPrelockStatePathChange(t *testing.T) {
+	path, runtime := bootstrapTestConfig(t)
+	release, err := acquireStateFileLock(instanceLifecycleLockPath(runtime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: config.NewStore(path)}
+	client := &bootstrapFakeClient{fields: map[string]map[string]any{}}
+	raw, _ := json.Marshal(map[string]string{"owner_authorization": "create_and_persist_default_registry"})
+	result := make(chan error, 1)
+	go func() {
+		_, callErr := server.bootstrapRegistry(context.Background(), runtime, client, raw)
+		result <- callErr
+	}()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := strings.Replace(string(data), runtime.StatePath, runtime.StatePath+"-changed", 1)
+	if err := os.WriteFile(path, []byte(changed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "state_path") {
+		t.Fatalf("prelock state path drift was accepted: %v", err)
+	}
+	if client.createCalls != 0 {
+		t.Fatalf("state path drift performed create: %d", client.createCalls)
+	}
+	if _, err := os.Stat(registryBootstrapStatePath(runtime)); !os.IsNotExist(err) {
+		t.Fatalf("state path drift wrote a bootstrap sentinel: %v", err)
+	}
+}
+
 func TestRegistryBootstrapResumesCreatedDocumentWithoutCreatingAgain(t *testing.T) {
 	path, runtime := bootstrapTestConfig(t)
 	server := &Server{store: config.NewStore(path)}

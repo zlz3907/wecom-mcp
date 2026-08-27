@@ -379,8 +379,15 @@ func (s *Server) instanceInitializeApply(ctx context.Context, runtime config.Con
 		if observation.Snapshot.BusinessDocumentID != journal.BusinessDocumentID {
 			return nil, fmt.Errorf("Registry active row 回读与 pending journal 业务文档不一致")
 		}
+		if journal.PendingRegistryID != "" && observation.Snapshot.ActiveRegistryRecordID != journal.PendingRegistryID {
+			return nil, fmt.Errorf("Registry active row 回读 record_id 与 pending journal 不一致")
+		}
 		journal.PendingRegistryRow, journal.PendingRegistryOp, journal.PendingRegistryID = false, "", ""
 		journal.Phase = "registry_row_verified"
+		journal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+			return nil, fmt.Errorf("Registry active row pending journal 收敛保存失败")
+		}
 	}
 	if remotePlanned {
 		return s.applyRemoteInstanceInitialization(ctx, runtime, client, observation, catalog, journal)
@@ -1401,6 +1408,13 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	if snapshot.ActiveRegistryCount > 1 || (snapshot.ActiveRegistryCount == 1 && snapshot.BusinessDocumentID == "") {
 		observation.Conflicts = append(observation.Conflicts, "active_registry_row_not_unique")
 		observation.SnapshotComplete = true
+		observation.Snapshot = snapshot
+		return finalizeInitializeObservation(observation)
+	}
+	if journal.PendingRegistryRow && journal.PendingRegistryID != "" && snapshot.ActiveRegistryCount == 1 && snapshot.ActiveRegistryRecordID != journal.PendingRegistryID {
+		observation.State = "recovery_required"
+		observation.SnapshotComplete = true
+		observation.Conflicts = append(observation.Conflicts, "registry_row_pending_record_id_mismatch")
 		observation.Snapshot = snapshot
 		return finalizeInitializeObservation(observation)
 	}
