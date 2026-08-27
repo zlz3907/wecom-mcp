@@ -1313,26 +1313,20 @@ func TestRemoteInitializerNeverRepeatsTemporarilyInvisibleActiveRowWrite(t *test
 	}
 }
 
-func TestInstanceInitializeFreshPublicMainlineCreatesVerifiedProgressFormula(t *testing.T) {
+func TestInstanceInitializeFreshPublicMainlineKeepsFormulaWriteFailClosed(t *testing.T) {
 	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
 	server.initializeCatalog = nil
-	status, result, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{})
+	result, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status["state"] != "changes_planned" || status["capability_gap"] != false || result.(map[string]any)["state"] != "ready" {
-		t.Fatalf("fresh real-catalog public mainline did not reach ready: status=%#v result=%#v", status, result)
-	}
-	model, _ := fake.formulaPayload["formula_model"].([]any)
-	formatter, _ := fake.formulaPayload["formatter"].(map[string]any)
-	property, _ := formatter["property"].(map[string]any)
-	progress, _ := property["property_progress"].(map[string]any)
-	if len(model) != 3 || model[0].(map[string]any)["field_id"] == "" || model[0].(map[string]any)["field_title"] != nil || model[1].(map[string]any)["text"] != "/" || model[2].(map[string]any)["field_id"] == "" || formatter["type"] != "FIELD_TYPE_PROGRESS" || progress["decimal_places"] != -1 {
-		t.Fatalf("unexpected formula payload: %#v", fake.formulaPayload)
+	status := result.(map[string]any)
+	if status["state"] != "capability_gap" || status["preview_id"] != "" || status["catalog_creation_complete"] != false {
+		t.Fatalf("fresh public mainline did not keep formula write fail-closed: %#v", status)
 	}
 }
 
-func TestInstanceInitializeRegistryRecoveryWithMissingFieldsIsExecutableWithCompleteCatalog(t *testing.T) {
+func TestInstanceInitializeRegistryRecoveryWithMissingFieldsBlocksUnprovenFormulaWrite(t *testing.T) {
 	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
 	server.initializeCatalog = nil
 	registryResponse, err := fake.Request(context.Background(), "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "SMART_SHEETS_IDS"})
@@ -1354,8 +1348,8 @@ func TestInstanceInitializeRegistryRecoveryWithMissingFieldsIsExecutableWithComp
 		t.Fatal(err)
 	}
 	status := result.(map[string]any)
-	if status["state"] != "recovery_required" || status["capability_gap"] != false || status["preview_id"] == "" || len(status["conflicts"].([]string)) != 0 {
-		t.Fatalf("complete formula catalog did not make Registry recovery executable: %#v", status)
+	if status["state"] != "capability_gap" || status["capability_gap"] != true || status["preview_id"] != "" || !strings.Contains(fmt.Sprint(status["conflicts"]), "downstream_business_state_unproven") {
+		t.Fatalf("unproven formula write did not block Registry recovery: %#v", status)
 	}
 	applyRaw, _ := json.Marshal(map[string]string{
 		"preview_id": strings.Repeat("0", 64), "preview_expires_at": time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano),

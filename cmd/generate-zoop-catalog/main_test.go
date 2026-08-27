@@ -61,8 +61,8 @@ func TestConvertAddsVerifiedLogicalProgressFormula(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.CompleteForCreation || len(got.UnsupportedForCreate) != 0 {
-		t.Fatalf("verified formula did not complete catalog: %#v", got)
+	if got.CompleteForCreation || len(got.UnsupportedForCreate) != 1 {
+		t.Fatalf("formula write capability was incorrectly unlocked: %#v", got)
 	}
 	foundFormula := false
 	for _, field := range got.Roles[0].Fields {

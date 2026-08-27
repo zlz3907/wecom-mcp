@@ -23,10 +23,10 @@ func TestEmbeddedCatalogIsTenantNeutralAndCompleteAsObserved(t *testing.T) {
 			t.Fatalf("%s title=%q want=%q", role.Role, role.SheetTitle, wantTitles[role.Role])
 		}
 	}
-	if !catalog.CompleteForCreation {
-		t.Fatal("verified formula contract must make the catalog complete for creation")
+	if catalog.CompleteForCreation {
+		t.Fatal("formula add_fields write capability is not yet proven")
 	}
-	if len(catalog.UnsupportedForCreate) != 0 {
+	if len(catalog.UnsupportedForCreate) != 1 || catalog.UnsupportedForCreate[0] != "Z-S01.进度条" {
 		t.Fatalf("unexpected unsupported fields: %#v", catalog.UnsupportedForCreate)
 	}
 	data, err := json.Marshal(catalog)
