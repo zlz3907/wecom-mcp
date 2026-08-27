@@ -196,6 +196,81 @@ func instanceInitializeStatusToolSchema() map[string]any {
 	}
 }
 
+func instanceInitializeFacadeToolSchema() map[string]any {
+	statusProperties := instanceInitializeStatusToolSchema()["properties"].(map[string]any)
+	statusProperties = cloneInitializeProperties(statusProperties)
+	statusProperties["action"] = map[string]any{"const": "status"}
+	applyProperties := instanceInitializeApplyToolSchema()["properties"].(map[string]any)
+	applyProperties = cloneInitializeProperties(applyProperties)
+	applyProperties["action"] = map[string]any{"const": "apply"}
+	return map[string]any{
+		"oneOf": []any{
+			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"action"}, "properties": statusProperties},
+			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"action", "preview_id", "preview_expires_at", "owner_authorization"}, "properties": applyProperties},
+		},
+	}
+}
+
+func cloneInitializeProperties(source map[string]any) map[string]any {
+	result := make(map[string]any, len(source)+1)
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
+
+func parseInstanceInitializeFacade(raw json.RawMessage) (string, json.RawMessage, error) {
+	var input struct {
+		Action                     string `json:"action"`
+		PreviewID                  string `json:"preview_id"`
+		PreviewExpiresAt           string `json:"preview_expires_at"`
+		OwnerAuthorization         string `json:"owner_authorization"`
+		RegistryDocumentID         string `json:"registry_document_id"`
+		RecoveryRegistryDocumentID string `json:"recovery_registry_document_id"`
+		RecoveryBusinessDocumentID string `json:"recovery_business_document_id"`
+	}
+	if err := strictDecode(raw, &input, "action", "preview_id", "preview_expires_at", "owner_authorization", "registry_document_id", "recovery_registry_document_id", "recovery_business_document_id"); err != nil {
+		return "", nil, err
+	}
+	common := map[string]any{}
+	if input.RegistryDocumentID != "" {
+		common["registry_document_id"] = input.RegistryDocumentID
+	}
+	if input.RecoveryRegistryDocumentID != "" {
+		common["recovery_registry_document_id"] = input.RecoveryRegistryDocumentID
+	}
+	if input.RecoveryBusinessDocumentID != "" {
+		common["recovery_business_document_id"] = input.RecoveryBusinessDocumentID
+	}
+	switch input.Action {
+	case "status":
+		if input.PreviewID != "" || input.PreviewExpiresAt != "" || input.OwnerAuthorization != "" {
+			return "", nil, fmt.Errorf("实例初始化 status 不接受 apply 参数")
+		}
+		delegated, err := json.Marshal(common)
+		return input.Action, delegated, err
+	case "apply":
+		common["preview_id"] = input.PreviewID
+		common["preview_expires_at"] = input.PreviewExpiresAt
+		common["owner_authorization"] = input.OwnerAuthorization
+		delegated, err := json.Marshal(common)
+		return input.Action, delegated, err
+	default:
+		return "", nil, fmt.Errorf("实例初始化 action 必须是 status 或 apply")
+	}
+}
+
+func (s *Server) instanceInitializeFacade(ctx context.Context, runtime config.Config, client wecomRequester, clientErr error, raw json.RawMessage) (any, error) {
+	action, delegated, err := parseInstanceInitializeFacade(raw)
+	if err != nil {
+		return nil, err
+	}
+	if action == "status" {
+		return s.instanceInitializeStatus(ctx, runtime, client, clientErr, delegated)
+	}
+	return s.instanceInitializeApply(ctx, runtime, client, clientErr, delegated)
+}
+
 func instanceInitializeApplyToolSchema() map[string]any {
 	return map[string]any{
 		"type":                 "object",

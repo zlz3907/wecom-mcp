@@ -180,7 +180,7 @@ func readyInitializeFixture(t *testing.T) (config.Config, *initializeFakeClient)
 func TestInstanceInitializeStatusReadyIsReadOnlyAndDisclosesNoRecords(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
 	server := &Server{}
-	result, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	result, err := server.instanceInitializeFacade(context.Background(), runtime, fake, nil, json.RawMessage(`{"action":"status"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,15 +525,15 @@ func TestInstanceInitializeApplyReadyIsIdempotentAndNeverWritesRemote(t *testing
 		}{string(data), info.ModTime()}
 	}
 	server := &Server{store: config.NewStore(configPath), initializeLocalUser: func() (string, error) { return "symbolic-admin", nil }}
-	status, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	status, err := server.instanceInitializeFacade(context.Background(), runtime, fake, nil, json.RawMessage(`{"action":"status"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	previewID := status.(map[string]any)["preview_id"].(string)
 	expiresAt := status.(map[string]any)["expires_at"].(string)
 	before := len(fake.operations)
-	input, _ := json.Marshal(map[string]string{"preview_id": previewID, "preview_expires_at": expiresAt, "owner_authorization": instanceInitializeAuthorization})
-	result, err := server.instanceInitializeApply(context.Background(), runtime, fake, nil, input)
+	input, _ := json.Marshal(map[string]string{"action": "apply", "preview_id": previewID, "preview_expires_at": expiresAt, "owner_authorization": instanceInitializeAuthorization})
+	result, err := server.instanceInitializeFacade(context.Background(), runtime, fake, nil, input)
 	if err != nil || result.(map[string]any)["state"] != "ready" || result.(map[string]any)["enterprise_wecom_updated"] != false {
 		t.Fatalf("ready apply must be idempotent: result=%#v err=%v", result, err)
 	}
@@ -714,11 +714,28 @@ func TestInitializeJournalRejectsUnknownAndInvalidRecoveryState(t *testing.T) {
 }
 
 func TestInitializerToolSchemaDoesNotExposeUndecidedBusinessImport(t *testing.T) {
-	for _, schema := range []map[string]any{instanceInitializeStatusToolSchema(), instanceInitializeApplyToolSchema()} {
+	for _, schema := range []map[string]any{instanceInitializeFacadeToolSchema(), instanceInitializeStatusToolSchema(), instanceInitializeApplyToolSchema()} {
 		data, _ := json.Marshal(schema)
 		if strings.Contains(string(data), "existing_business_document_id") {
 			t.Fatalf("undecided business import is public: %s", data)
 		}
+	}
+}
+
+func TestInstanceInitializeFacadeDispatch(t *testing.T) {
+	action, delegated, err := parseInstanceInitializeFacade(json.RawMessage(`{"action":"status","registry_document_id":"registry_candidate"}`))
+	if err != nil || action != "status" || strings.Contains(string(delegated), "action") {
+		t.Fatalf("status facade mismatch: action=%q payload=%s err=%v", action, delegated, err)
+	}
+	if _, _, err := parseInstanceInitializeFacade(json.RawMessage(`{"action":"status","preview_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`)); err == nil {
+		t.Fatal("status facade accepted apply arguments")
+	}
+	action, delegated, err = parseInstanceInitializeFacade(json.RawMessage(`{"action":"apply","preview_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","preview_expires_at":"2026-08-27T00:00:00Z","owner_authorization":"apply_approved_instance_initialization"}`))
+	if err != nil || action != "apply" || strings.Contains(string(delegated), "action") {
+		t.Fatalf("apply facade mismatch: action=%q payload=%s err=%v", action, delegated, err)
+	}
+	if _, _, err := parseInstanceInitializeFacade(json.RawMessage(`{"action":"run"}`)); err == nil {
+		t.Fatal("facade accepted unknown action")
 	}
 }
 
@@ -731,7 +748,7 @@ func TestStdioToolsListExposesInitializerContracts(t *testing.T) {
 	}
 	data, _ := json.Marshal(response.Result)
 	text := string(data)
-	for _, required := range []string{"wecom_instance_initialize_status", "wecom_instance_initialize_apply", instanceInitializeAuthorization, "preview_expires_at", "registry_document_id"} {
+	for _, required := range []string{"wecom_instance_initialize", "wecom_instance_initialize_status", "wecom_instance_initialize_apply", "\"action\"", instanceInitializeAuthorization, "preview_expires_at", "registry_document_id"} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("tools/list missing %s: %s", required, text)
 		}
@@ -1316,7 +1333,7 @@ func TestRemoteInitializerNeverRepeatsTemporarilyInvisibleActiveRowWrite(t *test
 func TestInstanceInitializeFreshPublicMainlineKeepsFormulaWriteFailClosed(t *testing.T) {
 	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
 	server.initializeCatalog = nil
-	result, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	result, err := server.instanceInitializeFacade(context.Background(), runtime, fake, nil, json.RawMessage(`{"action":"status"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
