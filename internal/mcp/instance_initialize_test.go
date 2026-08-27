@@ -369,8 +369,8 @@ func TestInstanceInitializeBusinessRecoverySentinelBindsAndVerifiesSameDocument(
 	if output["state"] != "recovery_required" || output["snapshot_complete"] != true || output["next_required_input"] != "" || observed["business_document_resolved"] != true || observed["role_sheet_count"] != 9 {
 		t.Fatalf("business recovery was not bound to and verified against the sentinel asset: %#v", output)
 	}
-	if output["preview_id"] != "" || !strings.Contains(fmt.Sprint(output["planned_operations"]), "register_unique_active_row") {
-		t.Fatalf("recovery must remain explicit and fail closed before writes: %#v", output)
+	if output["preview_id"] == "" || !strings.Contains(fmt.Sprint(output["planned_operations"]), "register_unique_active_row") {
+		t.Fatalf("verified executable recovery must sign a preview: %#v", output)
 	}
 }
 
@@ -724,6 +724,7 @@ type initializeLifecycleFake struct {
 	deleteCount       int
 	updateFieldCount  int
 	smokeCount        int
+	failFinalResolver bool
 }
 
 func (f *initializeLifecycleFake) nextID(prefix string) string {
@@ -786,6 +787,9 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 		document := f.documents[documentID]
 		if document == nil {
 			return nil, fmt.Errorf("unknown document %s", documentID)
+		}
+		if f.failFinalResolver && f.smokeCount >= 4 && document.name != "SMART_SHEETS_IDS" {
+			return okInitializeResponse("sheet_list", []any{}), nil
 		}
 		items := []any{}
 		for _, sheet := range document.sheets {
@@ -930,14 +934,48 @@ func initializeLifecycleFixture(t *testing.T) (config.Config, zoopschema.Catalog
 		Snapshot: initializeSnapshot{InstanceName: runtime.InstanceName, ConfigDigest: runtime.Digest(), CatalogDigest: digestValue(catalog), CatalogVersion: catalog.Version, CatalogCreationComplete: true, RoleSheetIDs: map[string]string{}, RoleFieldsDigests: map[string]string{}},
 	}
 	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", CatalogDigest: digestValue(catalog), ConfigDigest: runtime.Digest(), UpdatedAt: "2026-08-27T00:00:00Z"}
-	return runtime, catalog, fake, &Server{store: config.NewStore(configPath)}, observation, journal
+	return runtime, catalog, fake, &Server{store: config.NewStore(configPath), initializeCatalog: func() (zoopschema.Catalog, error) { return catalog, nil }}, observation, journal
+}
+
+func publicInitializeStatusAndApply(t *testing.T, server *Server, runtime config.Config, fake wecomRequester, input map[string]string) (map[string]any, any, error) {
+	t.Helper()
+	statusRaw, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusResult, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, statusRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := statusResult.(map[string]any)
+	previewID, _ := status["preview_id"].(string)
+	expiresAt, _ := status["expires_at"].(string)
+	if previewID == "" || expiresAt == "" {
+		t.Fatalf("public status did not sign an executable preview: %#v", status)
+	}
+	applyInput := map[string]string{"preview_id": previewID, "preview_expires_at": expiresAt, "owner_authorization": instanceInitializeAuthorization}
+	for key, value := range input {
+		applyInput[key] = value
+	}
+	applyRaw, err := json.Marshal(applyInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, applyErr := server.instanceInitializeApply(context.Background(), runtime, fake, nil, applyRaw)
+	return status, result, applyErr
 }
 
 func TestRemoteInitializerControlledEndToEnd(t *testing.T) {
-	runtime, catalog, fake, server, observation, journal := initializeLifecycleFixture(t)
-	result, err := server.applyRemoteInstanceInitialization(context.Background(), runtime, fake, observation, catalog, journal)
+	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
+	status, result, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
+	}
+	statusJSON, _ := json.Marshal(status)
+	for _, internalID := range []string{"document-001", "sheet-003"} {
+		if strings.Contains(string(statusJSON), internalID) {
+			t.Fatalf("public status disclosed internal ID %s: %s", internalID, statusJSON)
+		}
 	}
 	output := result.(map[string]any)
 	if output["state"] != "ready" || output["enterprise_wecom_updated"] != true || output["local_updated"] != true || output["config_backup_created"] != true {
@@ -959,9 +997,9 @@ func TestRemoteInitializerControlledEndToEnd(t *testing.T) {
 func TestRemoteInitializerRecoversPartialAssetsWithoutDuplicateCreate(t *testing.T) {
 	for _, failure := range []string{"add_fields", "add_sheet"} {
 		t.Run(failure, func(t *testing.T) {
-			runtime, catalog, fake, server, observation, journal := initializeLifecycleFixture(t)
+			runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
 			fake.failOnceOperation = failure
-			if _, err := server.applyRemoteInstanceInitialization(context.Background(), runtime, fake, observation, catalog, journal); err == nil {
+			if _, _, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{}); err == nil {
 				t.Fatal("injected partial failure unexpectedly succeeded")
 			}
 			createdBeforeRecovery := fake.createCount
@@ -972,10 +1010,24 @@ func TestRemoteInitializerRecoversPartialAssetsWithoutDuplicateCreate(t *testing
 			if failure == "add_sheet" && stored.BusinessDocumentID == "" {
 				t.Fatalf("business recovery lost docid: %#v", stored)
 			}
-			refreshed := observeInstanceInitializationWithCatalog(context.Background(), runtime, fake, nil, initializeStatusInput{}, catalog, nil)
-			result, err := server.applyRemoteInstanceInitialization(context.Background(), runtime, fake, refreshed, catalog, stored)
+			recoveryInput := map[string]string{}
+			if failure == "add_fields" {
+				recoveryInput["recovery_registry_document_id"] = stored.RegistryDocumentID
+			} else {
+				recoveryInput["recovery_business_document_id"] = stored.BusinessDocumentID
+			}
+			status, result, err := publicInitializeStatusAndApply(t, server, runtime, fake, recoveryInput)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if status["state"] != "recovery_required" {
+				t.Fatalf("public recovery status was not explicit: %#v", status)
+			}
+			statusJSON, _ := json.Marshal(status)
+			for _, internalID := range []string{stored.RegistryDocumentID, stored.BusinessDocumentID} {
+				if internalID != "" && strings.Contains(string(statusJSON), internalID) {
+					t.Fatalf("public recovery status disclosed internal ID %s: %s", internalID, statusJSON)
+				}
 			}
 			if result.(map[string]any)["state"] != "ready" {
 				t.Fatalf("recovery did not reach ready: %#v", result)
@@ -997,13 +1049,123 @@ func TestRemoteInitializerTreatsRegisterRowAsRemoteAndConvergesUncertainWrite(t 
 	if !hasRemoteInitializePlan([]string{"verify_recovered_business_document", "register_unique_active_row"}) {
 		t.Fatal("register_unique_active_row was misclassified as a local-only operation")
 	}
-	runtime, catalog, fake, server, observation, journal := initializeLifecycleFixture(t)
+	if requiresCompleteInitializeCatalog([]string{"verify_recovered_business_document", "register_unique_active_row"}) {
+		t.Fatal("active-row-only recovery was incorrectly blocked by an unrelated formula creation gap")
+	}
+	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
 	fake.failOnceOperation = "add_records"
-	result, err := server.applyRemoteInstanceInitialization(context.Background(), runtime, fake, observation, catalog, journal)
+	_, result, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.(map[string]any)["state"] != "ready" || !fake.failed {
 		t.Fatalf("uncertain active row write did not converge by readback: %#v", result)
+	}
+}
+
+func TestInstanceInitializeNewCreateReportsFormulaCapabilityGapWithoutPreview(t *testing.T) {
+	runtime, _, fake, _, _, _ := initializeLifecycleFixture(t)
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := result.(map[string]any)
+	if output["state"] != "capability_gap" || output["capability_gap"] != true || output["preview_id"] != "" || !strings.Contains(fmt.Sprint(output["conflicts"]), "formulaModel") {
+		t.Fatalf("incomplete progress formula did not block a new create preview: %#v", output)
+	}
+}
+
+func TestInstanceInitializeRecoveryCandidateWithoutJournalDocIDRemainsUnowned(t *testing.T) {
+	runtime, catalog, fake, server, _, _ := initializeLifecycleFixture(t)
+	registryResponse, err := fake.Request(context.Background(), "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "SMART_SHEETS_IDS"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryID := initializeCreatedDocumentID(registryResponse)
+	if _, err := reconcileInitializeRegistry(context.Background(), fake, registryID, true); err != nil {
+		t.Fatal(err)
+	}
+	runtime.RegistryDocumentID = registryID
+	businessResponse, err := fake.Request(context.Background(), "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "Zoop｜test-registry"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	businessID := initializeCreatedDocumentID(businessResponse)
+	original := fake.documents[businessID].sheets[0]
+	journal := instanceInitializeJournal{
+		Version: instanceInitializeJournalV1, Phase: "recovery_required", AssetKind: "business", OperationID: "unowned-candidate",
+		RegistryDocumentID: registryID, CatalogDigest: digestValue(catalog), ConfigDigest: runtime.Digest(), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		t.Fatal(err)
+	}
+	fake.deleteCount, fake.updateFieldCount = 0, 0
+	status, result, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{"recovery_business_document_id": businessID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status["state"] != "recovery_required" || result.(map[string]any)["state"] != "ready" {
+		t.Fatalf("unowned candidate recovery did not complete: status=%#v result=%#v", status, result)
+	}
+	if original.name != "默认子表" || len(original.fields) != 1 || original.fields[0].(map[string]any)["field_title"] != "默认主字段" || len(original.records) != 1 {
+		t.Fatalf("unowned recovery candidate was cleaned or renamed: %#v", original)
+	}
+	if fake.deleteCount != 9 || fake.updateFieldCount != 9 {
+		t.Fatalf("cleanup escaped current-operation-created sheets: delete=%d update=%d", fake.deleteCount, fake.updateFieldCount)
+	}
+}
+
+func TestInstanceInitializeRegistryRecoveryCandidateWithoutJournalDocIDRemainsUnowned(t *testing.T) {
+	runtime, catalog, fake, server, _, _ := initializeLifecycleFixture(t)
+	registryResponse, err := fake.Request(context.Background(), "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "SMART_SHEETS_IDS"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryID := initializeCreatedDocumentID(registryResponse)
+	original := fake.documents[registryID].sheets[0]
+	journal := instanceInitializeJournal{
+		Version: instanceInitializeJournalV1, Phase: "recovery_required", AssetKind: "registry", OperationID: "unowned-registry-candidate",
+		CatalogDigest: digestValue(catalog), ConfigDigest: runtime.Digest(), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		t.Fatal(err)
+	}
+	fake.deleteCount, fake.updateFieldCount = 0, 0
+	status, result, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{"recovery_registry_document_id": registryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status["state"] != "recovery_required" || result.(map[string]any)["state"] != "ready" {
+		t.Fatalf("unowned Registry candidate recovery did not complete: status=%#v result=%#v", status, result)
+	}
+	defaultRecordPreserved := false
+	for _, raw := range original.records {
+		record, _ := raw.(map[string]any)
+		if strings.HasPrefix(fmt.Sprint(record["record_id"]), "empty-record-") {
+			defaultRecordPreserved = true
+		}
+	}
+	if original.name != "默认子表" || !defaultRecordPreserved || original.fields[0].(map[string]any)["field_title"] != "默认主字段" {
+		t.Fatalf("unowned Registry recovery candidate was cleaned or renamed: %#v", original)
+	}
+	if fake.deleteCount != 9 || fake.updateFieldCount != 9 {
+		t.Fatalf("Registry candidate cleanup escaped current-operation-created business sheets: delete=%d update=%d", fake.deleteCount, fake.updateFieldCount)
+	}
+}
+
+func TestInstanceInitializeFinalSmokeMustUseReloadedConfigResolver(t *testing.T) {
+	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
+	fake.failFinalResolver = true
+	_, _, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{})
+	if err == nil || !strings.Contains(err.Error(), "正常 Resolver") {
+		t.Fatalf("final smoke trusted observation IDs instead of the reloaded Resolver: %v", err)
+	}
+	persisted, loadErr := server.store.Current()
+	if loadErr != nil || persisted.InitializedState != "config_committed" {
+		t.Fatalf("negative Resolver test did not reach committed config: %#v err=%v", persisted, loadErr)
+	}
+	journal, _, exists, journalErr := loadInstanceInitializeJournal(instanceInitializeJournalPath(runtime))
+	if journalErr != nil || !exists || journal.Phase != "config_committed" {
+		t.Fatalf("Resolver failure did not retain forward-recovery journal: %#v exists=%v err=%v", journal, exists, journalErr)
 	}
 }

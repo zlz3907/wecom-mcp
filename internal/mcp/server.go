@@ -17,16 +17,18 @@ import (
 
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/config"
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/wecom"
+	"github.com/zhonglizhi/wecom-mcp-v2/internal/zoopschema"
 )
 
 var validRoles = map[string]struct{}{"Z-S01": {}, "Z-S02": {}, "Z-S03": {}, "Z-S04": {}, "Z-S05": {}, "Z-S06": {}, "Z-S07": {}, "Z-S08": {}, "Z-S09": {}}
 
 type Server struct {
-	store      *config.Store
-	stateMu    sync.Mutex
-	progressMu sync.Mutex
-	previewMu  sync.Mutex
-	previews   map[string]initializePreview
+	store             *config.Store
+	stateMu           sync.Mutex
+	progressMu        sync.Mutex
+	previewMu         sync.Mutex
+	previews          map[string]initializePreview
+	initializeCatalog func() (zoopschema.Catalog, error)
 }
 
 func New(configPath string) *Server { return &Server{store: config.NewStore(configPath)} }

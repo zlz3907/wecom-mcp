@@ -8,6 +8,10 @@ import (
 
 type Target struct{ DocumentID, SheetID, Role string }
 
+type Requester interface {
+	Request(context.Context, string, any) (map[string]any, error)
+}
+
 func textCell(value any) string {
 	items, ok := value.([]any)
 	if !ok {
@@ -47,7 +51,7 @@ func responseError(response map[string]any) error {
 // ResolveTarget discovers the active document through the instance's fixed
 // SMART_SHEETS_IDS entrypoint, then resolves one logical Zoop role. It never
 // accepts a caller-provided document or sheet ID.
-func ResolveTarget(ctx context.Context, client *Client, registryDocumentID, registryKey, role string, allowed func(string) bool) (Target, error) {
+func ResolveTarget(ctx context.Context, client Requester, registryDocumentID, registryKey, role string, allowed func(string) bool) (Target, error) {
 	for _, op := range []string{"get_sheet", "get_fields", "get_records"} {
 		if !allowed(op) {
 			return Target{}, fmt.Errorf("实例白名单未允许登记解析所需 API: %s", op)
@@ -143,7 +147,7 @@ func ResolveTarget(ctx context.Context, client *Client, registryDocumentID, regi
 // ResolveTargets resolves several logical Zoop roles after discovering the
 // fixed active document once. It avoids repeating the SMART_SHEETS_IDS lookup
 // for every role during an Owner-authorized full Schema sync.
-func ResolveTargets(ctx context.Context, client *Client, registryDocumentID, registryKey string, roles []string, allowed func(string) bool) (map[string]Target, error) {
+func ResolveTargets(ctx context.Context, client Requester, registryDocumentID, registryKey string, roles []string, allowed func(string) bool) (map[string]Target, error) {
 	if len(roles) == 0 {
 		return nil, fmt.Errorf("至少需要一个 Zoop 表角色")
 	}
