@@ -390,7 +390,7 @@ func TestInstanceInitializeBusinessRecoveryUsesJournalDocumentID(t *testing.T) {
 	}
 	output := result.(map[string]any)
 	observed := output["observed"].(map[string]any)
-	if output["state"] != "recovery_required" || output["next_required_input"] != "" || observed["business_document_resolved"] != true || observed["z_s01_smoke_verified"] != true {
+	if output["state"] != "recovery_required" || output["next_required_input"] != "" || observed["business_document_resolved"] != true || observed["role_sheet_count"] != 9 {
 		t.Fatalf("journal business document was not verified as the recovery asset: %#v", output)
 	}
 }
@@ -427,9 +427,36 @@ func TestInstanceInitializeManagementPermissionFailsClosedOnGuessedAuthField(t *
 	}
 }
 
-func TestInstanceInitializeApplyIsFailClosedAndNeverWrites(t *testing.T) {
+func TestInstanceInitializeApplyReadyIsIdempotentAndNeverWritesRemote(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
-	server := &Server{}
+	configPath := filepath.Join(t.TempDir(), "instance.json")
+	if err := os.WriteFile(configPath, []byte(`{"sentinel":"unchanged"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "ready", UpdatedAt: "2026-08-27T00:00:00Z"}
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{configPath, runtime.SchemaMirrorPath, instanceInitializeJournalPath(runtime)}
+	beforeFiles := map[string]struct {
+		data  string
+		mtime time.Time
+	}{}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeFiles[path] = struct {
+			data  string
+			mtime time.Time
+		}{string(data), info.ModTime()}
+	}
+	server := &Server{store: config.NewStore(configPath)}
 	status, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatal(err)
@@ -438,12 +465,27 @@ func TestInstanceInitializeApplyIsFailClosedAndNeverWrites(t *testing.T) {
 	expiresAt := status.(map[string]any)["expires_at"].(string)
 	before := len(fake.operations)
 	input, _ := json.Marshal(map[string]string{"preview_id": previewID, "preview_expires_at": expiresAt, "owner_authorization": instanceInitializeAuthorization})
-	if _, err := server.instanceInitializeApply(context.Background(), runtime, fake, nil, input); err == nil || !strings.Contains(err.Error(), "Gate 1") {
-		t.Fatalf("apply must fail closed at architecture gate: %v", err)
+	result, err := server.instanceInitializeApply(context.Background(), runtime, fake, nil, input)
+	if err != nil || result.(map[string]any)["state"] != "ready" || result.(map[string]any)["enterprise_wecom_updated"] != false {
+		t.Fatalf("ready apply must be idempotent: result=%#v err=%v", result, err)
 	}
 	for _, operation := range fake.operations[before:] {
 		if operation != "get_doc_base_info" && operation != "get_doc_auth" && operation != "get_sheet" && operation != "get_fields" && operation != "get_records" {
 			t.Fatalf("apply performed write operation %s", operation)
+		}
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		previous := beforeFiles[path]
+		if string(data) != previous.data || !info.ModTime().Equal(previous.mtime) {
+			t.Fatalf("ready no-op changed %s", path)
 		}
 	}
 }
@@ -551,5 +593,417 @@ func TestStdioToolsListExposesInitializerContracts(t *testing.T) {
 	}
 	if strings.Contains(text, "existing_business_document_id") {
 		t.Fatalf("undecided business import leaked: %s", text)
+	}
+}
+
+type initializeTemplateFake struct {
+	fields     []any
+	records    []any
+	operations []string
+}
+
+func (f *initializeTemplateFake) Request(_ context.Context, operation string, payload any) (map[string]any, error) {
+	f.operations = append(f.operations, operation)
+	switch operation {
+	case "get_fields":
+		return okInitializeResponse("fields", f.fields), nil
+	case "get_records":
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "has_more": false, "records": f.records}}, nil
+	case "delete_records":
+		f.records = nil
+		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
+	case "update_fields":
+		body := payload.(map[string]any)
+		items := body["fields"].([]any)
+		updated := items[0].(map[string]any)
+		f.fields = []any{map[string]any{"field_id": updated["field_id"], "field_title": updated["field_title"], "field_type": updated["field_type"]}}
+		return okInitializeResponse("fields", f.fields), nil
+	default:
+		return nil, fmt.Errorf("unexpected operation %s", operation)
+	}
+}
+
+func TestNormalizeOwnedCreateDocSheetReusesPrimaryAndDeletesOnlyEmptyRows(t *testing.T) {
+	fake := &initializeTemplateFake{
+		fields:  []any{map[string]any{"field_id": "default-primary", "field_title": "默认主字段", "field_type": "FIELD_TYPE_TEXT"}},
+		records: []any{map[string]any{"record_id": "empty-row", "values": map[string]any{"default-primary": []any{}}}},
+	}
+	if err := normalizeOwnedInitializeSheet(context.Background(), fake, "created-doc", "created-sheet", "需求编号"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(fake.operations, ","); got != "get_fields,get_records,delete_records,get_records,update_fields,get_fields" {
+		t.Fatalf("unexpected operation order: %s", got)
+	}
+	field := fake.fields[0].(map[string]any)
+	if field["field_id"] != "default-primary" || field["field_title"] != "需求编号" || len(fake.records) != 0 {
+		t.Fatalf("default template was not normalized safely: fields=%#v records=%#v", fake.fields, fake.records)
+	}
+}
+
+func TestNormalizeOwnedCreateDocSheetRejectsUnexpectedExtraFieldWithoutCleanup(t *testing.T) {
+	fake := &initializeTemplateFake{
+		fields: []any{
+			map[string]any{"field_id": "default-primary", "field_title": "默认主字段", "field_type": "FIELD_TYPE_TEXT"},
+			map[string]any{"field_id": "unexpected", "field_title": "来源不明字段", "field_type": "FIELD_TYPE_TEXT"},
+		},
+		records: []any{map[string]any{"record_id": "empty-row", "values": map[string]any{"default-primary": []any{}}}},
+	}
+	if err := normalizeOwnedInitializeSheet(context.Background(), fake, "created-doc", "created-sheet", "需求编号"); err == nil || !strings.Contains(err.Error(), "来源不明字段") {
+		t.Fatalf("unexpected template must fail closed: %v", err)
+	}
+	if got := strings.Join(fake.operations, ","); got != "get_fields" {
+		t.Fatalf("field template must be validated before record cleanup: %s", got)
+	}
+}
+
+func TestNormalizeOwnedAddSheetReusesOfficialDefaultPrimaryField(t *testing.T) {
+	fake := &initializeTemplateFake{fields: []any{map[string]any{"field_id": "add-sheet-primary", "field_title": "默认主字段", "field_type": "FIELD_TYPE_TEXT"}}}
+	if err := normalizeOwnedInitializeSheet(context.Background(), fake, "created-doc", "added-sheet", "任务编号"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(fake.operations, ","); got != "get_fields,get_records,update_fields,get_fields" {
+		t.Fatalf("add_sheet default template was not normalized: %s", got)
+	}
+	field := fake.fields[0].(map[string]any)
+	if field["field_id"] != "add-sheet-primary" || field["field_title"] != "任务编号" {
+		t.Fatalf("add_sheet primary field was not reused: %#v", field)
+	}
+}
+
+func TestNormalizeOwnedAddSheetRejectsMissingDefaultPrimaryField(t *testing.T) {
+	fake := &initializeTemplateFake{}
+	if err := normalizeOwnedInitializeSheet(context.Background(), fake, "created-doc", "added-sheet", "任务编号"); err == nil || !strings.Contains(err.Error(), "数量不是 1") {
+		t.Fatalf("missing add_sheet default primary must fail closed: %v", err)
+	}
+}
+
+func TestNormalizeOwnedSheetNeverDeletesNonEmptyRecord(t *testing.T) {
+	fake := &initializeTemplateFake{
+		fields:  []any{map[string]any{"field_id": "default-primary", "field_title": "默认主字段", "field_type": "FIELD_TYPE_TEXT"}},
+		records: []any{map[string]any{"record_id": "user-row", "values": map[string]any{"default-primary": []any{map[string]any{"text": "not empty"}}}}},
+	}
+	if err := normalizeOwnedInitializeSheet(context.Background(), fake, "created-doc", "created-sheet", "需求编号"); err == nil || !strings.Contains(err.Error(), "非空记录") {
+		t.Fatalf("non-empty record must block cleanup: %v", err)
+	}
+	if strings.Contains(strings.Join(fake.operations, ","), "delete_records") {
+		t.Fatalf("non-empty record was deleted: %#v", fake.operations)
+	}
+}
+
+func TestRemoteApplyCannotSelfElevateInitializerCapability(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	catalog, _ := zoopschema.Current()
+	catalog.CompleteForCreation = true
+	observation := initializeObservation{Snapshot: initializeSnapshot{InstanceName: runtime.InstanceName}, PlannedOperations: []string{"create_registry"}, SnapshotComplete: true}
+	_, err := (&Server{}).applyRemoteInstanceInitialization(context.Background(), runtime, fake, observation, catalog, instanceInitializeJournal{Version: instanceInitializeJournalV1})
+	if err == nil || !strings.Contains(err.Error(), "不会自行提升白名单") {
+		t.Fatalf("write capability was self-elevated: %v", err)
+	}
+}
+
+type initializeLifecycleSheet struct {
+	id      string
+	name    string
+	fields  []any
+	records []any
+}
+
+type initializeLifecycleDocument struct {
+	id     string
+	name   string
+	sheets []*initializeLifecycleSheet
+}
+
+type initializeLifecycleFake struct {
+	documents         map[string]*initializeLifecycleDocument
+	operations        []string
+	failOnceOperation string
+	failed            bool
+	sequence          int
+	createCount       int
+	deleteCount       int
+	updateFieldCount  int
+	smokeCount        int
+}
+
+func (f *initializeLifecycleFake) nextID(prefix string) string {
+	f.sequence++
+	return fmt.Sprintf("%s-%03d", prefix, f.sequence)
+}
+
+func (f *initializeLifecycleFake) shouldFail(operation string) bool {
+	if f.failOnceOperation == operation && !f.failed {
+		f.failed = true
+		return true
+	}
+	return false
+}
+
+func (f *initializeLifecycleFake) sheet(documentID, sheetID string) (*initializeLifecycleSheet, error) {
+	document := f.documents[documentID]
+	if document == nil {
+		return nil, fmt.Errorf("unknown document %s", documentID)
+	}
+	for _, sheet := range document.sheets {
+		if sheet.id == sheetID {
+			return sheet, nil
+		}
+	}
+	return nil, fmt.Errorf("unknown sheet %s", sheetID)
+}
+
+func (f *initializeLifecycleFake) Request(_ context.Context, operation string, payload any) (map[string]any, error) {
+	f.operations = append(f.operations, operation)
+	body, _ := payload.(map[string]any)
+	documentID, _ := body["docid"].(string)
+	sheetID, _ := body["sheet_id"].(string)
+	switch operation {
+	case "create_smartsheet":
+		name, _ := body["doc_name"].(string)
+		id := f.nextID("document")
+		defaultFieldID := f.nextID("default-field")
+		defaultSheet := &initializeLifecycleSheet{
+			id: f.nextID("sheet"), name: "默认子表",
+			fields:  []any{map[string]any{"field_id": defaultFieldID, "field_title": "默认主字段", "field_type": "FIELD_TYPE_TEXT"}},
+			records: []any{map[string]any{"record_id": f.nextID("empty-record"), "values": map[string]any{defaultFieldID: []any{}}}},
+		}
+		f.documents[id] = &initializeLifecycleDocument{id: id, name: name, sheets: []*initializeLifecycleSheet{defaultSheet}}
+		f.createCount++
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "docid": id}}, nil
+	case "get_doc_base_info":
+		document := f.documents[documentID]
+		if document == nil {
+			return nil, fmt.Errorf("unknown document %s", documentID)
+		}
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "doc_type": float64(10), "doc_name": document.name}}, nil
+	case "get_doc_auth":
+		return map[string]any{"result": map[string]any{
+			"errcode": float64(0), "access_rule": map[string]any{"enable_corp_internal": true},
+			"secure_setting":  map[string]any{"enable_readonly_copy": false},
+			"doc_member_list": []any{map[string]any{"type": float64(1), "userid": "test-admin", "auth": float64(7)}}, "co_auth_list": []any{},
+		}}, nil
+	case "get_sheet":
+		document := f.documents[documentID]
+		if document == nil {
+			return nil, fmt.Errorf("unknown document %s", documentID)
+		}
+		items := []any{}
+		for _, sheet := range document.sheets {
+			items = append(items, map[string]any{"type": "smartsheet", "sheet_id": sheet.id, "name": sheet.name})
+		}
+		return okInitializeResponse("sheet_list", items), nil
+	case "update_sheet":
+		sheet, err := f.sheet(documentID, sheetID)
+		if err != nil {
+			return nil, err
+		}
+		properties, _ := body["properties"].(map[string]any)
+		sheet.name, _ = properties["title"].(string)
+		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
+	case "add_sheet":
+		document := f.documents[documentID]
+		properties, _ := body["properties"].(map[string]any)
+		name, _ := properties["title"].(string)
+		defaultFieldID := f.nextID("default-field")
+		document.sheets = append(document.sheets, &initializeLifecycleSheet{
+			id: f.nextID("sheet"), name: name,
+			fields:  []any{map[string]any{"field_id": defaultFieldID, "field_title": "默认主字段", "field_type": "FIELD_TYPE_TEXT"}},
+			records: []any{map[string]any{"record_id": f.nextID("empty-record"), "values": map[string]any{defaultFieldID: []any{}}}},
+		})
+		if f.shouldFail(operation) {
+			return nil, fmt.Errorf("injected uncertain add_sheet")
+		}
+		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
+	case "get_fields":
+		sheet, err := f.sheet(documentID, sheetID)
+		if err != nil {
+			return nil, err
+		}
+		return okInitializeResponse("fields", sheet.fields), nil
+	case "update_fields":
+		sheet, err := f.sheet(documentID, sheetID)
+		if err != nil {
+			return nil, err
+		}
+		updates, _ := body["fields"].([]any)
+		for _, updateRaw := range updates {
+			update, _ := updateRaw.(map[string]any)
+			for _, fieldRaw := range sheet.fields {
+				field, _ := fieldRaw.(map[string]any)
+				if field["field_id"] == update["field_id"] {
+					field["field_title"] = update["field_title"]
+					field["field_type"] = update["field_type"]
+				}
+			}
+		}
+		f.updateFieldCount++
+		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
+	case "add_fields":
+		sheet, err := f.sheet(documentID, sheetID)
+		if err != nil {
+			return nil, err
+		}
+		items, _ := body["fields"].([]any)
+		for _, itemRaw := range items {
+			item, _ := itemRaw.(map[string]any)
+			field := map[string]any{"field_id": f.nextID("field"), "field_title": item["field_title"], "field_type": item["field_type"]}
+			for key, value := range item {
+				if strings.HasPrefix(key, "property_") {
+					field[key] = value
+				}
+			}
+			sheet.fields = append(sheet.fields, field)
+		}
+		if f.shouldFail(operation) {
+			return nil, fmt.Errorf("injected uncertain add_fields")
+		}
+		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
+	case "get_records":
+		sheet, err := f.sheet(documentID, sheetID)
+		if err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(sheet.name, "Z-S01｜") {
+			f.smokeCount++
+		}
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "has_more": false, "records": sheet.records}}, nil
+	case "delete_records":
+		sheet, err := f.sheet(documentID, sheetID)
+		if err != nil {
+			return nil, err
+		}
+		sheet.records = nil
+		f.deleteCount++
+		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
+	case "add_records":
+		sheet, err := f.sheet(documentID, sheetID)
+		if err != nil {
+			return nil, err
+		}
+		items, _ := body["records"].([]any)
+		for _, itemRaw := range items {
+			item, _ := itemRaw.(map[string]any)
+			sheet.records = append(sheet.records, map[string]any{"record_id": f.nextID("record"), "values": item["values"]})
+		}
+		if f.shouldFail(operation) {
+			return nil, fmt.Errorf("injected uncertain add_records")
+		}
+		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
+	}
+	return nil, fmt.Errorf("unexpected lifecycle request %s %#v", operation, payload)
+}
+
+func syntheticInitializeCatalog() zoopschema.Catalog {
+	catalog := zoopschema.Catalog{Version: "zoop-v1", SourceContract: "synthetic-test", CompleteForCreation: true}
+	for index := 1; index <= 9; index++ {
+		roleName := fmt.Sprintf("Z-S%02d", index)
+		primary := fmt.Sprintf("主字段%02d", index)
+		catalog.Roles = append(catalog.Roles, zoopschema.Role{
+			Role: roleName, SheetTitle: roleName + "｜测试表", PrimaryFieldTitle: primary,
+			Fields: []zoopschema.Field{{Title: primary, Type: "FIELD_TYPE_TEXT"}, {Title: fmt.Sprintf("说明%02d", index), Type: "FIELD_TYPE_TEXT"}},
+		})
+	}
+	return catalog
+}
+
+func initializeLifecycleFixture(t *testing.T) (config.Config, zoopschema.Catalog, *initializeLifecycleFake, *Server, initializeObservation, instanceInitializeJournal) {
+	t.Helper()
+	directory := t.TempDir()
+	operations := []string{"get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "create_smartsheet", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records"}
+	runtime := config.Config{
+		Version: 1, InstanceName: "initialize-test", TenantRoute: "test-route", SchemaAdminUser: "test-admin", RegistryKey: "test-registry",
+		SchemaMirrorPath: filepath.Join(directory, "not-yet-created.json"), StatePath: filepath.Join(directory, "state.json"),
+		APIWhitelist: map[string][]string{instanceInitializeGroup: operations},
+	}
+	configPath := filepath.Join(directory, "instance.json")
+	data, err := json.MarshalIndent(runtime, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, append(data, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	catalog := syntheticInitializeCatalog()
+	fake := &initializeLifecycleFake{documents: map[string]*initializeLifecycleDocument{}}
+	observation := initializeObservation{
+		State: "changes_planned", SnapshotComplete: true, PlannedOperations: []string{"create_registry"},
+		Snapshot: initializeSnapshot{InstanceName: runtime.InstanceName, ConfigDigest: runtime.Digest(), CatalogDigest: digestValue(catalog), CatalogVersion: catalog.Version, CatalogCreationComplete: true, RoleSheetIDs: map[string]string{}, RoleFieldsDigests: map[string]string{}},
+	}
+	journal := instanceInitializeJournal{Version: instanceInitializeJournalV1, Phase: "schema_staged", CatalogDigest: digestValue(catalog), ConfigDigest: runtime.Digest(), UpdatedAt: "2026-08-27T00:00:00Z"}
+	return runtime, catalog, fake, &Server{store: config.NewStore(configPath)}, observation, journal
+}
+
+func TestRemoteInitializerControlledEndToEnd(t *testing.T) {
+	runtime, catalog, fake, server, observation, journal := initializeLifecycleFixture(t)
+	result, err := server.applyRemoteInstanceInitialization(context.Background(), runtime, fake, observation, catalog, journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := result.(map[string]any)
+	if output["state"] != "ready" || output["enterprise_wecom_updated"] != true || output["local_updated"] != true || output["config_backup_created"] != true {
+		t.Fatalf("full initializer did not reach ready: %#v", output)
+	}
+	if fake.createCount != 2 || fake.deleteCount != 10 || fake.updateFieldCount != 10 || fake.smokeCount < 3 {
+		t.Fatalf("unexpected lifecycle evidence: create=%d delete=%d update=%d smoke=%d", fake.createCount, fake.deleteCount, fake.updateFieldCount, fake.smokeCount)
+	}
+	loadedJournal, _, exists, err := loadInstanceInitializeJournal(instanceInitializeJournalPath(runtime))
+	if err != nil || !exists || loadedJournal.Phase != "ready" {
+		t.Fatalf("ready journal missing: journal=%#v exists=%v err=%v", loadedJournal, exists, err)
+	}
+	persisted, err := server.store.Current()
+	if err != nil || persisted.RegistryDocumentID == "" || persisted.RegistrySheetID == "" || persisted.InitializedState != "config_committed" {
+		t.Fatalf("initialized config was not committed: %#v err=%v", persisted, err)
+	}
+}
+
+func TestRemoteInitializerRecoversPartialAssetsWithoutDuplicateCreate(t *testing.T) {
+	for _, failure := range []string{"add_fields", "add_sheet"} {
+		t.Run(failure, func(t *testing.T) {
+			runtime, catalog, fake, server, observation, journal := initializeLifecycleFixture(t)
+			fake.failOnceOperation = failure
+			if _, err := server.applyRemoteInstanceInitialization(context.Background(), runtime, fake, observation, catalog, journal); err == nil {
+				t.Fatal("injected partial failure unexpectedly succeeded")
+			}
+			createdBeforeRecovery := fake.createCount
+			stored, _, exists, err := loadInstanceInitializeJournal(instanceInitializeJournalPath(runtime))
+			if err != nil || !exists || stored.Phase != "recovery_required" || stored.RegistryDocumentID == "" {
+				t.Fatalf("partial failure did not persist recovery identity: %#v exists=%v err=%v", stored, exists, err)
+			}
+			if failure == "add_sheet" && stored.BusinessDocumentID == "" {
+				t.Fatalf("business recovery lost docid: %#v", stored)
+			}
+			refreshed := observeInstanceInitializationWithCatalog(context.Background(), runtime, fake, nil, initializeStatusInput{}, catalog, nil)
+			result, err := server.applyRemoteInstanceInitialization(context.Background(), runtime, fake, refreshed, catalog, stored)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.(map[string]any)["state"] != "ready" {
+				t.Fatalf("recovery did not reach ready: %#v", result)
+			}
+			expectedCreates := 2
+			if failure == "add_fields" {
+				expectedCreates = createdBeforeRecovery + 1
+			} else if fake.createCount != createdBeforeRecovery {
+				t.Fatalf("business recovery repeated create: before=%d after=%d", createdBeforeRecovery, fake.createCount)
+			}
+			if fake.createCount != expectedCreates {
+				t.Fatalf("recovery created wrong number of documents: failure=%s before=%d after=%d", failure, createdBeforeRecovery, fake.createCount)
+			}
+		})
+	}
+}
+
+func TestRemoteInitializerTreatsRegisterRowAsRemoteAndConvergesUncertainWrite(t *testing.T) {
+	if !hasRemoteInitializePlan([]string{"verify_recovered_business_document", "register_unique_active_row"}) {
+		t.Fatal("register_unique_active_row was misclassified as a local-only operation")
+	}
+	runtime, catalog, fake, server, observation, journal := initializeLifecycleFixture(t)
+	fake.failOnceOperation = "add_records"
+	result, err := server.applyRemoteInstanceInitialization(context.Background(), runtime, fake, observation, catalog, journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.(map[string]any)["state"] != "ready" || !fake.failed {
+		t.Fatalf("uncertain active row write did not converge by readback: %#v", result)
 	}
 }

@@ -101,9 +101,11 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 
 文档权限核验遵循企业微信“获取文档权限信息”（官方文档 path 97461）的实际响应结构，并依赖该接口只能访问调用应用所创建文档的权限约束证明应用管理面；同时，`schema_admin_user` 必须在 `doc_member_list` 中具备管理员权限值 `7`。任意自造的 `auth_type=admin` 等字段不会被视为管理权限证据。
 
-`wecom_instance_initialize_apply` 的 MCP 契约已预留固定 Owner 授权、短期 `preview_id` 和 status 原样返回的 `preview_expires_at` 校验，但当前候选在 Architecture Gate 1 放行前始终失败关闭，不会创建 Registry、业务文档、九表或记录，也不会修改本地配置。已有 `wecom_registry_bootstrap` 和 `wecom_schema_sync` 保持兼容；它们不能替代完整实例初始化。当前嵌入的 `zoop-v1` catalog 已脱敏固化 9 个角色和 147 个逻辑字段，不含任何租户 doc/sheet/field/option ID；Z-S01 公式字段因公开创建契约尚未证明而标为 `unsupported_for_create`，因此 catalog 不会伪报可全量创建。
+`wecom_instance_initialize_apply` 只接受未过期且与当前完整快照一致的 `preview_id`、status 原样返回的 `preview_expires_at` 和固定 Owner 防误触授权。实际写权限仍由专用 `instance_initialize` capability group 控制；初始化器不会自行扩展白名单。需要创建 Registry、业务文档、九表或记录时，当前 catalog 因 Z-S01“进度条”缺少 Owner 权威字典中的确切 `formulaModel` 而失败关闭，不执行线上或本地写入。企业微信公式字段 API 已具备 `property_formula.formulaModel` 与 `formatter` 创建能力；缺口是 Zoop 逻辑公式事实，不是 API 能力。已有 `wecom_registry_bootstrap` 和 `wecom_schema_sync` 保持兼容，但不能替代完整实例初始化。
 
-未来 apply 放行后的本地提交顺序固定为：先对候选 generation 执行 runtime loader/smoke，再备份并原子切换完整 config，最后通过正常 Resolver 做 Z-S01 只读 smoke。任何阶段失败都保留 journal 和原配置，不清 sentinel、不盲目重复 create。
+当线上 Registry、唯一 active row 和九表已经满足 catalog 时，apply 会生成并回读新的 Schema generation，执行 Z-S01 候选 smoke，备份并原子切换完整配置，再对持久配置执行最终 Z-S01 只读 smoke。新建文档或子表只允许复用平台唯一默认文本主字段；必须先验证完整默认字段模板，随后才可删除本次操作创建表中的空默认记录。已有 `docid` 只做核验与补齐，不清理已有字段或记录。远程创建或 active row 写入结果不确定时保留 durable journal，并要求回读恢复，禁止盲目重复创建。
+
+示例配置展示完整的 `instance_initialize` 权限集合，但不会迁移已部署实例。现有实例若仅允许只读初始化操作，必须由管理员通过受保护配置包升级 capability group；普通调用者和初始化器本身都不能提升该权限。
 
 WorkBuddy 验收必须逐层报告，不能把安装成功等同于业务可用：
 

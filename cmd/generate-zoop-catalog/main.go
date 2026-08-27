@@ -38,9 +38,10 @@ type catalog struct {
 }
 
 type catalogRole struct {
-	Role       string         `json:"role"`
-	SheetTitle string         `json:"sheet_title"`
-	Fields     []catalogField `json:"fields"`
+	Role              string         `json:"role"`
+	SheetTitle        string         `json:"sheet_title"`
+	PrimaryFieldTitle string         `json:"primary_field_title"`
+	Fields            []catalogField `json:"fields"`
 }
 
 type catalogField struct {
@@ -153,7 +154,8 @@ func convert(source sourceMirror) (catalog, error) {
 		if !ok || len(sourceRole.Fields) == 0 {
 			return catalog{}, fmt.Errorf("missing %s", role)
 		}
-		out := catalogRole{Role: role, SheetTitle: sheetTitles[role]}
+		out := catalogRole{Role: role, SheetTitle: sheetTitles[role], PrimaryFieldTitle: primaryFieldTitles[role]}
+		primaryFound := false
 		for _, field := range sourceRole.Fields {
 			converted := catalogField{Title: field.Title, Type: field.Type}
 			for label := range field.Options {
@@ -185,7 +187,13 @@ func convert(source sourceMirror) (catalog, error) {
 				result.CompleteForCreation = false
 				result.UnsupportedForCreate = append(result.UnsupportedForCreate, role+"."+field.Title)
 			}
+			if field.Title == out.PrimaryFieldTitle && field.Type == "FIELD_TYPE_TEXT" {
+				primaryFound = true
+			}
 			out.Fields = append(out.Fields, converted)
+		}
+		if !primaryFound {
+			return catalog{}, fmt.Errorf("%s primary field %s is missing or not text", role, out.PrimaryFieldTitle)
 		}
 		sort.Slice(out.Fields, func(i, j int) bool { return out.Fields[i].Title < out.Fields[j].Title })
 		result.Roles = append(result.Roles, out)

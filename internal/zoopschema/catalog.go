@@ -19,9 +19,10 @@ type Catalog struct {
 }
 
 type Role struct {
-	Role       string  `json:"role"`
-	SheetTitle string  `json:"sheet_title"`
-	Fields     []Field `json:"fields"`
+	Role              string  `json:"role"`
+	SheetTitle        string  `json:"sheet_title"`
+	PrimaryFieldTitle string  `json:"primary_field_title"`
+	Fields            []Field `json:"fields"`
 }
 
 type Field struct {
@@ -48,13 +49,22 @@ func Current() (Catalog, error) {
 	}
 	seen := map[string]struct{}{}
 	for _, role := range result.Roles {
-		if role.Role == "" || role.SheetTitle == "" || len(role.Fields) == 0 {
+		if role.Role == "" || role.SheetTitle == "" || role.PrimaryFieldTitle == "" || len(role.Fields) == 0 {
 			return Catalog{}, fmt.Errorf("embedded Zoop catalog role is incomplete")
 		}
 		if _, duplicate := seen[role.Role]; duplicate {
 			return Catalog{}, fmt.Errorf("embedded Zoop catalog role is duplicated")
 		}
 		seen[role.Role] = struct{}{}
+		primaryFound := false
+		for _, field := range role.Fields {
+			if field.Title == role.PrimaryFieldTitle && field.Type == "FIELD_TYPE_TEXT" {
+				primaryFound = true
+			}
+		}
+		if !primaryFound {
+			return Catalog{}, fmt.Errorf("embedded Zoop catalog primary field is invalid for %s", role.Role)
+		}
 	}
 	return result, nil
 }

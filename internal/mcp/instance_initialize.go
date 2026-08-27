@@ -218,14 +218,718 @@ func (s *Server) instanceInitializeApply(ctx context.Context, runtime config.Con
 	if initializeObservationDigest(observation) != preview.SnapshotDigest {
 		return nil, fmt.Errorf("实例初始化预览已失效，请重新执行只读 status")
 	}
-	// Architecture Gate 1 deliberately keeps every write path unreachable in
-	// this candidate. Registering the schema lets clients integrate and test the
-	// authorization/preview contract without creating any remote asset.
-	return nil, fmt.Errorf("实例初始化 apply 尚未通过 Architecture Gate 1；本候选只提供只读观察和 dry-run，未执行任何写入")
+	if observation.State != "ready" && observation.State != "changes_planned" {
+		return nil, fmt.Errorf("实例初始化当前状态 %s 不可执行", observation.State)
+	}
+	if len(observation.Conflicts) != 0 || !observation.SnapshotComplete {
+		return nil, fmt.Errorf("实例初始化观察不完整或存在冲突，拒绝写入")
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	release, err := acquireStateFileLock(runtime.StatePath + ".instance-initialize")
+	if err != nil {
+		return nil, fmt.Errorf("获取实例初始化锁失败")
+	}
+	defer release()
+
+	catalog, err := zoopschema.Current()
+	if err != nil {
+		return nil, fmt.Errorf("实例初始化 catalog 无效")
+	}
+	remotePlanned := hasRemoteInitializePlan(observation.PlannedOperations)
+	if remotePlanned && !catalog.CompleteForCreation {
+		return nil, fmt.Errorf("Zoop catalog 尚不具备完整创建契约（缺少已验证的字段创建属性），未执行任何线上或本地写入")
+	}
+	journal := instanceInitializeJournal{
+		Version: instanceInitializeJournalV1, Phase: "schema_staged", PreviewID: input.PreviewID,
+		RegistryDocumentID: observation.Snapshot.RegistryDocumentID, BusinessDocumentID: observation.Snapshot.BusinessDocumentID,
+		CatalogDigest: observation.Snapshot.CatalogDigest, ConfigDigest: observation.Snapshot.ConfigDigest,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if remotePlanned {
+		return s.applyRemoteInstanceInitialization(ctx, runtime, client, observation, catalog, journal)
+	}
+	if observation.State == "ready" {
+		return initializeApplyResult("ready", observation, false, false, ""), nil
+	}
+	return s.commitObservedInstanceInitialization(ctx, runtime, client, observation, catalog, journal, false)
+}
+
+func initializeApplyResult(state string, observation initializeObservation, remoteUpdated, localUpdated bool, backupPath string) map[string]any {
+	result := map[string]any{
+		"state": state, "instance_name": observation.Snapshot.InstanceName,
+		"registry_verified":        observation.Snapshot.RegistryDocumentID != "" && observation.Snapshot.RegistrySheetID != "",
+		"nine_tables_verified":     len(observation.Snapshot.RoleSheetIDs) == 9,
+		"schema_synced":            observation.Snapshot.LocalSchemaDigest != "" || localUpdated,
+		"tools_call_verified":      observation.Snapshot.SmokeVerified,
+		"enterprise_wecom_updated": remoteUpdated, "local_updated": localUpdated,
+		"owner_accepted": false, "production_deployed": false,
+	}
+	if backupPath != "" {
+		result["config_backup_created"] = true
+	}
+	return result
+}
+
+func (s *Server) commitObservedInstanceInitialization(ctx context.Context, runtime config.Config, client wecomRequester, observation initializeObservation, catalog zoopschema.Catalog, journal instanceInitializeJournal, remoteUpdated bool) (any, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("实例配置 store 不可用")
+	}
+	fieldsByRole, err := readInitializeFieldsByRole(ctx, client, observation.Snapshot.BusinessDocumentID, observation.Snapshot.RoleSheetIDs)
+	if err != nil {
+		return nil, fmt.Errorf("生成 Schema 前线上字段回读失败")
+	}
+	generationPath, generationDigest, err := config.WriteOnlineMirrorGeneration(runtime.StatePath, fieldsByRole, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, fmt.Errorf("Schema generation 写入或回读失败: %w", err)
+	}
+	journal.Phase, journal.ConfigDigest, journal.UpdatedAt = "schema_staged", generationDigest, time.Now().UTC().Format(time.RFC3339Nano)
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		return nil, fmt.Errorf("Schema staged journal 写入失败")
+	}
+	if err := initializeSmoke(ctx, client, observation.Snapshot.BusinessDocumentID, observation.Snapshot.RoleSheetIDs["Z-S01"]); err != nil {
+		return nil, err
+	}
+	journal.Phase, journal.UpdatedAt = "candidate_smoke_verified", time.Now().UTC().Format(time.RFC3339Nano)
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		return nil, fmt.Errorf("candidate smoke journal 写入失败")
+	}
+	generation := "init-" + generationDigest[:16]
+	backupPath, err := s.store.CommitInitialized(config.InitializationCommit{
+		RegistryDocumentID: observation.Snapshot.RegistryDocumentID, RegistrySheetID: observation.Snapshot.RegistrySheetID,
+		SchemaMirrorPath: generationPath, SchemaVersion: catalog.Version, SchemaDigest: generationDigest, InitializationGeneration: generation,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("实例配置原子提交失败: %w", err)
+	}
+	journal.Phase, journal.UpdatedAt = "config_committed", time.Now().UTC().Format(time.RFC3339Nano)
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		return nil, fmt.Errorf("配置已提交但 journal 待恢复")
+	}
+	persisted, err := s.store.Current()
+	if err != nil || persisted.RegistryDocumentID != observation.Snapshot.RegistryDocumentID || persisted.RegistrySheetID != observation.Snapshot.RegistrySheetID || persisted.SchemaMirrorPath != generationPath || persisted.SchemaDigest != generationDigest {
+		return nil, fmt.Errorf("实例配置提交后回读失败")
+	}
+	if _, err := config.LoadSchema(persisted.SchemaMirrorPath); err != nil {
+		return nil, fmt.Errorf("实例配置提交后 Schema 回读失败")
+	}
+	if err := initializeSmoke(ctx, client, observation.Snapshot.BusinessDocumentID, observation.Snapshot.RoleSheetIDs["Z-S01"]); err != nil {
+		return nil, err
+	}
+	journal.Phase, journal.UpdatedAt = "ready", time.Now().UTC().Format(time.RFC3339Nano)
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		return nil, fmt.Errorf("最终 smoke 已通过但 ready journal 待恢复")
+	}
+	observation.Snapshot.LocalSchemaDigest = generationDigest
+	observation.Snapshot.SmokeVerified = true
+	return initializeApplyResult("ready", observation, remoteUpdated, true, backupPath), nil
+}
+
+func readInitializeFieldsByRole(ctx context.Context, client wecomRequester, documentID string, roleSheetIDs map[string]string) (map[string][]config.Field, error) {
+	result := map[string][]config.Field{}
+	for index := 1; index <= 9; index++ {
+		role := fmt.Sprintf("Z-S%02d", index)
+		sheetID := roleSheetIDs[role]
+		if sheetID == "" {
+			return nil, fmt.Errorf("缺少 %s", role)
+		}
+		response, err := client.Request(ctx, "get_fields", map[string]any{"docid": documentID, "sheet_id": sheetID})
+		if err != nil || apiError(response) != nil {
+			return nil, fmt.Errorf("读取 %s 字段失败", role)
+		}
+		fields, err := mirrorFieldsFromAny(resultSlice(response, "fields"))
+		if err != nil {
+			return nil, err
+		}
+		for _, field := range fields {
+			result[role] = append(result[role], field)
+		}
+	}
+	return result, nil
+}
+
+func initializeSmoke(ctx context.Context, client wecomRequester, documentID, sheetID string) error {
+	response, err := client.Request(ctx, "get_records", map[string]any{"docid": documentID, "sheet_id": sheetID, "key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID", "limit": 1})
+	if err != nil || apiError(response) != nil {
+		return fmt.Errorf("Z-S01 只读 smoke 未通过")
+	}
+	return nil
+}
+
+func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime config.Config, client wecomRequester, observation initializeObservation, catalog zoopschema.Catalog, journal instanceInitializeJournal) (any, error) {
+	if client == nil {
+		return nil, fmt.Errorf("企业微信客户端不可用")
+	}
+	for _, operation := range []string{"get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "create_smartsheet", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records"} {
+		if !runtime.AllowsInGroup(instanceInitializeGroup, operation) {
+			return nil, fmt.Errorf("实例初始化专用 capability 未允许 %s；initializer 不会自行提升白名单", operation)
+		}
+	}
+	persistRecovery := func(assetKind, errorCode string, cause error) error {
+		journal.Phase, journal.AssetKind, journal.LastErrorCode = "recovery_required", assetKind, errorCode
+		journal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+			return fmt.Errorf("%v；recovery journal 写入失败: %w", cause, err)
+		}
+		return cause
+	}
+	registryID := observation.Snapshot.RegistryDocumentID
+	registryCreated := false
+	if registryID == "" {
+		journal.Phase, journal.AssetKind, journal.OperationID = "registry_resolving", "registry", digestValue(map[string]string{"instance": runtime.InstanceName, "asset": "registry", "catalog": journal.CatalogDigest})
+		journal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+			return nil, err
+		}
+		created, err := client.Request(ctx, "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "SMART_SHEETS_IDS"})
+		registryID = initializeCreatedDocumentID(created)
+		if registryID != "" {
+			journal.RegistryDocumentID = registryID
+			journal.Phase, journal.UpdatedAt = "registry_identity_known", time.Now().UTC().Format(time.RFC3339Nano)
+			if saveErr := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); saveErr != nil {
+				return nil, fmt.Errorf("Registry 已创建但 docid journal 写入失败；禁止重试创建")
+			}
+		}
+		if err != nil || apiError(created) != nil || registryID == "" {
+			journal.Phase, journal.AssetKind, journal.LastErrorCode, journal.UpdatedAt = "recovery_required", "registry", "create_result_uncertain", time.Now().UTC().Format(time.RFC3339Nano)
+			_ = saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal)
+			return nil, fmt.Errorf("Registry 创建结果不确定；已保留 durable journal，禁止自动重试")
+		}
+		registryCreated = true
+	}
+	registryOwnedByOperation := registryCreated || observation.JournalPhase == "recovery_required" && observation.RecoveryAssetKind == "registry" && observation.Snapshot.RegistryDocumentID == registryID
+	registrySheetID, err := reconcileInitializeRegistry(ctx, client, registryID, registryOwnedByOperation)
+	if err != nil {
+		return nil, persistRecovery("registry", "registry_reconcile_failed", err)
+	}
+	journal.RegistryDocumentID, journal.Phase, journal.UpdatedAt = registryID, "registry_schema_verified", time.Now().UTC().Format(time.RFC3339Nano)
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		return nil, err
+	}
+	registryFields, err := registryFieldDefinitions(ctx, client, registryID, registrySheetID)
+	if err != nil {
+		return nil, err
+	}
+	records, complete, err := readAllInitializeRecords(ctx, client, registryID, registrySheetID)
+	if err != nil || !complete {
+		return nil, fmt.Errorf("Registry active row 完整分页失败")
+	}
+	businessID, activeCount := initializeActiveBusiness(records, registryFields, runtime.RegistryKey)
+	if activeCount > 1 || activeCount == 1 && businessID == "" {
+		return nil, fmt.Errorf("Registry active row 不唯一")
+	}
+	if activeCount == 0 && observation.Snapshot.BusinessDocumentID != "" {
+		// The status preview already verified this exact recovery asset. Reuse it
+		// and register the missing row; never create a replacement document.
+		businessID = observation.Snapshot.BusinessDocumentID
+	}
+	businessCreated := false
+	if businessID == "" {
+		journal.Phase, journal.AssetKind, journal.OperationID = "business_resolving", "business", digestValue(map[string]string{"instance": runtime.InstanceName, "asset": "business", "catalog": journal.CatalogDigest})
+		journal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+			return nil, err
+		}
+		created, err := client.Request(ctx, "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "Zoop｜" + runtime.RegistryKey})
+		businessID = initializeCreatedDocumentID(created)
+		if businessID != "" {
+			journal.BusinessDocumentID = businessID
+			journal.Phase, journal.UpdatedAt = "business_identity_known", time.Now().UTC().Format(time.RFC3339Nano)
+			if saveErr := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); saveErr != nil {
+				return nil, fmt.Errorf("业务文档已创建但 docid journal 写入失败；禁止重试创建")
+			}
+		}
+		if err != nil || apiError(created) != nil || businessID == "" {
+			journal.Phase, journal.AssetKind, journal.LastErrorCode, journal.UpdatedAt = "recovery_required", "business", "create_result_uncertain", time.Now().UTC().Format(time.RFC3339Nano)
+			_ = saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal)
+			return nil, fmt.Errorf("业务文档创建结果不确定；已保留 durable journal，禁止自动重试")
+		}
+		businessCreated = true
+	}
+	businessOwnedByOperation := businessCreated || observation.JournalPhase == "recovery_required" && observation.RecoveryAssetKind == "business" && observation.Snapshot.BusinessDocumentID == businessID
+	roleSheetIDs, err := reconcileInitializeBusiness(ctx, client, businessID, businessCreated, businessOwnedByOperation, catalog)
+	if err != nil {
+		journal.BusinessDocumentID = businessID
+		return nil, persistRecovery("business", "business_reconcile_failed", err)
+	}
+	journal.BusinessDocumentID, journal.Phase, journal.UpdatedAt = businessID, "zoop_sheets_reconciled", time.Now().UTC().Format(time.RFC3339Nano)
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		return nil, err
+	}
+	if activeCount == 0 {
+		if err := addInitializeActiveRow(ctx, client, registryID, registrySheetID, registryFields, runtime, businessID, catalog.Version); err != nil {
+			return nil, persistRecovery("business", "registry_row_uncertain", err)
+		}
+	}
+	journal.Phase, journal.UpdatedAt = "registry_row_verified", time.Now().UTC().Format(time.RFC3339Nano)
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		return nil, err
+	}
+	verifiedRuntime := runtime
+	verifiedRuntime.RegistryDocumentID = registryID
+	verifiedRuntime.RegistrySheetID = registrySheetID
+	refreshed := observeInstanceInitializationWithCatalog(ctx, verifiedRuntime, client, nil, initializeStatusInput{}, catalog, nil)
+	if !refreshed.SnapshotComplete || len(refreshed.Conflicts) != 0 || hasRemoteInitializePlan(refreshed.PlannedOperations) {
+		return nil, fmt.Errorf("远端初始化写后完整回读未收敛")
+	}
+	if refreshed.Snapshot.BusinessDocumentID != businessID || len(refreshed.Snapshot.RoleSheetIDs) != 9 {
+		return nil, fmt.Errorf("远端初始化写后业务文档或九表回读不一致")
+	}
+	for role, sheetID := range roleSheetIDs {
+		if refreshed.Snapshot.RoleSheetIDs[role] != sheetID {
+			return nil, fmt.Errorf("远端初始化写后 %s 子表 ID 不一致", role)
+		}
+	}
+	return s.commitObservedInstanceInitialization(ctx, runtime, client, refreshed, catalog, journal, true)
+}
+
+func initializeCreatedDocumentID(response map[string]any) string {
+	result, _ := response["result"].(map[string]any)
+	documentID, _ := result["docid"].(string)
+	if !initializeIdentifier.MatchString(documentID) {
+		return ""
+	}
+	return documentID
+}
+
+func reconcileInitializeRegistry(ctx context.Context, client wecomRequester, documentID string, ownedByOperation bool) (string, error) {
+	response, err := client.Request(ctx, "get_sheet", map[string]any{"docid": documentID})
+	if err != nil || apiError(response) != nil {
+		return "", fmt.Errorf("Registry 子表回读失败")
+	}
+	sheets := smartSheetIdentities(response)
+	if len(sheets) != 1 {
+		return "", fmt.Errorf("Registry 智能子表不唯一")
+	}
+	if ownedByOperation {
+		expected := map[string]string{}
+		for _, title := range registryBootstrapFields {
+			expected[title] = "FIELD_TYPE_TEXT"
+		}
+		if err := normalizeOwnedInitializeSheetContract(ctx, client, documentID, sheets[0].ID, "registry_key", expected); err != nil {
+			return "", err
+		}
+	}
+	fields, err := registryFieldDefinitions(ctx, client, documentID, sheets[0].ID)
+	if err != nil {
+		return "", err
+	}
+	missing := []any{}
+	for _, title := range registryBootstrapFields {
+		if field, exists := fields[title]; exists {
+			if field.Type != "FIELD_TYPE_TEXT" {
+				return "", fmt.Errorf("Registry 字段 %s 类型冲突", title)
+			}
+			continue
+		}
+		missing = append(missing, map[string]any{"field_title": title, "field_type": "FIELD_TYPE_TEXT"})
+	}
+	if len(missing) > 0 {
+		result, err := client.Request(ctx, "add_fields", map[string]any{"docid": documentID, "sheet_id": sheets[0].ID, "fields": missing})
+		if err != nil || apiError(result) != nil {
+			return "", fmt.Errorf("Registry 缺失字段补齐失败")
+		}
+	}
+	verified, err := registryFieldDefinitions(ctx, client, documentID, sheets[0].ID)
+	if err != nil || len(verified) < len(registryBootstrapFields) {
+		return "", fmt.Errorf("Registry 字段回读未通过")
+	}
+	return sheets[0].ID, nil
+}
+
+func initializeActiveBusiness(records []any, fields map[string]config.Field, registryKey string) (string, int) {
+	keyID, docID, lifecycleID := fields["registry_key"].ID, fields["docid"].ID, fields["lifecycle_status"].ID
+	businessID, count := "", 0
+	for _, raw := range records {
+		record, _ := raw.(map[string]any)
+		values, _ := record["values"].(map[string]any)
+		if initializeTextCell(values[keyID]) == registryKey && initializeTextCell(values[lifecycleID]) == "active" {
+			count++
+			businessID = initializeTextCell(values[docID])
+		}
+	}
+	return businessID, count
+}
+
+func reconcileInitializeBusiness(ctx context.Context, client wecomRequester, documentID string, documentCreated, ownedByOperation bool, catalog zoopschema.Catalog) (map[string]string, error) {
+	response, err := client.Request(ctx, "get_sheet", map[string]any{"docid": documentID})
+	if err != nil || apiError(response) != nil {
+		return nil, fmt.Errorf("业务文档子表回读失败")
+	}
+	sheets := smartSheetIdentities(response)
+	roleSheetIDs := map[string]string{}
+	ownedSheets := map[string]bool{}
+	if documentCreated {
+		if len(sheets) != 1 {
+			return nil, fmt.Errorf("本次新建业务文档的默认子表不唯一")
+		}
+		if err := renameInitializeSheetAndVerify(ctx, client, documentID, sheets[0].ID, catalog.Roles[0].SheetTitle); err != nil {
+			return nil, err
+		}
+		ownedSheets[sheets[0].ID] = true
+	}
+	if ownedByOperation && !documentCreated {
+		matchedIDs := map[string]bool{}
+		for _, role := range catalog.Roles {
+			for _, sheet := range sheets {
+				if strings.HasPrefix(sheet.Name, role.Role+"｜") {
+					matchedIDs[sheet.ID] = true
+					ownedSheets[sheet.ID] = true
+				}
+			}
+		}
+		zS01Present := false
+		for _, sheet := range sheets {
+			if strings.HasPrefix(sheet.Name, catalog.Roles[0].Role+"｜") {
+				zS01Present = true
+			}
+		}
+		if !zS01Present {
+			unclaimed := []sheetIdentity{}
+			for _, sheet := range sheets {
+				if !matchedIDs[sheet.ID] {
+					unclaimed = append(unclaimed, sheet)
+				}
+			}
+			if len(unclaimed) != 1 {
+				return nil, fmt.Errorf("恢复业务文档的默认 Z-S01 候选不唯一")
+			}
+			expected := initializeRoleFieldTypes(catalog.Roles[0])
+			if err := normalizeOwnedInitializeSheetContract(ctx, client, documentID, unclaimed[0].ID, catalog.Roles[0].PrimaryFieldTitle, expected); err != nil {
+				return nil, fmt.Errorf("恢复 Z-S01 默认模板异常: %w", err)
+			}
+			if err := renameInitializeSheetAndVerify(ctx, client, documentID, unclaimed[0].ID, catalog.Roles[0].SheetTitle); err != nil {
+				return nil, err
+			}
+			ownedSheets[unclaimed[0].ID] = true
+		}
+		for _, sheet := range sheets {
+			if !matchedIDs[sheet.ID] && !(ownedSheets[sheet.ID] && !zS01Present) {
+				return nil, fmt.Errorf("恢复业务文档存在来源不明子表")
+			}
+		}
+	}
+	for _, role := range catalog.Roles {
+		response, err = client.Request(ctx, "get_sheet", map[string]any{"docid": documentID})
+		if err != nil || apiError(response) != nil {
+			return nil, fmt.Errorf("业务子表回读失败")
+		}
+		matches := []sheetIdentity{}
+		for _, sheet := range smartSheetIdentities(response) {
+			if strings.HasPrefix(sheet.Name, role.Role+"｜") {
+				matches = append(matches, sheet)
+			}
+		}
+		if len(matches) > 1 {
+			return nil, fmt.Errorf("%s 子表不唯一", role.Role)
+		}
+		if len(matches) == 0 {
+			result, err := client.Request(ctx, "add_sheet", map[string]any{"docid": documentID, "properties": map[string]any{"title": role.SheetTitle}})
+			if err != nil || apiError(result) != nil {
+				return nil, fmt.Errorf("新增 %s 子表失败", role.Role)
+			}
+			response, err = client.Request(ctx, "get_sheet", map[string]any{"docid": documentID})
+			if err != nil || apiError(response) != nil {
+				return nil, fmt.Errorf("新增 %s 后回读失败", role.Role)
+			}
+			for _, sheet := range smartSheetIdentities(response) {
+				if sheet.Name == role.SheetTitle {
+					matches = append(matches, sheet)
+				}
+			}
+			if len(matches) != 1 {
+				return nil, fmt.Errorf("新增 %s 后未找到唯一子表", role.Role)
+			}
+			ownedSheets[matches[0].ID] = true
+		}
+		roleSheetIDs[role.Role] = matches[0].ID
+	}
+	for _, role := range catalog.Roles {
+		if ownedSheets[roleSheetIDs[role.Role]] {
+			if err := normalizeOwnedInitializeSheetContract(ctx, client, documentID, roleSheetIDs[role.Role], role.PrimaryFieldTitle, initializeRoleFieldTypes(role)); err != nil {
+				return nil, fmt.Errorf("%s 默认模板异常: %w", role.Role, err)
+			}
+		}
+	}
+	// Phase one creates tenant-independent fields. References are deferred until
+	// every target sheet and primary field ID has been read back.
+	for _, role := range catalog.Roles {
+		if err := addMissingInitializeFields(ctx, client, documentID, roleSheetIDs[role.Role], role, roleSheetIDs, false); err != nil {
+			return nil, err
+		}
+	}
+	for _, role := range catalog.Roles {
+		if err := addMissingInitializeFields(ctx, client, documentID, roleSheetIDs[role.Role], role, roleSheetIDs, true); err != nil {
+			return nil, err
+		}
+	}
+	return roleSheetIDs, nil
+}
+
+func renameInitializeSheetAndVerify(ctx context.Context, client wecomRequester, documentID, sheetID, title string) error {
+	result, err := client.Request(ctx, "update_sheet", map[string]any{"docid": documentID, "sheet_id": sheetID, "properties": map[string]any{"title": title}})
+	if err != nil || apiError(result) != nil {
+		return fmt.Errorf("默认子表改名失败")
+	}
+	readback, err := client.Request(ctx, "get_sheet", map[string]any{"docid": documentID})
+	if err != nil || apiError(readback) != nil {
+		return fmt.Errorf("默认子表改名后回读失败")
+	}
+	for _, sheet := range smartSheetIdentities(readback) {
+		if sheet.ID == sheetID && sheet.Name == title {
+			return nil
+		}
+	}
+	return fmt.Errorf("默认子表改名后回读未收敛")
+}
+
+func initializeRoleFieldTypes(role zoopschema.Role) map[string]string {
+	result := map[string]string{}
+	for _, field := range role.Fields {
+		result[field.Title] = field.Type
+	}
+	return result
+}
+
+// normalizeOwnedInitializeSheet is intentionally callable only for a sheet
+// created by the current durable operation. Both create_doc and add_sheet must
+// expose exactly one default text primary field. Any other field shape is an
+// upstream-template conflict, not cleanup permission.
+func normalizeOwnedInitializeSheet(ctx context.Context, client wecomRequester, documentID, sheetID, primaryTitle string) error {
+	return normalizeOwnedInitializeSheetContract(ctx, client, documentID, sheetID, primaryTitle, map[string]string{primaryTitle: "FIELD_TYPE_TEXT"})
+}
+
+func normalizeOwnedInitializeSheetContract(ctx context.Context, client wecomRequester, documentID, sheetID, primaryTitle string, expected map[string]string) error {
+	fieldsResponse, err := client.Request(ctx, "get_fields", map[string]any{"docid": documentID, "sheet_id": sheetID})
+	if err != nil || apiError(fieldsResponse) != nil {
+		return fmt.Errorf("默认字段读取失败")
+	}
+	fields := resultSlice(fieldsResponse, "fields")
+	// Validate the complete field template before deleting even an empty row.
+	if len(fields) == 0 {
+		return fmt.Errorf("平台默认主字段数量不是 1")
+	}
+	primaryFieldID := ""
+	defaultFieldID := ""
+	for _, raw := range fields {
+		field, _ := raw.(map[string]any)
+		fieldID, _ := field["field_id"].(string)
+		title, _ := field["field_title"].(string)
+		fieldType, _ := field["field_type"].(string)
+		if !initializeIdentifier.MatchString(fieldID) || title == "" || fieldType == "" {
+			return fmt.Errorf("平台字段模板包含不可核验字段")
+		}
+		if expectedType, exists := expected[title]; exists {
+			if expectedType != fieldType {
+				return fmt.Errorf("平台字段 %s 类型冲突", title)
+			}
+			if title == primaryTitle {
+				primaryFieldID = fieldID
+			}
+			continue
+		}
+		if len(fields) == 1 && fieldType == "FIELD_TYPE_TEXT" {
+			defaultFieldID = fieldID
+			continue
+		}
+		return fmt.Errorf("平台字段模板包含来源不明字段 %s", title)
+	}
+	if primaryFieldID == "" && defaultFieldID == "" {
+		return fmt.Errorf("平台默认主字段不是唯一文本字段")
+	}
+	records, complete, err := readAllInitializeRecords(ctx, client, documentID, sheetID)
+	if err != nil || !complete {
+		return fmt.Errorf("默认记录完整读取失败")
+	}
+	emptyIDs := []string{}
+	for _, raw := range records {
+		record, _ := raw.(map[string]any)
+		values, _ := record["values"].(map[string]any)
+		if !initializeRecordValuesEmpty(values) {
+			return fmt.Errorf("本次新建子表出现非空记录，拒绝清理")
+		}
+		id, _ := record["record_id"].(string)
+		if !initializeIdentifier.MatchString(id) {
+			return fmt.Errorf("默认空记录缺少可核验 ID")
+		}
+		emptyIDs = append(emptyIDs, id)
+	}
+	if len(emptyIDs) > 0 {
+		response, err := client.Request(ctx, "delete_records", map[string]any{"docid": documentID, "sheet_id": sheetID, "record_ids": emptyIDs})
+		if err != nil || apiError(response) != nil {
+			return fmt.Errorf("默认空记录清理失败")
+		}
+		remaining, complete, err := readAllInitializeRecords(ctx, client, documentID, sheetID)
+		if err != nil || !complete || len(remaining) != 0 {
+			return fmt.Errorf("默认空记录清理后回读未收敛")
+		}
+	}
+	if primaryFieldID != "" {
+		return nil
+	}
+	response, err := client.Request(ctx, "update_fields", map[string]any{"docid": documentID, "sheet_id": sheetID, "fields": []any{map[string]any{"field_id": defaultFieldID, "field_title": primaryTitle, "field_type": "FIELD_TYPE_TEXT"}}})
+	if err != nil || apiError(response) != nil {
+		return fmt.Errorf("默认主字段改名失败")
+	}
+	fieldsResponse, err = client.Request(ctx, "get_fields", map[string]any{"docid": documentID, "sheet_id": sheetID})
+	if err != nil || apiError(fieldsResponse) != nil {
+		return fmt.Errorf("默认主字段改名后回读失败")
+	}
+	fields = resultSlice(fieldsResponse, "fields")
+	if len(fields) != 1 {
+		return fmt.Errorf("默认主字段改名后数量不一致")
+	}
+	verified, _ := fields[0].(map[string]any)
+	if verified["field_id"] != defaultFieldID || verified["field_title"] != primaryTitle || verified["field_type"] != "FIELD_TYPE_TEXT" {
+		return fmt.Errorf("默认主字段改名后回读未收敛")
+	}
+	return nil
+}
+
+func initializeRecordValuesEmpty(values map[string]any) bool {
+	for _, value := range values {
+		switch typed := value.(type) {
+		case nil:
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				return false
+			}
+		case []any:
+			if len(typed) != 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func addMissingInitializeFields(ctx context.Context, client wecomRequester, documentID, sheetID string, role zoopschema.Role, roleSheetIDs map[string]string, references bool) error {
+	response, err := client.Request(ctx, "get_fields", map[string]any{"docid": documentID, "sheet_id": sheetID})
+	if err != nil || apiError(response) != nil {
+		return fmt.Errorf("%s 字段回读失败", role.Role)
+	}
+	existing, err := mirrorFieldsFromAny(resultSlice(response, "fields"))
+	if err != nil {
+		return err
+	}
+	missing := []any{}
+	ordered := append([]zoopschema.Field(nil), role.Fields...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].Title == role.PrimaryFieldTitle && ordered[j].Title != role.PrimaryFieldTitle
+	})
+	for _, field := range ordered {
+		if (field.Reference != nil) != references {
+			continue
+		}
+		if current, ok := existing[field.Title]; ok {
+			if current.Type != field.Type {
+				return fmt.Errorf("%s 字段 %s 类型冲突", role.Role, field.Title)
+			}
+			continue
+		}
+		if field.UnsupportedForCreate {
+			return fmt.Errorf("%s 字段 %s 缺少已验证创建契约", role.Role, field.Title)
+		}
+		wire, err := initializeFieldWire(ctx, client, documentID, field, roleSheetIDs)
+		if err != nil {
+			return err
+		}
+		missing = append(missing, wire)
+	}
+	if len(missing) > 0 {
+		result, err := client.Request(ctx, "add_fields", map[string]any{"docid": documentID, "sheet_id": sheetID, "fields": missing})
+		if err != nil || apiError(result) != nil {
+			return fmt.Errorf("%s 缺失字段新增失败", role.Role)
+		}
+	}
+	return nil
+}
+
+func initializeFieldWire(ctx context.Context, client wecomRequester, documentID string, field zoopschema.Field, roleSheetIDs map[string]string) (map[string]any, error) {
+	result := map[string]any{"field_title": field.Title, "field_type": field.Type}
+	switch field.Type {
+	case "FIELD_TYPE_TEXT":
+	case "FIELD_TYPE_NUMBER":
+		result["property_number"] = map[string]any{}
+	case "FIELD_TYPE_CHECKBOX":
+		result["property_checkbox"] = map[string]any{"checked": false}
+	case "FIELD_TYPE_DATE_TIME":
+		result["property_date_time"] = map[string]any{"auto_fill": false, "format": "yyyy-mm-dd hh:mm"}
+	case "FIELD_TYPE_URL":
+		result["property_url"] = map[string]any{"type": "LINK_TYPE_PURE_TEXT"}
+	case "FIELD_TYPE_USER":
+		result["property_user"] = map[string]any{"is_multiple": false, "is_notified": false}
+	case "FIELD_TYPE_SINGLE_SELECT":
+		options := []any{}
+		for _, label := range field.Options {
+			options = append(options, map[string]any{"text": label})
+		}
+		result["property_single_select"] = map[string]any{"is_quick_add": false, "options": options}
+	case "FIELD_TYPE_REFERENCE":
+		if field.Reference == nil || roleSheetIDs[field.Reference.Role] == "" {
+			return nil, fmt.Errorf("关联字段 %s 逻辑目标无效", field.Title)
+		}
+		response, err := client.Request(ctx, "get_fields", map[string]any{"docid": documentID, "sheet_id": roleSheetIDs[field.Reference.Role]})
+		if err != nil || apiError(response) != nil {
+			return nil, fmt.Errorf("关联字段 %s 目标回读失败", field.Title)
+		}
+		targets, err := mirrorFieldsFromAny(resultSlice(response, "fields"))
+		if err != nil {
+			return nil, err
+		}
+		target := targets[field.Reference.FieldTitle]
+		if target.ID == "" {
+			return nil, fmt.Errorf("关联字段 %s 目标主字段不存在", field.Title)
+		}
+		result["property_reference"] = map[string]any{"sub_id": roleSheetIDs[field.Reference.Role], "field_id": target.ID, "is_multiple": field.Reference.Multiple}
+	default:
+		return nil, fmt.Errorf("字段 %s 类型 %s 缺少已验证创建契约", field.Title, field.Type)
+	}
+	return result, nil
+}
+
+func addInitializeActiveRow(ctx context.Context, client wecomRequester, registryID, registrySheetID string, fields map[string]config.Field, runtime config.Config, businessID, schemaVersion string) error {
+	values := map[string]any{}
+	for title, value := range map[string]string{
+		"registry_key": runtime.RegistryKey, "docid": businessID, "lifecycle_status": "active", "name": "Zoop｜" + runtime.RegistryKey,
+		"document_role": "zoop_business", "schema_version": schemaVersion, "mcp_source": runtime.InstanceName, "type": "smartsheet",
+	} {
+		field := fields[title]
+		if field.ID == "" {
+			return fmt.Errorf("Registry 缺少 active row 字段 %s", title)
+		}
+		values[field.ID] = []any{map[string]any{"type": "text", "text": value}}
+	}
+	response, err := client.Request(ctx, "add_records", map[string]any{"docid": registryID, "sheet_id": registrySheetID, "key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID", "records": []any{map[string]any{"values": values}}})
+	if err != nil || apiError(response) != nil {
+		records, complete, readErr := readAllInitializeRecords(ctx, client, registryID, registrySheetID)
+		if readErr == nil && complete {
+			resolved, count := initializeActiveBusiness(records, fields, runtime.RegistryKey)
+			if count == 1 && resolved == businessID {
+				return nil
+			}
+		}
+		return fmt.Errorf("Registry active row 写入结果不确定且未能回读收敛")
+	}
+	records, complete, err := readAllInitializeRecords(ctx, client, registryID, registrySheetID)
+	if err != nil || !complete {
+		return fmt.Errorf("Registry active row 写后完整回读失败")
+	}
+	resolved, count := initializeActiveBusiness(records, fields, runtime.RegistryKey)
+	if count != 1 || resolved != businessID {
+		return fmt.Errorf("Registry active row 写后唯一性未通过")
+	}
+	return nil
 }
 
 func observeInstanceInitialization(ctx context.Context, runtime config.Config, client wecomRequester, clientErr error, input initializeStatusInput) initializeObservation {
 	catalog, catalogErr := zoopschema.Current()
+	return observeInstanceInitializationWithCatalog(ctx, runtime, client, clientErr, input, catalog, catalogErr)
+}
+
+func observeInstanceInitializationWithCatalog(ctx context.Context, runtime config.Config, client wecomRequester, clientErr error, input initializeStatusInput, catalog zoopschema.Catalog, catalogErr error) initializeObservation {
 	observation := initializeObservation{State: "changes_planned", FieldCounts: map[string]int{}}
 	snapshot := initializeSnapshot{
 		InstanceName: runtime.InstanceName, ConfigDigest: runtime.Digest(), RoleSheetIDs: map[string]string{}, RoleFieldsDigests: map[string]string{},
@@ -392,6 +1096,7 @@ func observeInstanceInitialization(ctx context.Context, runtime config.Config, c
 	}
 	if missingRegistryFields > 0 {
 		observation.PlannedOperations = append(observation.PlannedOperations, "add_missing_registry_fields")
+		observation.SnapshotComplete = true
 		observation.Snapshot = snapshot
 		return finalizeInitializeObservation(observation)
 	}
@@ -742,7 +1447,7 @@ func initializeInteger(value any) (int, bool) {
 
 func hasRemoteInitializePlan(operations []string) bool {
 	for _, operation := range operations {
-		if operation != "generate_schema" && operation != "commit_local_config" && operation != "z_s01_read_only_smoke" && operation != "verify_recovered_business_document" && operation != "register_unique_active_row" {
+		if operation != "generate_schema" && operation != "commit_local_config" && operation != "z_s01_read_only_smoke" && !strings.HasPrefix(operation, "refresh_local_schema_") {
 			return true
 		}
 	}

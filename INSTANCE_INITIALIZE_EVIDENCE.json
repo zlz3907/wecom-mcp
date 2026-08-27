@@ -1,29 +1,36 @@
 {
-  "version": 1,
-  "base_commit": "018cd2d",
-  "scope": "P1 verifier remediation; read-only initializer observer remains fail-closed for apply",
+  "version": 2,
+  "base_commit": "7e40cf68442d411131bb0fce47c1569cd22a3dee",
+  "scope": "Owner-authorized initializer apply, durable recovery, atomic local commit, and controlled fake acceptance",
   "digest_algorithm": "sha256 of the listed path=sha256 lines in array order, each LF-terminated",
-  "evidence_digest": "11f0da56c5cf8f2a0f7bfa1223f80bab47d2893aef0cc01230ebd148bda1fd36",
+  "evidence_digest": "a7e9bdf28ad7ed79254c9d6dbacf759804d6ffee10cac8defbde58dbe50d96ec",
   "artifacts": [
-    {"path": "README.md", "sha256": "8e44d2b7ff8f37209c4cbf4d08b426e74b7b148221d4a6d53363e3d875a6d181"},
-    {"path": "cmd/generate-zoop-catalog/main.go", "sha256": "87c3a2a549a08619287acabc5d860b4406079469ceec573d86650b8cbd641e4b"},
-    {"path": "cmd/generate-zoop-catalog/main_test.go", "sha256": "acd41c23801fb714ade008f887ec108083527b2850c5d9f468b228b44b9abda5"},
-    {"path": "internal/mcp/instance_initialize.go", "sha256": "bb1c2ef1eeb3d7158e6f0bf2e8892de46106439d290012422b82bc0c8a231ca5"},
-    {"path": "internal/mcp/instance_initialize_test.go", "sha256": "96607a99febcf6a6d6b8854a251b9226e1070b79a6d580cfcc7cce6e020481b1"},
-    {"path": "internal/zoopschema/catalog/zoop-v1.json", "sha256": "9954fb85a9f28134c374fddcb30e6aaac98c662055fdb5bae8b8264854c582b5"},
-    {"path": "internal/zoopschema/catalog_test.go", "sha256": "d2446a4a491034ea8be32e64e0284c221ac1410766f107fd77e8c8c12e116b7f"}
+    {"path": "README.md", "sha256": "9e08935b4d0e8dbf8a5911f34cc799f1992077e6116d8af864f81de570d43eaf"},
+    {"path": "cmd/generate-zoop-catalog/main.go", "sha256": "28e7a9811d4712f07a51dc07cc9fe619bf671ea4a2adf0ac15127cae5e98f0d6"},
+    {"path": "config/zoop_wecom_zhycit.json.example", "sha256": "b08e9084f82621c9fd1480504a13022b8263d9da823d26fa63c09fa66369f6c5"},
+    {"path": "internal/mcp/instance_initialize.go", "sha256": "da539bf263d2ea2edd03ef748d4d0bf75cf1ccf12d6a5e95af20db6b3c559ace"},
+    {"path": "internal/mcp/instance_initialize_test.go", "sha256": "5ef8df7e9e5f4fb48db84293b726758c1cc612a614367e7bb47b400da8a0a798"},
+    {"path": "internal/mcp/server.go", "sha256": "ad910f8951e8c0149febe0934384533ac311c03084caac5959aa590398d58bd7"},
+    {"path": "internal/zoopschema/catalog.go", "sha256": "8b684a74554698501673b4c16d2a4b324db157220b16fcfb54baa0b946787290"},
+    {"path": "internal/zoopschema/catalog/zoop-v1.json", "sha256": "c48ea983254c80886b7a7f051762aef6b587c5e938e99ec3a7bb4913a523fcdf"},
+    {"path": "internal/zoopschema/catalog_test.go", "sha256": "9a7820a7ec6e631e65786b95d66821a93f0ceb612f77203ee452ab827d562c35"}
   ],
   "reproduction": [
-    "go clean -testcache && go test ./...",
+    "go test ./...",
     "go test -race ./...",
     "go vet ./...",
-    "git diff --check",
-    "go run ./cmd/generate-zoop-catalog -input PROTECTED_OWNER_SCHEMA_JSON -output GENERATED_JSON && cmp -s GENERATED_JSON internal/zoopschema/catalog/zoop-v1.json"
+    "test -z \"$(gofmt -l cmd/generate-zoop-catalog/main.go internal/mcp/instance_initialize.go internal/mcp/instance_initialize_test.go internal/mcp/server.go internal/zoopschema/catalog.go internal/zoopschema/catalog_test.go)\"",
+    "git diff --check"
   ],
   "boundaries": {
-    "enterprise_wecom_writes": false,
-    "apply_reachable": false,
+    "real_enterprise_wecom_writes": false,
+    "controlled_fake_end_to_end": true,
+    "apply_reachable_when_catalog_complete": true,
     "existing_business_document_import_public": false,
-    "formula_creation_proven": false
+    "formula_api_capability_proven": true,
+    "zoop_progress_formula_model_known": false,
+    "remote_creation_fail_closed_on_current_catalog": true,
+    "production_deployed": false,
+    "owner_accepted": false
   }
 }

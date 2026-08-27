@@ -47,7 +47,14 @@ func TestLogicalReferencesContainNoTenantIDs(t *testing.T) {
 	}
 	found := false
 	for _, role := range catalog.Roles {
+		if role.PrimaryFieldTitle == "" {
+			t.Fatalf("%s primary field title is missing", role.Role)
+		}
+		primaryFound := false
 		for _, field := range role.Fields {
+			if field.Title == role.PrimaryFieldTitle && field.Type == "FIELD_TYPE_TEXT" {
+				primaryFound = true
+			}
 			if field.Reference == nil {
 				continue
 			}
@@ -55,6 +62,9 @@ func TestLogicalReferencesContainNoTenantIDs(t *testing.T) {
 			if !strings.HasPrefix(field.Reference.Role, "Z-S0") || field.Reference.FieldTitle == "" {
 				t.Fatalf("invalid logical reference: %#v", field.Reference)
 			}
+		}
+		if !primaryFound {
+			t.Fatalf("%s primary field is not a text field in the catalog", role.Role)
 		}
 	}
 	if !found {

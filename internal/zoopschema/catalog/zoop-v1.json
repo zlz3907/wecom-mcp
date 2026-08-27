@@ -9,6 +9,7 @@
     {
       "role": "Z-S01",
       "sheet_title": "Z-S01｜主需求表",
+      "primary_field_title": "需求编号",
       "fields": [
         {
           "field_title": "AI 分析摘要",
@@ -246,6 +247,7 @@
     {
       "role": "Z-S02",
       "sheet_title": "Z-S02｜决策表",
+      "primary_field_title": "决策标题",
       "fields": [
         {
           "field_title": "主需求",
@@ -349,6 +351,7 @@
     {
       "role": "Z-S03",
       "sheet_title": "Z-S03｜任务表",
+      "primary_field_title": "任务编号",
       "fields": [
         {
           "field_title": "下一步动作",
@@ -493,6 +496,7 @@
     {
       "role": "Z-S04",
       "sheet_title": "Z-S04｜审计表",
+      "primary_field_title": "审计事件编号",
       "fields": [
         {
           "field_title": "下次恢复时间",
@@ -550,6 +554,7 @@
     {
       "role": "Z-S05",
       "sheet_title": "Z-S05｜计划任务表",
+      "primary_field_title": "计划任务编号",
       "fields": [
         {
           "field_title": "下次运行时间",
@@ -610,6 +615,7 @@
     {
       "role": "Z-S06",
       "sheet_title": "Z-S06｜会话表",
+      "primary_field_title": "会话编号与标题",
       "fields": [
         {
           "field_title": "主关联对象",
@@ -702,6 +708,7 @@
     {
       "role": "Z-S07",
       "sheet_title": "Z-S07｜项目表",
+      "primary_field_title": "项目编号与名称",
       "fields": [
         {
           "field_title": "参与主体",
@@ -751,6 +758,7 @@
     {
       "role": "Z-S08",
       "sheet_title": "Z-S08｜Schema 契约表",
+      "primary_field_title": "Schema 条目键与版本",
       "fields": [
         {
           "field_title": "Schema 条目键与版本",
@@ -791,6 +799,7 @@
     {
       "role": "Z-S09",
       "sheet_title": "Z-S09｜协作主体表",
+      "primary_field_title": "主体编号",
       "fields": [
         {
           "field_title": "AI 实例ID",
