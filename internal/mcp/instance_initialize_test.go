@@ -494,6 +494,68 @@ func TestInstanceInitializeManagementPermissionFailsClosedOnGuessedAuthField(t *
 	}
 }
 
+func TestInstanceInitializeManagementPermissionSeparatesLocalAndWeComIdentity(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	fake.documentAuth = map[string]any{
+		"errcode":         float64(0),
+		"access_rule":     map[string]any{"enable_corp_internal": true},
+		"secure_setting":  map[string]any{"enable_readonly_copy": false},
+		"doc_member_list": []any{map[string]any{"type": float64(1), "userid": "enterprise-manager", "auth": float64(7)}},
+	}
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := result.(map[string]any)
+	if output["state"] != "ready" || output["preview_id"] == "" {
+		t.Fatalf("valid enterprise manager with omitted empty co_auth_list was rejected: %#v", output)
+	}
+}
+
+func TestInstanceInitializeManagementPermissionRequiresRealManager(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	fake.documentAuth = map[string]any{
+		"errcode":         float64(0),
+		"access_rule":     map[string]any{"enable_corp_internal": true},
+		"secure_setting":  map[string]any{"enable_readonly_copy": false},
+		"doc_member_list": []any{map[string]any{"type": float64(1), "userid": "enterprise-reader", "auth": float64(1)}},
+	}
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := result.(map[string]any)
+	if output["state"] != "conflict" || !strings.Contains(fmt.Sprint(output["conflicts"]), "registry_identity_or_auth_unverified") {
+		t.Fatalf("document without a real manager was accepted: %#v", output)
+	}
+}
+
+func TestInstanceInitializeManagementPermissionRejectsMalformedManagerIdentity(t *testing.T) {
+	for name, member := range map[string]map[string]any{
+		"department_type": {"type": float64(2), "userid": "enterprise-manager", "auth": float64(7)},
+		"blank_userid":    {"type": float64(1), "userid": "  ", "auth": float64(7)},
+		"missing_type":    {"userid": "enterprise-manager", "auth": float64(7)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runtime, fake := readyInitializeFixture(t)
+			fake.documentAuth = map[string]any{
+				"errcode":         float64(0),
+				"access_rule":     map[string]any{"enable_corp_internal": true},
+				"secure_setting":  map[string]any{"enable_readonly_copy": false},
+				"doc_member_list": []any{member},
+			}
+			result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			output := result.(map[string]any)
+			if output["state"] != "conflict" || !strings.Contains(fmt.Sprint(output["conflicts"]), "registry_identity_or_auth_unverified") {
+				t.Fatalf("malformed manager identity was accepted: %#v", output)
+			}
+		})
+	}
+}
+
 func TestInstanceInitializeApplyReadyIsIdempotentAndNeverWritesRemote(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
 	configPath := filepath.Join(t.TempDir(), "instance.json")

@@ -1435,7 +1435,7 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 		return finalizeInitializeObservation(observation)
 	}
 
-	registryIdentity, registryAuthorization, err := readInitializeDocumentIdentity(ctx, client, registryDocumentID, "SMART_SHEETS_IDS", runtime.SchemaAdminUser)
+	registryIdentity, registryAuthorization, err := readInitializeDocumentIdentity(ctx, client, registryDocumentID, "SMART_SHEETS_IDS")
 	if err != nil {
 		observation.Conflicts = append(observation.Conflicts, "registry_identity_or_auth_unverified")
 		observation.Snapshot = snapshot
@@ -1573,7 +1573,7 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 		return finalizeInitializeObservation(observation)
 	}
 
-	businessIdentity, businessAuthorization, err := readInitializeDocumentIdentity(ctx, client, snapshot.BusinessDocumentID, "", runtime.SchemaAdminUser)
+	businessIdentity, businessAuthorization, err := readInitializeDocumentIdentity(ctx, client, snapshot.BusinessDocumentID, "")
 	if err != nil {
 		observation.Conflicts = append(observation.Conflicts, "business_identity_or_auth_unverified")
 		observation.Snapshot = snapshot
@@ -1782,7 +1782,7 @@ func sheetNameForInitialize(sheet map[string]any) (string, bool) {
 	return "", false
 }
 
-func readInitializeDocumentIdentity(ctx context.Context, client wecomRequester, documentID, expectedName, expectedManagerUser string) (map[string]any, map[string]any, error) {
+func readInitializeDocumentIdentity(ctx context.Context, client wecomRequester, documentID, expectedName string) (map[string]any, map[string]any, error) {
 	base, err := client.Request(ctx, "get_doc_base_info", map[string]any{"docid": documentID})
 	if err != nil || apiError(base) != nil {
 		return nil, nil, fmt.Errorf("document base info unavailable")
@@ -1797,7 +1797,7 @@ func readInitializeDocumentIdentity(ctx context.Context, client wecomRequester, 
 		return nil, nil, fmt.Errorf("document authorization unavailable")
 	}
 	authResult, _ := authorization["result"].(map[string]any)
-	managementProof, err := verifyInitializeManagementAuthorization(authResult, expectedManagerUser)
+	managementProof, err := verifyInitializeManagementAuthorization(authResult)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1808,42 +1808,49 @@ func readInitializeDocumentIdentity(ctx context.Context, client wecomRequester, 
 // Enterprise WeCom's “获取文档权限信息” endpoint (official document path 97461).
 // That endpoint is restricted to documents created by the calling application;
 // a structurally complete successful response therefore proves that the same
-// application owns the API management plane for this document. In addition,
-// the configured schema_admin_user must appear in doc_member_list with the
-// documented manager permission value 7. Arbitrary fields such as
+// application owns the API management plane for this document. The local
+// schema_admin_user remains an OS-account gate and must not be compared with
+// Enterprise WeCom member userids. At least one real document member must have
+// the documented manager permission value 7. Arbitrary fields such as
 // auth_type=admin are deliberately not accepted.
-func verifyInitializeManagementAuthorization(auth map[string]any, expectedManagerUser string) (map[string]any, error) {
-	if expectedManagerUser == "" {
-		return nil, fmt.Errorf("document manager identity is not configured")
-	}
+func verifyInitializeManagementAuthorization(auth map[string]any) (map[string]any, error) {
 	accessRule, accessOK := auth["access_rule"].(map[string]any)
 	secureSetting, secureOK := auth["secure_setting"].(map[string]any)
 	members, membersOK := auth["doc_member_list"].([]any)
-	departments, departmentsOK := auth["co_auth_list"].([]any)
-	if !accessOK || len(accessRule) == 0 || !secureOK || len(secureSetting) == 0 || !membersOK || !departmentsOK {
+	departments := []any{}
+	if rawDepartments, exists := auth["co_auth_list"]; exists {
+		var departmentsOK bool
+		departments, departmentsOK = rawDepartments.([]any)
+		if !departmentsOK {
+			return nil, fmt.Errorf("document management permission unproven")
+		}
+	}
+	if !accessOK || len(accessRule) == 0 || !secureOK || len(secureSetting) == 0 || !membersOK {
 		return nil, fmt.Errorf("document management permission unproven")
 	}
-	managerMatched := false
+	managerCount := 0
 	for _, rawMember := range members {
 		member, ok := rawMember.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("document management permission response invalid")
 		}
+		memberType, typeOK := initializeInteger(member["type"])
 		userID, _ := member["userid"].(string)
 		authValue, ok := initializeInteger(member["auth"])
-		if userID == expectedManagerUser && ok && authValue == 7 {
-			managerMatched = true
+		if typeOK && memberType == 1 && strings.TrimSpace(userID) != "" && ok && authValue == 7 {
+			managerCount++
 		}
 	}
-	if !managerMatched {
-		return nil, fmt.Errorf("configured document manager permission unproven")
+	if managerCount == 0 {
+		return nil, fmt.Errorf("document manager permission unproven")
 	}
 	return map[string]any{
 		"application_document_management_proven": true,
-		"configured_manager_proven":              true,
+		"document_manager_proven":                true,
 		"access_rule_present":                    true,
 		"secure_setting_present":                 true,
 		"document_member_count":                  len(members),
+		"manager_member_count":                   managerCount,
 		"department_rule_count":                  len(departments),
 	}, nil
 }
