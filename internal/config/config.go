@@ -21,6 +21,7 @@ import (
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,256}$`)
 var schemaAdminIdentity = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,256}(?:\\[A-Za-z0-9_.-]{1,256})?$`)
+var wecomUserID = regexp.MustCompile(`^[A-Za-z0-9_.@-]{1,64}$`)
 var sha256Digest = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 var supportedOperations = func() map[string]struct{} {
@@ -36,6 +37,7 @@ type Config struct {
 	InstanceName             string              `json:"instance_name"`
 	TenantRoute              string              `json:"tenant_route"`
 	SchemaAdminUser          string              `json:"schema_admin_user,omitempty"`
+	WecomOperatorUserID      string              `json:"wecom_operator_userid,omitempty"`
 	RegistryDocumentID       string              `json:"registry_document_id"`
 	RegistryKey              string              `json:"registry_key"`
 	SchemaMirrorPath         string              `json:"schema_mirror_path"`
@@ -81,6 +83,9 @@ func (c Config) validate(requireRegistry bool) error {
 	}
 	if c.SchemaAdminUser != "" && !schemaAdminIdentity.MatchString(c.SchemaAdminUser) {
 		return fmt.Errorf("配置 schema_admin_user 非法")
+	}
+	if c.WecomOperatorUserID != "" && !wecomUserID.MatchString(c.WecomOperatorUserID) {
+		return fmt.Errorf("配置 wecom_operator_userid 非法")
 	}
 	if requireRegistry || c.RegistryDocumentID != "" {
 		if !identifier.MatchString(c.RegistryDocumentID) {
@@ -180,7 +185,7 @@ func (c Config) Digest() string {
 		groups = append(groups, name+":"+strings.Join(copyOperations, ","))
 	}
 	sort.Strings(groups)
-	sum := sha256.Sum256([]byte(strings.Join([]string{fmt.Sprintf("%d", c.Version), c.InstanceName, c.TenantRoute, c.SchemaAdminUser, c.RegistryDocumentID, c.RegistryKey, c.SchemaMirrorPath, c.StatePath, c.InitializationGeneration, c.SchemaVersion, c.SchemaDigest, c.RegistrySheetID, c.InitializedState, strings.Join(groups, ";")}, "\x00")))
+	sum := sha256.Sum256([]byte(strings.Join([]string{fmt.Sprintf("%d", c.Version), c.InstanceName, c.TenantRoute, c.SchemaAdminUser, c.WecomOperatorUserID, c.RegistryDocumentID, c.RegistryKey, c.SchemaMirrorPath, c.StatePath, c.InitializationGeneration, c.SchemaVersion, c.SchemaDigest, c.RegistrySheetID, c.InitializedState, strings.Join(groups, ";")}, "\x00")))
 	return hex.EncodeToString(sum[:])
 }
 

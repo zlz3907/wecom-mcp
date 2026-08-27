@@ -16,12 +16,13 @@ type wecomRequester interface {
 }
 
 type registryBootstrapState struct {
-	Phase      string `json:"phase"`
-	DocumentID string `json:"document_id,omitempty"`
-	SheetID    string `json:"sheet_id,omitempty"`
-	ShareURL   string `json:"share_url,omitempty"`
-	StartedAt  string `json:"started_at"`
-	UpdatedAt  string `json:"updated_at"`
+	Phase          string `json:"phase"`
+	DocumentID     string `json:"document_id,omitempty"`
+	SheetID        string `json:"sheet_id,omitempty"`
+	ShareURL       string `json:"share_url,omitempty"`
+	OperatorDigest string `json:"operator_digest,omitempty"`
+	StartedAt      string `json:"started_at"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 var registryBootstrapFields = []string{
@@ -69,7 +70,7 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 			"instance_name": runtime.InstanceName,
 		}, nil
 	}
-	for _, operation := range []string{"create_smartsheet", "get_sheet", "get_fields", "add_fields"} {
+	for _, operation := range []string{"list_employees", "create_smartsheet", "get_doc_auth", "get_sheet", "get_fields", "add_fields"} {
 		if !runtime.Allows(operation) {
 			return nil, fmt.Errorf("SMART_SHEETS_IDS 缺省初始化需要白名单允许 %s", operation)
 		}
@@ -77,6 +78,10 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 	if client == nil {
 		return nil, fmt.Errorf("企业微信客户端未初始化")
 	}
+	if err := verifyBoundOperator(ctx, runtime, client, ""); err != nil {
+		return nil, err
+	}
+	operatorDigest := digestValue(runtime.WecomOperatorUserID)
 
 	statePath := registryBootstrapStatePath(runtime)
 	state, exists, err := loadRegistryBootstrapState(statePath)
@@ -86,11 +91,11 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 	createdNow := false
 	if !exists {
 		now := time.Now().UTC().Format(time.RFC3339Nano)
-		state = registryBootstrapState{Phase: "creating", StartedAt: now, UpdatedAt: now}
+		state = registryBootstrapState{Phase: "creating", OperatorDigest: operatorDigest, StartedAt: now, UpdatedAt: now}
 		if err := reserveRegistryBootstrapState(statePath, state); err != nil {
 			return nil, err
 		}
-		created, err := client.Request(ctx, "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "SMART_SHEETS_IDS"})
+		created, err := client.Request(ctx, "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "SMART_SHEETS_IDS", "admin_users": []string{runtime.WecomOperatorUserID}})
 		if err != nil {
 			return nil, fmt.Errorf("SMART_SHEETS_IDS 创建结果不确定；本地哨兵已保留，禁止自动重试: %w", err)
 		}
@@ -110,8 +115,16 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 	} else if state.Phase == "creating" && state.DocumentID == "" {
 		return nil, fmt.Errorf("检测到未完成的 SMART_SHEETS_IDS 创建哨兵且没有可核验文档 ID；禁止自动重试")
 	}
+	if state.OperatorDigest == "" || state.OperatorDigest != operatorDigest {
+		return nil, fmt.Errorf("SMART_SHEETS_IDS bootstrap 状态未绑定当前 business operator；禁止继续写入")
+	}
 	if state.DocumentID == "" {
 		return nil, fmt.Errorf("SMART_SHEETS_IDS bootstrap 状态缺少文档 ID")
+	}
+	authResponse, authErr := client.Request(ctx, "get_doc_auth", map[string]any{"docid": state.DocumentID})
+	authResult, _ := authResponse["result"].(map[string]any)
+	if authErr != nil || apiError(authResponse) != nil || !initializeDocumentMemberHasAuth(authResult, runtime.WecomOperatorUserID, 7) {
+		return nil, fmt.Errorf("SMART_SHEETS_IDS 已创建但 business operator 管理员权限未通过精确回读；禁止自动重试创建")
 	}
 
 	sheetID, fieldCount, err := ensureRegistryFields(ctx, client, state.DocumentID)
@@ -137,11 +150,11 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 	if err := saveRegistryBootstrapState(statePath, state); err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	return withOperatorAudit(map[string]any{
 		"state": "created_configured_readback_verified", "created": createdNow,
 		"config_updated": true, "readback_verified": true, "registry_field_count": verifiedCount,
 		"instance_name": persisted.InstanceName,
-	}, nil
+	}, runtime.WecomOperatorUserID), nil
 }
 
 func ensureRegistryFields(ctx context.Context, client wecomRequester, documentID string) (string, int, error) {

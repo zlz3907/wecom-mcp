@@ -1,8 +1,11 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -103,6 +106,41 @@ func TestCompleteStateReportsCorruptPersistence(t *testing.T) {
 	if err := server.completeState(path, "req-cccccccccccc", "digest"); err == nil {
 		t.Fatal("invalid persisted state must not be reported as completed")
 	}
+}
+
+func TestRecordApplyBindsConfiguredOperatorWithoutCallerActor(t *testing.T) {
+	input := applyInput{TargetRole: "Z-S01", Operation: "add_records", IdempotencyKey: "idempotency-key-0001", SourceRevision: "rev-1"}
+	prepared := []map[string]any{{"values": map[string]any{"field": "value"}}}
+	if requestDigest(input, prepared, "operator-a") == requestDigest(input, prepared, "operator-b") {
+		t.Fatal("request digest did not bind business operator userid")
+	}
+	server := &Server{}
+	path := filepath.Join(t.TempDir(), "state.json")
+	digest := requestDigest(input, prepared, "operator-a")
+	if err := server.reserveWithOperator(path, input.IdempotencyKey, digest, "operator-a"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := loadState(path)
+	if err != nil || state.Entries[input.IdempotencyKey].BusinessOperatorUserID != "operator-a" {
+		t.Fatalf("operator missing from idempotency state: %#v err=%v", state, err)
+	}
+	if err := server.completeStateWithOperator(path, input.IdempotencyKey, digest, "operator-b"); err == nil {
+		t.Fatal("different operator completed reserved mutation")
+	}
+	if _, err := server.apply(context.Background(), config.Config{}, config.Schema{}, nil, json.RawMessage(`{"target_role":"Z-S01","operation":"add_records","idempotency_key":"idempotency-key-0001","source_revision":"rev-1","records":[{"values":{"x":"y"}}]}`)); err == nil || !strings.Contains(err.Error(), "wecom_operator_userid") {
+		t.Fatalf("record write without configured operator was not fail-closed: %v", err)
+	}
+	for _, item := range tools {
+		if item.Name != "wecom_record_apply" {
+			continue
+		}
+		encoded, _ := json.Marshal(item.InputSchema)
+		if strings.Contains(string(encoded), "actor") || strings.Contains(string(encoded), "operator_userid") {
+			t.Fatalf("caller-controllable actor leaked into tool schema: %s", encoded)
+		}
+		return
+	}
+	t.Fatal("wecom_record_apply tool not found")
 }
 
 func TestVerifyReadbackRequiresExactRecordAndValues(t *testing.T) {

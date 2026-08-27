@@ -25,6 +25,7 @@ type initializeFakeClient struct {
 	registryIncomplete bool
 	operations         []string
 	documentAuth       map[string]any
+	employeeUserID     string
 }
 
 func (f *initializeFakeClient) Request(_ context.Context, operation string, payload any) (map[string]any, error) {
@@ -33,6 +34,12 @@ func (f *initializeFakeClient) Request(_ context.Context, operation string, payl
 	documentID, _ := body["docid"].(string)
 	sheetID, _ := body["sheet_id"].(string)
 	switch operation {
+	case "list_employees":
+		userid := f.employeeUserID
+		if userid == "" {
+			userid = "symbolic-admin"
+		}
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "userlist": []any{map[string]any{"userid": userid, "status": float64(1)}}}}, nil
 	case "get_doc_base_info":
 		name := "Zoop｜测试实例"
 		if documentID == f.registryDocumentID {
@@ -164,10 +171,10 @@ func readyInitializeFixture(t *testing.T) (config.Config, *initializeFakeClient)
 		t.Fatal(err)
 	}
 	runtime := config.Config{
-		Version: 1, InstanceName: "zoop_wecom_zhycit", TenantRoute: "tenant-route", SchemaAdminUser: "symbolic-admin", RegistryDocumentID: fake.registryDocumentID,
+		Version: 1, InstanceName: "zoop_wecom_zhycit", TenantRoute: "tenant-route", SchemaAdminUser: "symbolic-admin", WecomOperatorUserID: "symbolic-admin", RegistryDocumentID: fake.registryDocumentID,
 		RegistryKey: "registry-key", SchemaMirrorPath: schemaPath, StatePath: filepath.Join(directory, "state.json"),
 		InitializationGeneration: "generation-symbolic", SchemaVersion: catalog.Version, RegistrySheetID: fake.registrySheetID, InitializedState: "config_committed",
-		APIWhitelist: map[string][]string{instanceInitializeGroup: {"get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records"}},
+		APIWhitelist: map[string][]string{instanceInitializeGroup: {"list_employees", "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "grant_doc_readers"}},
 	}
 	local, err := config.LoadSchema(schemaPath)
 	if err != nil {
@@ -189,7 +196,7 @@ func TestInstanceInitializeStatusReadyIsReadOnlyAndDisclosesNoRecords(t *testing
 		t.Fatalf("unexpected result: %#v", output)
 	}
 	for _, operation := range fake.operations {
-		if operation != "get_doc_base_info" && operation != "get_doc_auth" && operation != "get_sheet" && operation != "get_fields" && operation != "get_records" {
+		if operation != "list_employees" && operation != "get_doc_base_info" && operation != "get_doc_auth" && operation != "get_sheet" && operation != "get_fields" && operation != "get_records" {
 			t.Fatalf("status performed write operation %s", operation)
 		}
 	}
@@ -496,6 +503,7 @@ func TestInstanceInitializeManagementPermissionFailsClosedOnGuessedAuthField(t *
 
 func TestInstanceInitializeManagementPermissionSeparatesLocalAndWeComIdentity(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
+	runtime.WecomOperatorUserID, fake.employeeUserID = "enterprise-manager", "enterprise-manager"
 	fake.documentAuth = map[string]any{
 		"errcode":         float64(0),
 		"access_rule":     map[string]any{"enable_corp_internal": true},
@@ -514,6 +522,7 @@ func TestInstanceInitializeManagementPermissionSeparatesLocalAndWeComIdentity(t 
 
 func TestInstanceInitializeManagementPermissionAcceptsAppOwnershipWithoutHumanManager(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
+	runtime.WecomOperatorUserID, fake.employeeUserID = "enterprise-reader", "enterprise-reader"
 	fake.documentAuth = map[string]any{
 		"errcode":         float64(0),
 		"access_rule":     map[string]any{"enable_corp_internal": true},
@@ -525,8 +534,8 @@ func TestInstanceInitializeManagementPermissionAcceptsAppOwnershipWithoutHumanMa
 		t.Fatal(err)
 	}
 	output := result.(map[string]any)
-	if output["state"] != "ready" || output["preview_id"] == "" {
-		t.Fatalf("application-owned document with a valid editor was rejected: %#v", output)
+	if output["state"] == "conflict" || !strings.Contains(fmt.Sprint(output["planned_operations"]), "grant_business_operator_admin") {
+		t.Fatalf("application-owned document did not plan operator admin repair: %#v", output)
 	}
 }
 
@@ -600,7 +609,7 @@ func TestInstanceInitializeApplyReadyIsIdempotentAndNeverWritesRemote(t *testing
 		t.Fatalf("ready apply must be idempotent: result=%#v err=%v", result, err)
 	}
 	for _, operation := range fake.operations[before:] {
-		if operation != "get_doc_base_info" && operation != "get_doc_auth" && operation != "get_sheet" && operation != "get_fields" && operation != "get_records" {
+		if operation != "list_employees" && operation != "get_doc_base_info" && operation != "get_doc_auth" && operation != "get_sheet" && operation != "get_fields" && operation != "get_records" {
 			t.Fatalf("apply performed write operation %s", operation)
 		}
 	}
@@ -837,6 +846,8 @@ type initializeTemplateFake struct {
 func (f *initializeTemplateFake) Request(_ context.Context, operation string, payload any) (map[string]any, error) {
 	f.operations = append(f.operations, operation)
 	switch operation {
+	case "list_employees":
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "userlist": []any{map[string]any{"userid": "test-admin", "status": float64(1)}}}}, nil
 	case "get_fields":
 		return okInitializeResponse("fields", f.fields), nil
 	case "get_records":
@@ -982,6 +993,7 @@ type initializeLifecycleFake struct {
 	hideRegistryReads int
 	hideReadsAfterAdd int
 	formulaPayload    map[string]any
+	createPayloads    []map[string]any
 }
 
 func (f *initializeLifecycleFake) nextID(prefix string) string {
@@ -1016,7 +1028,10 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 	documentID, _ := body["docid"].(string)
 	sheetID, _ := body["sheet_id"].(string)
 	switch operation {
+	case "list_employees":
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "userlist": []any{map[string]any{"userid": "test-admin", "status": float64(1)}}}}, nil
 	case "create_smartsheet":
+		f.createPayloads = append(f.createPayloads, body)
 		name, _ := body["doc_name"].(string)
 		id := f.nextID("document")
 		defaultFieldID := f.nextID("default-field")
@@ -1040,6 +1055,8 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 			"secure_setting":  map[string]any{"enable_readonly_copy": false},
 			"doc_member_list": []any{map[string]any{"type": float64(1), "userid": "test-admin", "auth": float64(7)}}, "co_auth_list": []any{},
 		}}, nil
+	case "grant_doc_readers":
+		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
 	case "get_sheet":
 		document := f.documents[documentID]
 		if document == nil {
@@ -1197,9 +1214,9 @@ func syntheticInitializeCatalog() zoopschema.Catalog {
 func initializeLifecycleFixture(t *testing.T) (config.Config, zoopschema.Catalog, *initializeLifecycleFake, *Server, initializeObservation, instanceInitializeJournal) {
 	t.Helper()
 	directory := t.TempDir()
-	operations := []string{"get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "create_smartsheet", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records"}
+	operations := []string{"list_employees", "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "create_smartsheet", "grant_doc_readers", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records"}
 	runtime := config.Config{
-		Version: 1, InstanceName: "initialize-test", TenantRoute: "test-route", SchemaAdminUser: "test-admin", RegistryKey: "test-registry",
+		Version: 1, InstanceName: "initialize-test", TenantRoute: "test-route", SchemaAdminUser: "test-admin", WecomOperatorUserID: "test-admin", RegistryKey: "test-registry",
 		SchemaMirrorPath: filepath.Join(directory, "not-yet-created.json"), StatePath: filepath.Join(directory, "state.json"),
 		APIWhitelist: map[string][]string{instanceInitializeGroup: operations},
 	}
@@ -1270,6 +1287,12 @@ func TestRemoteInitializerControlledEndToEnd(t *testing.T) {
 	}
 	if fake.createCount != 2 || fake.deleteCount != 10 || fake.updateFieldCount != 10 || fake.smokeCount < 3 {
 		t.Fatalf("unexpected lifecycle evidence: create=%d delete=%d update=%d smoke=%d", fake.createCount, fake.deleteCount, fake.updateFieldCount, fake.smokeCount)
+	}
+	for _, payload := range fake.createPayloads {
+		admins, ok := payload["admin_users"].([]string)
+		if !ok || len(admins) != 1 || admins[0] != runtime.WecomOperatorUserID {
+			t.Fatalf("fresh create did not bind configured operator admin: %#v", payload)
+		}
 	}
 	loadedJournal, _, exists, err := loadInstanceInitializeJournal(instanceInitializeJournalPath(runtime))
 	if err != nil || !exists || loadedJournal.Phase != "ready" {
@@ -1475,7 +1498,7 @@ func TestInstanceInitializeRecoveryCandidateWithoutJournalDocIDRemainsUnowned(t 
 	original := fake.documents[businessID].sheets[0]
 	journal := instanceInitializeJournal{
 		Version: instanceInitializeJournalV1, Phase: "recovery_required", AssetKind: "business", OperationID: "unowned-candidate",
-		RegistryDocumentID: registryID, CatalogDigest: digestValue(catalog), ConfigDigest: runtime.Digest(), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		RegistryDocumentID: registryID, CatalogDigest: digestValue(catalog), ConfigDigest: runtime.Digest(), OperatorDigest: digestValue(runtime.WecomOperatorUserID), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
 		t.Fatal(err)
@@ -1506,7 +1529,7 @@ func TestInstanceInitializeRegistryRecoveryCandidateWithoutJournalDocIDRemainsUn
 	original := fake.documents[registryID].sheets[0]
 	journal := instanceInitializeJournal{
 		Version: instanceInitializeJournalV1, Phase: "recovery_required", AssetKind: "registry", OperationID: "unowned-registry-candidate",
-		CatalogDigest: digestValue(catalog), ConfigDigest: runtime.Digest(), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		CatalogDigest: digestValue(catalog), ConfigDigest: runtime.Digest(), OperatorDigest: digestValue(runtime.WecomOperatorUserID), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
 		t.Fatal(err)

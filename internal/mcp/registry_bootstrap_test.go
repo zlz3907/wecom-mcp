@@ -15,13 +15,19 @@ import (
 type bootstrapFakeClient struct {
 	fields      map[string]map[string]any
 	createCalls int
+	createBody  map[string]any
 }
 
 func (f *bootstrapFakeClient) Request(_ context.Context, operation string, payload any) (map[string]any, error) {
 	switch operation {
+	case "list_employees":
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "userlist": []any{map[string]any{"userid": "operator-user", "status": float64(1)}}}}, nil
 	case "create_smartsheet":
 		f.createCalls++
+		f.createBody, _ = payload.(map[string]any)
 		return map[string]any{"result": map[string]any{"docid": "registry-created", "url": "https://example.invalid/registry"}}, nil
+	case "get_doc_auth":
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "doc_member_list": []any{map[string]any{"type": float64(1), "userid": "operator-user", "auth": float64(7)}}}}, nil
 	case "get_sheet":
 		return map[string]any{"result": map[string]any{"sheet_list": []any{map[string]any{"type": "smartsheet", "sheet_id": "sheet-registry"}}}}, nil
 	case "get_fields":
@@ -51,7 +57,7 @@ func bootstrapTestConfig(t *testing.T) (string, config.Config) {
 	path := filepath.Join(dir, "instance.json")
 	schema := filepath.Join(dir, "schema.json")
 	state := filepath.Join(dir, "state.json")
-	data := `{"version":1,"instance_name":"zoop_wecom_zhycit","tenant_route":"test-tenant-route","registry_document_id":"","registry_key":"test-registry-key","schema_mirror_path":"` + schema + `","state_path":"` + state + `","api_whitelist":{"bootstrap":["create_smartsheet","get_sheet","get_fields","add_fields"]}}`
+	data := `{"version":1,"instance_name":"zoop_wecom_zhycit","tenant_route":"test-tenant-route","wecom_operator_userid":"operator-user","registry_document_id":"","registry_key":"test-registry-key","schema_mirror_path":"` + schema + `","state_path":"` + state + `","api_whitelist":{"bootstrap":["list_employees","create_smartsheet","get_doc_auth","get_sheet","get_fields","add_fields"]}}`
 	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +80,10 @@ func TestRegistryBootstrapCreatesOncePersistsAndRereads(t *testing.T) {
 	output := result.(map[string]any)
 	if output["state"] != "created_configured_readback_verified" || output["readback_verified"] != true || client.createCalls != 1 {
 		t.Fatalf("result=%#v createCalls=%d", output, client.createCalls)
+	}
+	admins, _ := client.createBody["admin_users"].([]string)
+	if len(admins) != 1 || admins[0] != "operator-user" {
+		t.Fatalf("bootstrap create did not bind operator admin: %#v", client.createBody)
 	}
 	if len(client.fields) != len(registryBootstrapFields) {
 		t.Fatalf("field count=%d", len(client.fields))
@@ -180,7 +190,7 @@ func TestRegistryBootstrapResumesCreatedDocumentWithoutCreatingAgain(t *testing.
 	client := &bootstrapFakeClient{fields: map[string]map[string]any{}}
 	state := registryBootstrapState{
 		Phase: "created", DocumentID: "registry-resume", ShareURL: "https://example.invalid/resume",
-		StartedAt: "2026-08-10T00:00:00Z", UpdatedAt: "2026-08-10T00:00:01Z",
+		OperatorDigest: digestValue("operator-user"), StartedAt: "2026-08-10T00:00:00Z", UpdatedAt: "2026-08-10T00:00:01Z",
 	}
 	if err := reserveRegistryBootstrapState(registryBootstrapStatePath(runtime), state); err != nil {
 		t.Fatal(err)

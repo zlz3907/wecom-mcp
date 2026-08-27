@@ -266,7 +266,7 @@ func (s *Server) applySubjectLinksMigration(ctx context.Context, runtime config.
 		return result, nil
 	}
 	reservationKey := "schema-migration:" + subjectLinksMigrationID + ":" + previewID
-	if err := s.reserve(runtime.StatePath, reservationKey, previewID); err != nil {
+	if err := s.reserveWithOperator(runtime.StatePath, reservationKey, previewID, runtime.WecomOperatorUserID); err != nil {
 		return nil, err
 	}
 
@@ -311,15 +311,17 @@ func (s *Server) applySubjectLinksMigration(ctx context.Context, runtime config.
 
 	readbackPlan, err := buildSubjectLinksMigrationPlan(ctx, runtime, client)
 	if err != nil || len(readbackPlan.Operations) != 0 {
-		return map[string]any{
+		return withOperatorAudit(map[string]any{
 			"state":             "applied_readback_pending",
 			"migration_id":      subjectLinksMigrationID,
 			"preview_id":        previewID,
 			"readback_verified": false,
-		}, nil
+		}, runtime.WecomOperatorUserID), nil
 	}
-	s.complete(runtime.StatePath, reservationKey, previewID)
-	return map[string]any{
+	if err := s.completeStateWithOperator(runtime.StatePath, reservationKey, previewID, runtime.WecomOperatorUserID); err != nil {
+		return withOperatorAudit(map[string]any{"state": "applied_idempotency_completion_pending", "migration_id": subjectLinksMigrationID, "preview_id": previewID, "readback_verified": true, "idempotency_error": err.Error()}, runtime.WecomOperatorUserID), nil
+	}
+	return withOperatorAudit(map[string]any{
 		"state":                   "applied",
 		"migration_id":            subjectLinksMigrationID,
 		"preview_id":              previewID,
@@ -328,5 +330,5 @@ func (s *Server) applySubjectLinksMigration(ctx context.Context, runtime config.
 		"readback_verified":       true,
 		"local_mirror_updated":    false,
 		"next_required_operation": "Owner 授权后执行线上到本地 Schema 字典同步",
-	}, nil
+	}, runtime.WecomOperatorUserID), nil
 }
