@@ -1075,6 +1075,49 @@ func TestInstanceInitializeNewCreateReportsFormulaCapabilityGapWithoutPreview(t 
 	}
 }
 
+func TestInstanceInitializeRegistryRecoveryWithMissingFieldsBlocksTransitiveBusinessCreate(t *testing.T) {
+	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
+	server.initializeCatalog = nil
+	registryResponse, err := fake.Request(context.Background(), "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "SMART_SHEETS_IDS"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryID := initializeCreatedDocumentID(registryResponse)
+	journal := instanceInitializeJournal{
+		Version: instanceInitializeJournalV1, Phase: "recovery_required", AssetKind: "registry", OperationID: "registry-missing-fields",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+		t.Fatal(err)
+	}
+	operationStart := len(fake.operations)
+	statusRaw, _ := json.Marshal(map[string]string{"recovery_registry_document_id": registryID})
+	result, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, statusRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := result.(map[string]any)
+	if status["state"] != "capability_gap" || status["capability_gap"] != true || status["preview_id"] != "" || !strings.Contains(fmt.Sprint(status["conflicts"]), "downstream_business_state_unproven") {
+		t.Fatalf("Registry recovery did not block its unproven downstream business create: %#v", status)
+	}
+	applyRaw, _ := json.Marshal(map[string]string{
+		"preview_id": strings.Repeat("0", 64), "preview_expires_at": time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano),
+		"owner_authorization": instanceInitializeAuthorization, "recovery_registry_document_id": registryID,
+	})
+	if _, err := server.instanceInitializeApply(context.Background(), runtime, fake, nil, applyRaw); err == nil {
+		t.Fatal("apply accepted a recovery without a signed preview")
+	}
+	if fake.createCount != 1 {
+		t.Fatalf("capability gap created a downstream business document: create_count=%d", fake.createCount)
+	}
+	for _, operation := range fake.operations[operationStart:] {
+		switch operation {
+		case "create_smartsheet", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records":
+			t.Fatalf("capability gap performed remote write %s", operation)
+		}
+	}
+}
+
 func TestInstanceInitializeRecoveryCandidateWithoutJournalDocIDRemainsUnowned(t *testing.T) {
 	runtime, catalog, fake, server, _, _ := initializeLifecycleFixture(t)
 	registryResponse, err := fake.Request(context.Background(), "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "SMART_SHEETS_IDS"})

@@ -1,29 +1,25 @@
 {
-  "version": 3,
-  "base_commit": "4050b569aba0e5a0c410a987ef17da90da7ab29b",
-  "scope": "Verifier remediation for public recovery, unowned candidates, identifier redaction, Resolver smoke, and formula capability gap",
+  "version": 4,
+  "base_commit": "e3e4fd2cfb60976d205b120c46eda8ed5e409a58",
+  "scope": "P0 transitive capability-gap closure for Registry recovery before downstream Zoop business creation",
   "digest_algorithm": "sha256 of the listed path=sha256 lines in array order, each LF-terminated",
-  "evidence_digest": "733a9e304542e3ad3d414b075a47d613c82a074a2bf772fc9a77b0fbccc4ec0b",
+  "evidence_digest": "adc0260b9d01dbf56793581ea42cea21257358229aec671a7961287c87c731f0",
   "artifacts": [
-    {"path": "internal/mcp/instance_initialize.go", "sha256": "064f039c51bd571b9925d35da8927a0608f53c8c4ebf1ffbb637db6a3206fba8"},
-    {"path": "internal/mcp/instance_initialize_test.go", "sha256": "a439d8e823126246dc83d77c83c6b8378f8df7ddf068fd33b7e1d0dc11c54188"},
-    {"path": "internal/mcp/server.go", "sha256": "46c128f3e6a74dfca6c7c20706e29d8f979d444e1aa6ff2193404f09314963d7"},
-    {"path": "internal/wecom/registry.go", "sha256": "5fb33bb534dea534bfdb994d104db8e633802fc0c17e5813430bcd241d4de200"}
+    {"path": "internal/mcp/instance_initialize.go", "sha256": "b7a0bbbb7d95523e1423a0afe1b6f13894c4a4d1e06f534d2a80e3c1538c0cae"},
+    {"path": "internal/mcp/instance_initialize_test.go", "sha256": "6790de6edd1967c93c88866381b15fd2d07ee8274edfc68b752e0a593adc2e66"}
   ],
   "reproduction": [
     "go test ./...",
     "go test -race ./...",
     "go vet ./...",
-    "test -z \"$(gofmt -l internal/mcp/instance_initialize.go internal/mcp/instance_initialize_test.go internal/mcp/server.go internal/wecom/registry.go)\"",
+    "test -z \"$(gofmt -l internal/mcp/instance_initialize.go internal/mcp/instance_initialize_test.go)\"",
     "git diff --check"
   ],
   "boundaries": {
     "real_enterprise_wecom_writes": false,
-    "public_status_apply_end_to_end": true,
-    "verified_recovery_preview_reachable": true,
-    "unowned_recovery_cleanup": false,
-    "public_status_internal_ids_disclosed": false,
-    "final_smoke_uses_reloaded_resolver": true,
+    "registry_recovery_downstream_business_create_writes": 0,
+    "registry_recovery_missing_fields_preview_signed": false,
+    "registry_recovery_missing_fields_state": "capability_gap",
     "existing_business_document_import_public": false,
     "formula_api_capability_proven": true,
     "zoop_progress_formula_model_known": false,

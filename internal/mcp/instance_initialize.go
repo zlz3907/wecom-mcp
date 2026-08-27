@@ -1154,6 +1154,14 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	if missingRegistryFields > 0 {
 		observation.PlannedOperations = append(observation.PlannedOperations, "add_missing_registry_fields")
 		observation.SnapshotComplete = true
+		// Until the Registry keys are complete, status cannot prove that a
+		// unique active business document already exists. Repairing Registry
+		// would therefore transitively permit a later business create. Keep the
+		// entire operation read-only when the Zoop creation catalog is incomplete.
+		if !catalog.CompleteForCreation {
+			observation.State = "capability_gap"
+			observation.Conflicts = append(observation.Conflicts, "downstream_business_state_unproven:Z-S01.进度条.formulaModel")
+		}
 		observation.Snapshot = snapshot
 		return finalizeInitializeObservation(observation)
 	}
