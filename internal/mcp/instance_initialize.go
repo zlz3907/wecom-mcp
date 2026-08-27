@@ -1810,9 +1810,10 @@ func readInitializeDocumentIdentity(ctx context.Context, client wecomRequester, 
 // a structurally complete successful response therefore proves that the same
 // application owns the API management plane for this document. The local
 // schema_admin_user remains an OS-account gate and must not be compared with
-// Enterprise WeCom member userids. At least one real document member must have
-// the documented manager permission value 7. Arbitrary fields such as
-// auth_type=admin are deliberately not accepted.
+// Enterprise WeCom member userids. Human members may legitimately be readers
+// or editors: their role is validated as response structure and reported as
+// evidence, but it is not substituted for the application's ownership proof.
+// Arbitrary fields such as auth_type=admin are deliberately not accepted.
 func verifyInitializeManagementAuthorization(auth map[string]any) (map[string]any, error) {
 	accessRule, accessOK := auth["access_rule"].(map[string]any)
 	secureSetting, secureOK := auth["secure_setting"].(map[string]any)
@@ -1836,17 +1837,18 @@ func verifyInitializeManagementAuthorization(auth map[string]any) (map[string]an
 		}
 		memberType, typeOK := initializeInteger(member["type"])
 		userID, _ := member["userid"].(string)
-		authValue, ok := initializeInteger(member["auth"])
-		if typeOK && memberType == 1 && strings.TrimSpace(userID) != "" && ok && authValue == 7 {
+		temporaryUserID, _ := member["tmp_external_userid"].(string)
+		authValue, authOK := initializeInteger(member["auth"])
+		if !typeOK || memberType != 1 || strings.TrimSpace(userID) == "" && strings.TrimSpace(temporaryUserID) == "" || !authOK || authValue != 1 && authValue != 2 && authValue != 7 {
+			return nil, fmt.Errorf("document management permission response invalid")
+		}
+		if strings.TrimSpace(userID) != "" && authValue == 7 {
 			managerCount++
 		}
 	}
-	if managerCount == 0 {
-		return nil, fmt.Errorf("document manager permission unproven")
-	}
 	return map[string]any{
 		"application_document_management_proven": true,
-		"document_manager_proven":                true,
+		"human_document_manager_present":         managerCount > 0,
 		"access_rule_present":                    true,
 		"secure_setting_present":                 true,
 		"document_member_count":                  len(members),

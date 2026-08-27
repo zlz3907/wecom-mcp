@@ -512,7 +512,7 @@ func TestInstanceInitializeManagementPermissionSeparatesLocalAndWeComIdentity(t 
 	}
 }
 
-func TestInstanceInitializeManagementPermissionRequiresRealManager(t *testing.T) {
+func TestInstanceInitializeManagementPermissionAcceptsAppOwnershipWithoutHumanManager(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
 	fake.documentAuth = map[string]any{
 		"errcode":         float64(0),
@@ -525,8 +525,8 @@ func TestInstanceInitializeManagementPermissionRequiresRealManager(t *testing.T)
 		t.Fatal(err)
 	}
 	output := result.(map[string]any)
-	if output["state"] != "conflict" || !strings.Contains(fmt.Sprint(output["conflicts"]), "registry_identity_or_auth_unverified") {
-		t.Fatalf("document without a real manager was accepted: %#v", output)
+	if output["state"] != "ready" || output["preview_id"] == "" {
+		t.Fatalf("application-owned document with a valid editor was rejected: %#v", output)
 	}
 }
 
