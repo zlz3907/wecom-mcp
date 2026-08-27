@@ -17,14 +17,19 @@ import (
 
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/config"
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/wecom"
+	"github.com/zhonglizhi/wecom-mcp-v2/internal/zoopschema"
 )
 
 var validRoles = map[string]struct{}{"Z-S01": {}, "Z-S02": {}, "Z-S03": {}, "Z-S04": {}, "Z-S05": {}, "Z-S06": {}, "Z-S07": {}, "Z-S08": {}, "Z-S09": {}}
 
 type Server struct {
-	store      *config.Store
-	stateMu    sync.Mutex
-	progressMu sync.Mutex
+	store               *config.Store
+	stateMu             sync.Mutex
+	progressMu          sync.Mutex
+	previewMu           sync.Mutex
+	previews            map[string]initializePreview
+	initializeCatalog   func() (zoopschema.Catalog, error)
+	initializeLocalUser func() (string, error)
 }
 
 func New(configPath string) *Server { return &Server{store: config.NewStore(configPath)} }
@@ -53,6 +58,9 @@ type tool struct {
 }
 
 var tools = []tool{
+	{"wecom_instance_initialize", "首次初始化统一入口。action=status 执行只读 dry-run；action=apply 复用同一工具提交未过期 preview。生产 catalog 未达到 complete_for_creation 时，fresh 创建继续失败关闭。", instanceInitializeFacadeToolSchema()},
+	{"wecom_instance_initialize_status", "只读观察当前固定租户的 Registry、九张 Zoop 表、本地 Schema 与初始化 journal，返回可审计 dry-run 和短期 preview_id；不修改线上或本地状态。恢复 ID 仅可绑定已有 uncertain sentinel，不是任意导入入口。", instanceInitializeStatusToolSchema()},
+	{"wecom_instance_initialize_apply", "校验短期 dry-run 与固定 Owner 授权，按 durable journal 幂等协调 Registry、Zoop 九表、唯一 active row、Schema generation、配置备份与 Z-S01 只读 smoke；不清理导入文档的既有内容，创建结果不确定时失败关闭。", instanceInitializeApplyToolSchema()},
 	{"wecom_registry_bootstrap", "仅在当前固定租户实例缺少 registry_document_id 时，显式创建 SMART_SHEETS_IDS、建立标准文本字段、回读核验并原子写回本地配置。创建前写入本地哨兵；状态不确定时失败关闭且不会重复创建。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"owner_authorization"}, "properties": map[string]any{"owner_authorization": map[string]any{"const": "create_and_persist_default_registry"}}}},
 	{"wecom_schema_status", "读取当前本地 Schema 镜像状态。不会读取或修改企业微信线上字段。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_schema_probe", "只读回查当前固定租户的九张 Zoop 表线上字段，并与本地机器 Schema 镜像比较。不会写入企业微信或更新本地镜像。", map[string]any{"type": "object", "additionalProperties": false}},
@@ -147,6 +155,20 @@ func role(value string) error {
 }
 
 func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (any, error) {
+	if name == "wecom_instance_initialize" || name == "wecom_instance_initialize_status" || name == "wecom_instance_initialize_apply" {
+		runtime, err := s.store.BootstrapCandidate()
+		if err != nil {
+			return nil, err
+		}
+		client, clientErr := wecom.NewFromEnvironment(runtime.TenantRoute)
+		if name == "wecom_instance_initialize" {
+			return s.instanceInitializeFacade(ctx, runtime, client, clientErr, raw)
+		}
+		if name == "wecom_instance_initialize_status" {
+			return s.instanceInitializeStatus(ctx, runtime, client, clientErr, raw)
+		}
+		return s.instanceInitializeApply(ctx, runtime, client, clientErr, raw)
+	}
 	if name == "wecom_registry_bootstrap" {
 		runtime, err := s.store.BootstrapCandidate()
 		if err != nil {

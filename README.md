@@ -97,6 +97,32 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 
 ## 当前工具
 
+`wecom_instance_initialize` 是 WorkBuddy 等客户端使用的统一初始化入口：先以 `action=status` 获取只读 dry-run 与短期 preview，再在允许执行的状态下以同一工具的 `action=apply` 提交该 preview。原有 `wecom_instance_initialize_status` / `wecom_instance_initialize_apply` 保留为兼容入口。统一入口不会绕过下面的 catalog、权限、快照、幂等或恢复门禁。
+
+`wecom_instance_initialize_status` 是首次初始化的只读入口，同时也是 dry-run。它通过专用的 `instance_initialize` capability group 回读 Registry、唯一 active row、Z-S01 至 Z-S09、生成版 Schema、初始化 journal 和 Z-S01 `limit=1` smoke，只输出结构计数、冲突、计划操作、快照摘要、短期 `preview_id` 与 `expires_at`，不返回业务记录内容。线上字段的 ID、类型、选项和逻辑关联必须与本地 Schema 逐项一致，且 generation 元数据完整，才可能返回 `ready`。`registry_document_id` 是无未决 sentinel 时的既有 Registry 导入候选；`recovery_registry_document_id` / `recovery_business_document_id` 只能绑定已有 uncertain sentinel；业务恢复会继续核验该 sentinel 指向的同一文档，不会猜测或新建替代资产。任一分页、文档管理权限或结构快照不完整时不会签发可用于 apply 的 preview。
+
+文档权限核验遵循企业微信“获取文档权限信息”（官方文档 path 97461）的实际响应结构，并依赖该接口只能访问调用应用所创建文档的权限约束证明应用管理面；同时，`schema_admin_user` 必须在 `doc_member_list` 中具备管理员权限值 `7`。任意自造的 `auth_type=admin` 等字段不会被视为管理权限证据。
+
+`wecom_instance_initialize_apply` 只接受未过期且与当前完整快照一致的 `preview_id`、status 原样返回的 `preview_expires_at` 和固定 Owner 防误触授权。实际写权限仍由专用 `instance_initialize` capability group 控制；初始化器不会自行扩展白名单。当前生产 catalog 已包含 Z-S01“进度条”的依赖和公式结构，但该字段仍标记为 `unsupported_for_create=true`，因此 catalog 的 `complete_for_creation=false`；需要 fresh 创建 Registry、业务文档或九表时会返回 `capability_gap`，不签发 apply preview，也不执行线上或本地写入。已有完整九表实例的 `ready`/no-op、导入和恢复路径已通过本地 synthetic requester 测试，但这不等于真实企业微信运行验收。已有 `wecom_registry_bootstrap` 和 `wecom_schema_sync` 保持兼容，但不能替代完整实例初始化。
+
+当线上 Registry、唯一 active row 和九表已经满足 catalog 时，apply 会生成并回读新的 Schema generation，执行 Z-S01 候选 smoke，备份并原子切换完整配置，再对持久配置执行最终 Z-S01 只读 smoke。新建文档或子表只允许复用平台唯一默认文本主字段；必须先验证完整默认字段模板，随后才可删除本次操作创建表中的空默认记录。已有 `docid` 只做核验与补齐，不清理已有字段或记录。远程创建或 active row 写入结果不确定时保留 durable journal，并要求回读恢复，禁止盲目重复创建。
+
+示例配置展示完整的 `instance_initialize` 权限集合，但不会迁移已部署实例。现有实例若仅允许只读初始化操作，必须由管理员通过受保护配置包升级 capability group；普通调用者和初始化器本身都不能提升该权限。
+
+WorkBuddy 验收必须逐层报告，不能把安装成功等同于业务可用：
+
+```ini
+installed=yes|no
+configured=yes|no
+loaded=yes|no
+registry_verified=yes|no
+nine_tables_verified=yes|no
+schema_synced=yes|no
+tools_call_verified=yes|no
+owner_accepted=no
+production_deployed=no
+```
+
 `wecom_record_query` 提供固定租户内的只读查询：支持 `record_ids` 精确读取、受控 `filter_spec`、排序、`offset/limit` 分页和 `field_ids` 投影。默认返回紧凑单元格值，并显式返回 `record_count`、`returned_count`、`has_more`、`next_offset` 与 `response_truncated`。调用方不能传入租户、文档、子表或凭据参数。
 
 过滤字段 ID、字段类型、排序字段和投影字段都必须存在于本地只读 Schema 镜像；服务端会补齐并校验企业微信所需的 `field_type`，不把客户端提供的任意对象直接转发到线上。

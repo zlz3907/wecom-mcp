@@ -14,6 +14,7 @@
     "sheet_read": ["get_sheets", "get_fields", "get_records", "get_views"],
     "sheet_write": ["add_sheet", "update_sheet", "delete_sheet", "add_view", "update_view", "delete_views", "add_fields", "update_fields", "delete_fields", "add_records", "update_records", "delete_records"],
     "registry_resolution": ["get_sheet", "get_fields", "get_records"],
+    "instance_initialize": ["get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "create_smartsheet", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records"],
     "zoop_records_read": ["get_records"],
     "zoop_records_write": ["add_records", "update_records"],
     "schema_migration": ["get_sheet", "get_fields", "get_records", "add_sheet", "add_fields", "update_fields"],

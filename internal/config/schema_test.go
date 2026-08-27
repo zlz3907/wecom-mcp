@@ -11,7 +11,7 @@ func TestLoadSchema(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "schema.md")
 	text := "# test\n"
-	for index := 1; index <= 8; index++ {
+	for index := 1; index <= 9; index++ {
 		text += "## Z-S0" + string(rune('0'+index)) + "｜测试\n| 字段 | Field ID | 类型 | 属性 |\n| --- | --- | --- | --- |\n| 标题 | `field" + string(rune('0'+index)) + "` | `FIELD_TYPE_TEXT` | — |\n"
 	}
 	if err := os.WriteFile(path, []byte(text), 0600); err != nil {
@@ -29,7 +29,7 @@ func TestLoadSchema(t *testing.T) {
 func TestWriteAndLoadOnlineMirror(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "schema.json")
 	fields := map[string][]Field{}
-	for index := 1; index <= 8; index++ {
+	for index := 1; index <= 9; index++ {
 		role := "Z-S0" + string(rune('0'+index))
 		fields[role] = []Field{{Title: "标题", ID: "field" + string(rune('0'+index)), Type: "FIELD_TYPE_TEXT"}}
 	}
@@ -54,7 +54,7 @@ func TestWriteAndLoadOnlineMirror(t *testing.T) {
 	}
 }
 
-func TestLoadOnlineMirrorIncludesOptionalSubjectRole(t *testing.T) {
+func TestLoadOnlineMirrorRequiresSubjectRole(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "schema.json")
 	fields := map[string][]Field{}
 	for index := 1; index <= 9; index++ {
@@ -73,11 +73,26 @@ func TestLoadOnlineMirrorIncludesOptionalSubjectRole(t *testing.T) {
 	}
 }
 
+func TestLoadOnlineMirrorRejectsMissingSubjectRole(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "schema.json")
+	fields := map[string][]Field{}
+	for index := 1; index <= 8; index++ {
+		role := "Z-S0" + string(rune('0'+index))
+		fields[role] = []Field{{Title: "标题", ID: "field" + string(rune('0'+index)), Type: "FIELD_TYPE_TEXT"}}
+	}
+	if err := WriteOnlineMirror(path, fields, "2026-08-11T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSchema(path); err == nil || !strings.Contains(err.Error(), "Z-S09") {
+		t.Fatalf("missing Z-S09 must fail closed: %v", err)
+	}
+}
+
 func TestWriteReadableOnlineMirror(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "schema.md")
 	fields := map[string][]Field{}
-	for index := 1; index <= 8; index++ {
+	for index := 1; index <= 9; index++ {
 		role := "Z-S0" + string(rune('0'+index))
 		fields[role] = []Field{{Title: "标题", ID: "field" + string(rune('0'+index)), Type: "FIELD_TYPE_TEXT"}}
 	}
@@ -103,5 +118,31 @@ func TestWriteReadableOnlineMirror(t *testing.T) {
 	}
 	if loaded.Roles["Z-S01"]["所属项目"].ID != "reference1" {
 		t.Fatal("readable mirror cannot be inspected by the existing loader")
+	}
+}
+
+func TestWriteOnlineMirrorGenerationIsImmutableAndLoadable(t *testing.T) {
+	directory := t.TempDir()
+	fields := map[string][]Field{}
+	for index := 1; index <= 9; index++ {
+		role := "Z-S0" + string(rune('0'+index))
+		fields[role] = []Field{{Title: "标题", ID: "field" + string(rune('0'+index)), Type: "FIELD_TYPE_TEXT"}}
+	}
+	path, digest, err := WriteOnlineMirrorGeneration(filepath.Join(directory, "state", "instance.json"), fields, "2026-08-27T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, againDigest, err := WriteOnlineMirrorGeneration(filepath.Join(directory, "state", "instance.json"), fields, "2026-08-27T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != again || digest != againDigest || !strings.Contains(path, filepath.Join("schema-generations", digest+".json")) {
+		t.Fatalf("generation is not content-addressed: %s %s %s %s", path, digest, again, againDigest)
+	}
+	if _, err := LoadSchema(path); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0600 {
+		t.Fatalf("generation mode=%o", info.Mode().Perm())
 	}
 }

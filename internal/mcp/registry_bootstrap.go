@@ -36,6 +36,7 @@ func registryBootstrapStatePath(runtime config.Config) string {
 }
 
 func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, client wecomRequester, raw json.RawMessage) (any, error) {
+	prelockInstanceName, prelockTenantRoute, prelockStatePath := runtime.InstanceName, runtime.TenantRoute, runtime.StatePath
 	var input struct {
 		OwnerAuthorization string `json:"owner_authorization"`
 	}
@@ -44,6 +45,23 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 	}
 	if input.OwnerAuthorization != "create_and_persist_default_registry" {
 		return nil, fmt.Errorf("仅接受 Owner 的 SMART_SHEETS_IDS 缺省初始化授权")
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	release, err := acquireStateFileLock(instanceLifecycleLockPath(runtime))
+	if err != nil {
+		return nil, fmt.Errorf("获取实例生命周期锁失败")
+	}
+	defer release()
+	if s.store == nil {
+		return nil, fmt.Errorf("实例配置 store 不可用")
+	}
+	runtime, err = s.store.BootstrapCandidate()
+	if err != nil {
+		return nil, fmt.Errorf("锁内重新加载实例配置失败")
+	}
+	if runtime.InstanceName != prelockInstanceName || runtime.TenantRoute != prelockTenantRoute || runtime.StatePath != prelockStatePath {
+		return nil, fmt.Errorf("锁内实例身份、tenant_route 或 state_path 已变化；禁止使用锁外客户端写入")
 	}
 	if runtime.RegistryDocumentID != "" {
 		return map[string]any{
