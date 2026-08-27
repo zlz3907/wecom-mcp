@@ -1,0 +1,14 @@
+**
+!.dockerignore
+!go.mod
+!go.sum
+!internal/
+!internal/**
+!teamserver/
+!teamserver/go.mod
+!teamserver/go.sum
+!teamserver/Dockerfile
+!teamserver/cmd/
+!teamserver/cmd/**
+!teamserver/internal/
+!teamserver/internal/**

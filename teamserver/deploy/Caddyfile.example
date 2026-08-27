@@ -1,0 +1,15 @@
+mcp.example.com {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+	}
+
+	reverse_proxy 127.0.0.1:17801 {
+		# The MCP process listens on loopback and keeps the official SDK's DNS
+		# rebinding protection enabled. Present the actual loopback upstream Host.
+		header_up Host {upstream_hostport}
+	}
+}
