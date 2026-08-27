@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/user"
+	goruntime "runtime"
 	"sort"
 	"strings"
 
@@ -191,10 +192,17 @@ func verifySchemaAdmin(runtime config.Config) error {
 		return fmt.Errorf("实例未配置 schema_admin_user，管理员 Schema 迁移保持关闭")
 	}
 	current, err := currentSchemaAdminUser()
-	if err != nil || current != runtime.SchemaAdminUser {
+	if err != nil || !localAdminIdentityMatches(goruntime.GOOS, runtime.SchemaAdminUser, current) {
 		return fmt.Errorf("当前本机身份不是已登记的 Schema 管理员")
 	}
 	return nil
+}
+
+func localAdminIdentityMatches(goos, configured, current string) bool {
+	if goos == "windows" {
+		return strings.EqualFold(configured, current)
+	}
+	return configured == current
 }
 
 func buildSchemaMigrationPlan(ctx context.Context, runtime config.Config, client *wecom.Client, migrationID string) (schemaMigrationPlan, error) {

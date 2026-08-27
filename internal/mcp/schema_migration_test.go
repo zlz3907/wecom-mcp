@@ -36,6 +36,31 @@ func TestSchemaAdminRequiresConfiguredMatchingLocalIdentity(t *testing.T) {
 	}
 }
 
+func TestLocalAdminIdentityMatchesWindowsDomainQualifiedAccount(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		goos       string
+		configured string
+		current    string
+		want       bool
+	}{
+		{name: "windows machine", goos: "windows", configured: `DESKTOP-123\zhyc`, current: `DESKTOP-123\zhyc`, want: true},
+		{name: "windows case insensitive", goos: "windows", configured: `corp\zhyc`, current: `CORP\ZHYC`, want: true},
+		{name: "windows bare", goos: "windows", configured: "zhyc", current: "zhyc", want: true},
+		{name: "windows bare does not alias qualified", goos: "windows", configured: "zhyc", current: `CORP\zhyc`, want: false},
+		{name: "windows different authority", goos: "windows", configured: `DESKTOP-123\zhyc`, current: `CORP\zhyc`, want: false},
+		{name: "windows slash is not canonical", goos: "windows", configured: `CORP\zhyc`, current: `CORP/zhyc`, want: false},
+		{name: "unix exact", goos: "darwin", configured: "zhyc", current: "zhyc", want: true},
+		{name: "unix case sensitive", goos: "darwin", configured: "zhyc", current: "ZHYC", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := localAdminIdentityMatches(test.goos, test.configured, test.current); got != test.want {
+				t.Fatalf("localAdminIdentityMatches(%q, %q, %q)=%v, want %v", test.goos, test.configured, test.current, got, test.want)
+			}
+		})
+	}
+}
+
 func TestSubjectMigrationCatalogHasStableExpectedContract(t *testing.T) {
 	fields := subjectMigrationFields("project-sheet", "project-field")
 	if len(fields) != 16 || fields[0].Title != "主体编号" || fields[len(fields)-1].Title != "来源修订" {

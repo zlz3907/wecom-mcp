@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"time"
@@ -132,7 +133,7 @@ func (s *Server) verifyInitializeLocalIdentity(runtime config.Config) error {
 		return fmt.Errorf("实例未配置受保护 initializer 本机身份")
 	}
 	current, err := resolver()
-	if err != nil || current != runtime.SchemaAdminUser {
+	if err != nil || !localAdminIdentityMatches(goruntime.GOOS, runtime.SchemaAdminUser, current) {
 		return fmt.Errorf("当前本机身份不是已登记的 initializer 管理员")
 	}
 	return nil
