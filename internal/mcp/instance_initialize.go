@@ -204,6 +204,7 @@ func instanceInitializeFacadeToolSchema() map[string]any {
 	applyProperties = cloneInitializeProperties(applyProperties)
 	applyProperties["action"] = map[string]any{"const": "apply"}
 	return map[string]any{
+		"type": "object",
 		"oneOf": []any{
 			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"action"}, "properties": statusProperties},
 			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"action", "preview_id", "preview_expires_at", "owner_authorization"}, "properties": applyProperties},

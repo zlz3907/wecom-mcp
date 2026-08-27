@@ -756,6 +756,14 @@ func TestStdioToolsListExposesInitializerContracts(t *testing.T) {
 	if strings.Contains(text, "existing_business_document_id") {
 		t.Fatalf("undecided business import leaked: %s", text)
 	}
+	result := response.Result.(map[string]any)
+	listedTools := result["tools"].([]tool)
+	for index, listedTool := range listedTools {
+		schema, ok := listedTool.InputSchema.(map[string]any)
+		if !ok || schema["type"] != "object" {
+			t.Fatalf("tools[%d] %s inputSchema.type=%v, want object", index, listedTool.Name, schema["type"])
+		}
+	}
 }
 
 type initializeTemplateFake struct {
