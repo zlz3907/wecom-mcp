@@ -294,7 +294,7 @@ func (s *Server) createFieldCodecLab(ctx context.Context, runtime config.Config,
 		}, nil
 	}
 
-	created, err := client.Request(ctx, "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "Zoop｜企业微信字段编码验证"})
+	created, err := client.Request(ctx, "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "Zoop｜企业微信字段编码验证", "admin_users": []string{runtime.WecomOperatorUserID}})
 	if err != nil {
 		return nil, err
 	}

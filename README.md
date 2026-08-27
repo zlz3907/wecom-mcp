@@ -72,6 +72,7 @@ cp config/zoop_wecom_zhycit.json.example config/zoop_wecom_zhycit.local.json
 需要 Go 1.23 或更高版本。复制出的示例配置不能直接运行，请先编辑 `config/zoop_wecom_zhycit.local.json`：
 
 - 将 `tenant_route`、`registry_key` 填为你自己的受管服务路由和登记键。
+- 将 `schema_admin_user` 填为运行 MCP 的完整本机系统身份，将 `wecom_operator_userid` 填为当前固定租户中真实、在职且唯一匹配的企业微信 userid；两者不是同一种身份。
 - 将 `registry_document_id` 填为已有登记表的文档 ID；留空时只能先由 MCP 客户端显式调用 `wecom_registry_bootstrap` 创建并写回登记表，普通查询不能使用空值。
 - 将 `schema_mirror_path` 改为已有 Schema 镜像文件的绝对路径。
 - 将 `state_path` 改为本机可写位置的绝对路径。
@@ -101,7 +102,9 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 
 `wecom_instance_initialize_status` 是首次初始化的只读入口，同时也是 dry-run。它通过专用的 `instance_initialize` capability group 回读 Registry、唯一 active row、Z-S01 至 Z-S09、生成版 Schema、初始化 journal 和 Z-S01 `limit=1` smoke，只输出结构计数、冲突、计划操作、快照摘要、短期 `preview_id` 与 `expires_at`，不返回业务记录内容。线上字段的 ID、类型、选项和逻辑关联必须与本地 Schema 逐项一致，且 generation 元数据完整，才可能返回 `ready`。`registry_document_id` 是无未决 sentinel 时的既有 Registry 导入候选；`recovery_registry_document_id` / `recovery_business_document_id` 只能绑定已有 uncertain sentinel；业务恢复会继续核验该 sentinel 指向的同一文档，不会猜测或新建替代资产。任一分页、文档管理权限或结构快照不完整时不会签发可用于 apply 的 preview。
 
-文档权限核验遵循企业微信“获取文档权限信息”（官方文档 path 97461）的实际响应结构，并依赖该接口只能访问调用应用所创建文档的权限约束证明应用管理面；`doc_member_list` 中的人类成员可以是只读、可编辑或管理员，初始化器会严格校验其官方结构但不会要求 Owner 手工提升为管理员。`schema_admin_user` 仅作为受保护本机操作系统账号门禁，不与企业微信 `userid` 混用；Windows 必须填写 `whoami` 返回的完整 `域或电脑名\\用户名`，运行时按 Windows 规则对完整身份忽略大小写比较，不会丢弃 authority 前缀或把不同安全主体的同名账号视为同一人。空的部门权限列表被上游省略时按空列表处理。任意自造的 `auth_type=admin` 等字段不会被视为管理权限证据。
+`wecom_operator_userid` 是受保护配置中的固定企业微信成员 userid。初始化器先通过成员目录确认其属于当前固定租户，并确保 Registry 与业务文档中该成员为管理员（`auth=7`）；这不代表文档 owner。常规记录写入不接受调用方传入 actor，审计只声明 `business_operator_userid`，并明确原生 API 修改主体仍为 `native_api_actor=application`，不会伪装成企业微信系统修改人。旧配置仍可加载，但缺少该值时初始化远程变更和记录写入保持关闭。
+
+文档权限核验遵循企业微信“获取文档权限信息”（官方文档 path 97461）的实际响应结构，并依赖该接口只能访问调用应用所创建文档的权限约束证明应用管理面；`doc_member_list` 中的人类成员可以是只读、可编辑或管理员，初始化器会严格校验其官方结构。`schema_admin_user` 仅作为受保护本机操作系统账号门禁，不与企业微信 `userid` 混用；Windows 必须填写 `whoami` 返回的完整 `域或电脑名\\用户名`，运行时按 Windows 规则对完整身份忽略大小写比较，不会丢弃 authority 前缀或把不同安全主体的同名账号视为同一人。空的部门权限列表被上游省略时按空列表处理。任意自造的 `auth_type=admin` 等字段不会被视为管理权限证据。
 
 `wecom_instance_initialize_apply` 只接受未过期且与当前完整快照一致的 `preview_id`、status 原样返回的 `preview_expires_at` 和固定 Owner 防误触授权。实际写权限仍由专用 `instance_initialize` capability group 控制；初始化器不会自行扩展白名单。当前生产 catalog 已包含 Z-S01“进度条”的依赖和公式结构，但该字段仍标记为 `unsupported_for_create=true`，因此 catalog 的 `complete_for_creation=false`；需要 fresh 创建 Registry、业务文档或九表时会返回 `capability_gap`，不签发 apply preview，也不执行线上或本地写入。已有完整九表实例的 `ready`/no-op、导入和恢复路径已通过本地 synthetic requester 测试，但这不等于真实企业微信运行验收。已有 `wecom_registry_bootstrap` 和 `wecom_schema_sync` 保持兼容，但不能替代完整实例初始化。
 

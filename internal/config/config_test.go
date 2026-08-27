@@ -151,6 +151,30 @@ func TestConfigDigestCoversStatePathAndCapabilityGroups(t *testing.T) {
 	}
 }
 
+func TestConfigValidatesAndDigestsWeComOperatorUserID(t *testing.T) {
+	base := Config{Version: 1, InstanceName: "instance", TenantRoute: "route", RegistryDocumentID: "registry", RegistryKey: "key", SchemaMirrorPath: "/tmp/schema.json", StatePath: "/tmp/state.json", APIWhitelist: map[string][]string{"instance_initialize": {"get_sheet"}}}
+	legacy := base
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("legacy config must still load: %v", err)
+	}
+	base.WecomOperatorUserID = "Operator.User-01@example"
+	if err := base.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	changed := base
+	changed.WecomOperatorUserID = "Operator.User-02@example"
+	if base.Digest() == changed.Digest() {
+		t.Fatal("config digest omitted wecom_operator_userid")
+	}
+	for _, invalid := range []string{"operator user", "用户", strings.Repeat("a", 65)} {
+		candidate := base
+		candidate.WecomOperatorUserID = invalid
+		if candidate.Validate() == nil {
+			t.Fatalf("invalid wecom userid accepted: %q", invalid)
+		}
+	}
+}
+
 func TestStoreReloadsChangedWhitelistWithoutRestart(t *testing.T) {
 	dir := t.TempDir()
 	schema := filepath.Join(dir, "schema.md")

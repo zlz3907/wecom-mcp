@@ -154,6 +154,33 @@ func role(value string) error {
 	return nil
 }
 
+func verifyBoundOperator(ctx context.Context, runtime config.Config, client wecomRequester, capabilityGroup string) error {
+	if runtime.WecomOperatorUserID == "" {
+		return fmt.Errorf("实例未配置 wecom_operator_userid，远程写入保持关闭")
+	}
+	if capabilityGroup != "" && !runtime.AllowsInGroup(capabilityGroup, "list_employees") {
+		return fmt.Errorf("%s 专用 capability 未允许 list_employees", capabilityGroup)
+	}
+	if _, err := verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID); err != nil {
+		return fmt.Errorf("business_operator_userid 未通过当前固定租户员工目录核验")
+	}
+	return nil
+}
+
+func (s *Server) boundOperatorWrite(ctx context.Context, runtime config.Config, client wecomRequester, capabilityGroup string, operation func() (any, error)) (any, error) {
+	if err := verifyBoundOperator(ctx, runtime, client, capabilityGroup); err != nil {
+		return nil, err
+	}
+	result, err := operation()
+	if err != nil {
+		return nil, err
+	}
+	if output, ok := result.(map[string]any); ok {
+		return withOperatorAudit(output, runtime.WecomOperatorUserID), nil
+	}
+	return result, nil
+}
+
 func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (any, error) {
 	if name == "wecom_instance_initialize" || name == "wecom_instance_initialize_status" || name == "wecom_instance_initialize_apply" {
 		runtime, err := s.store.BootstrapCandidate()
@@ -197,10 +224,14 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 		return s.previewSchemaMigration(ctx, runtime, client, raw)
 	}
 	if name == "wecom_schema_migration_apply" {
-		return s.applySchemaMigration(ctx, runtime, client, raw)
+		return s.boundOperatorWrite(ctx, runtime, client, schemaMigrationGroup, func() (any, error) {
+			return s.applySchemaMigration(ctx, runtime, client, raw)
+		})
 	}
 	if name == "wecom_field_codec_lab_create" {
-		return s.createFieldCodecLab(ctx, runtime, client, raw)
+		return s.boundOperatorWrite(ctx, runtime, client, "field_codec_lab", func() (any, error) {
+			return s.createFieldCodecLab(ctx, runtime, client, raw)
+		})
 	}
 	if name == "wecom_field_codec_lab_read" {
 		return s.readFieldCodecLab(ctx, runtime, client, raw)
@@ -209,13 +240,19 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 		return s.debugFieldCodecLabReference(ctx, runtime, client, raw)
 	}
 	if name == "wecom_field_codec_lab_reference_write_probe" {
-		return s.writeFieldCodecLabReferenceProbe(ctx, runtime, client, raw)
+		return s.boundOperatorWrite(ctx, runtime, client, "field_codec_lab", func() (any, error) {
+			return s.writeFieldCodecLabReferenceProbe(ctx, runtime, client, raw)
+		})
 	}
 	if name == "wecom_field_codec_lab_write_probe" {
-		return s.writeFieldCodecLabProbe(ctx, runtime, client, raw)
+		return s.boundOperatorWrite(ctx, runtime, client, "field_codec_lab", func() (any, error) {
+			return s.writeFieldCodecLabProbe(ctx, runtime, client, raw)
+		})
 	}
 	if name == "wecom_field_codec_lab_replay_probe" {
-		return s.replayFieldCodecLabProbe(ctx, runtime, client, raw)
+		return s.boundOperatorWrite(ctx, runtime, client, "field_codec_lab", func() (any, error) {
+			return s.replayFieldCodecLabProbe(ctx, runtime, client, raw)
+		})
 	}
 	if name == "wecom_api_call" {
 		return s.genericAPICall(ctx, runtime, client, raw)
@@ -273,7 +310,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 	case "wecom_field_codec_lab_registry_status":
 		return s.fieldCodecLabRegistryStatus(ctx, runtime, client, raw)
 	case "wecom_field_codec_lab_register":
-		return s.registerFieldCodecLab(ctx, runtime, client, raw)
+		return s.boundOperatorWrite(ctx, runtime, client, "field_codec_lab", func() (any, error) {
+			return s.registerFieldCodecLab(ctx, runtime, client, raw)
+		})
 	default:
 		return nil, fmt.Errorf("未知工具: %s", name)
 	}
@@ -605,7 +644,10 @@ func (s *Server) apply(ctx context.Context, runtime config.Config, schema config
 	if err := strictDecode(raw, &wire, "target_role", "operation", "idempotency_key", "source_revision", "records"); err != nil {
 		return nil, err
 	}
-	input := applyInput{wire.TargetRole, wire.Operation, wire.IdempotencyKey, wire.SourceRevision, wire.Records}
+	input := applyInput{TargetRole: wire.TargetRole, Operation: wire.Operation, IdempotencyKey: wire.IdempotencyKey, SourceRevision: wire.SourceRevision, Records: wire.Records}
+	if err := verifyBoundOperator(ctx, runtime, client, "zoop_records_write"); err != nil {
+		return nil, err
+	}
 	if err := role(input.TargetRole); err != nil {
 		return nil, err
 	}
@@ -632,7 +674,7 @@ func (s *Server) apply(ctx context.Context, runtime config.Config, schema config
 	if err != nil {
 		return nil, err
 	}
-	digest := requestDigest(input, prepared)
+	digest := requestDigest(input, prepared, runtime.WecomOperatorUserID)
 	target, err := wecom.ResolveTarget(ctx, client, runtime.RegistryDocumentID, runtime.RegistryKey, input.TargetRole, runtime.Allows)
 	if err != nil {
 		return nil, err
@@ -655,7 +697,7 @@ func (s *Server) apply(ctx context.Context, runtime config.Config, schema config
 	}
 	// Reserve immediately before the external mutation. Earlier validation,
 	// target resolution, and the S03 pre-write snapshot remain safely retryable.
-	if err := s.reserve(runtime.StatePath, input.IdempotencyKey, digest); err != nil {
+	if err := s.reserveWithOperator(runtime.StatePath, input.IdempotencyKey, digest, runtime.WecomOperatorUserID); err != nil {
 		return nil, err
 	}
 	result, err := client.Request(ctx, input.Operation, map[string]any{"docid": target.DocumentID, "sheet_id": target.SheetID, "key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID", "records": prepared})
@@ -667,23 +709,23 @@ func (s *Server) apply(ctx context.Context, runtime config.Config, schema config
 	}
 	readback, readbackErr := client.Request(ctx, "get_records", map[string]any{"docid": target.DocumentID, "sheet_id": target.SheetID, "key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID", "limit": 200})
 	if readbackErr != nil || apiError(readback) != nil {
-		return map[string]any{"state": "applied_readback_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false}, nil
+		return withOperatorAudit(map[string]any{"state": "applied_readback_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false}, runtime.WecomOperatorUserID), nil
 	}
 	if !verifyReadback(input.Operation, prepared, result, readback) {
 		if referenceReadbackGap(input.Operation, prepared, result, readback) {
 			if input.TargetRole == "Z-S03" {
-				return map[string]any{"state": "applied_progress_sync_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "progress_error": "主需求关联回读不完整，未执行需求进度同步", "write_result": writeSummary(result)}, nil
+				return withOperatorAudit(map[string]any{"state": "applied_progress_sync_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "progress_error": "主需求关联回读不完整，未执行需求进度同步", "write_result": writeSummary(result)}, runtime.WecomOperatorUserID), nil
 			}
-			if err := s.completeState(runtime.StatePath, input.IdempotencyKey, digest); err != nil {
-				return map[string]any{"state": "applied_idempotency_completion_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "idempotency_error": err.Error(), "write_result": writeSummary(result)}, nil
+			if err := s.completeStateWithOperator(runtime.StatePath, input.IdempotencyKey, digest, runtime.WecomOperatorUserID); err != nil {
+				return withOperatorAudit(map[string]any{"state": "applied_idempotency_completion_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "idempotency_error": err.Error(), "write_result": writeSummary(result)}, runtime.WecomOperatorUserID), nil
 			}
-			return map[string]any{"state": "applied_reference_readback_inconclusive", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "write_result": writeSummary(result), "readback_record_count": len(recordsFrom(readback))}, nil
+			return withOperatorAudit(map[string]any{"state": "applied_reference_readback_inconclusive", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "write_result": writeSummary(result), "readback_record_count": len(recordsFrom(readback))}, runtime.WecomOperatorUserID), nil
 		}
-		return map[string]any{"state": "applied_readback_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false}, nil
+		return withOperatorAudit(map[string]any{"state": "applied_readback_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false}, runtime.WecomOperatorUserID), nil
 	}
 	progressSync, progressErr := s.syncRequirementProgress(ctx, runtime, schema, client, target, input, result, taskReadbackBefore, readback)
 	if progressErr != nil {
-		return map[string]any{
+		return withOperatorAudit(map[string]any{
 			"state":             "applied_progress_sync_pending",
 			"target_role":       input.TargetRole,
 			"idempotency_key":   input.IdempotencyKey,
@@ -692,12 +734,12 @@ func (s *Server) apply(ctx context.Context, runtime config.Config, schema config
 			"readback_verified": true,
 			"progress_error":    progressErr.Error(),
 			"write_result":      writeSummary(result),
-		}, nil
+		}, runtime.WecomOperatorUserID), nil
 	}
-	if err := s.completeState(runtime.StatePath, input.IdempotencyKey, digest); err != nil {
-		return map[string]any{"state": "applied_idempotency_completion_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "idempotency_error": err.Error(), "write_result": writeSummary(result)}, nil
+	if err := s.completeStateWithOperator(runtime.StatePath, input.IdempotencyKey, digest, runtime.WecomOperatorUserID); err != nil {
+		return withOperatorAudit(map[string]any{"state": "applied_idempotency_completion_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "idempotency_error": err.Error(), "write_result": writeSummary(result)}, runtime.WecomOperatorUserID), nil
 	}
-	response := map[string]any{"state": "applied", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "write_result": writeSummary(result), "readback_record_count": len(recordsFrom(readback))}
+	response := map[string]any{"state": "applied", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "write_result": writeSummary(result), "readback_record_count": len(recordsFrom(readback)), "business_operator_userid": runtime.WecomOperatorUserID, "native_api_actor": "application"}
 	if progressSync != nil {
 		response["requirement_progress_sync"] = progressSync
 	}
@@ -808,21 +850,31 @@ func compileReferenceValue(title string, value any) ([]any, error) {
 	return result, nil
 }
 
-func requestDigest(input applyInput, prepared []map[string]any) string {
-	data, _ := json.Marshal(map[string]any{"role": input.TargetRole, "operation": input.Operation, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "records": prepared})
+func requestDigest(input applyInput, prepared []map[string]any, businessOperatorUserID string) string {
+	data, _ := json.Marshal(map[string]any{"role": input.TargetRole, "operation": input.Operation, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "records": prepared, "business_operator_userid": businessOperatorUserID, "native_api_actor": "application"})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func withOperatorAudit(result map[string]any, operator string) map[string]any {
+	result["business_operator_userid"] = operator
+	result["native_api_actor"] = "application"
+	return result
 }
 
 type idempotencyState struct {
 	Entries map[string]stateEntry `json:"entries"`
 }
 type stateEntry struct {
-	Digest string `json:"digest"`
-	Status string `json:"status"`
+	Digest                 string `json:"digest"`
+	Status                 string `json:"status"`
+	BusinessOperatorUserID string `json:"business_operator_userid,omitempty"`
 }
 
 func (s *Server) reserve(path, key, digest string) error {
+	return s.reserveWithOperator(path, key, digest, "")
+}
+func (s *Server) reserveWithOperator(path, key, digest, operator string) error {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 	release, err := acquireStateFileLock(path)
@@ -843,7 +895,7 @@ func (s *Server) reserve(path, key, digest string) error {
 		}
 		return fmt.Errorf("此变更此前已保留但未完成回读，请先恢复核验，禁止盲目重试")
 	}
-	state.Entries[key] = stateEntry{Digest: digest, Status: "pending"}
+	state.Entries[key] = stateEntry{Digest: digest, Status: "pending", BusinessOperatorUserID: operator}
 	return saveState(path, state)
 }
 func (s *Server) complete(path, key, digest string) {
@@ -851,6 +903,9 @@ func (s *Server) complete(path, key, digest string) {
 }
 
 func (s *Server) completeState(path, key, digest string) error {
+	return s.completeStateWithOperator(path, key, digest, "")
+}
+func (s *Server) completeStateWithOperator(path, key, digest, operator string) error {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 	release, err := acquireStateFileLock(path)
@@ -865,7 +920,10 @@ func (s *Server) completeState(path, key, digest string) error {
 	if state.Entries[key].Digest != digest {
 		return fmt.Errorf("幂等状态与已应用变更不一致")
 	}
-	state.Entries[key] = stateEntry{Digest: digest, Status: "completed"}
+	if state.Entries[key].BusinessOperatorUserID != operator {
+		return fmt.Errorf("幂等状态的 business_operator_userid 不一致")
+	}
+	state.Entries[key] = stateEntry{Digest: digest, Status: "completed", BusinessOperatorUserID: operator}
 	if err := saveState(path, state); err != nil {
 		return fmt.Errorf("保存幂等完成状态失败")
 	}

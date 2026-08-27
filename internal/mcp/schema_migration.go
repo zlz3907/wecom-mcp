@@ -113,7 +113,7 @@ func (s *Server) applySchemaMigration(ctx context.Context, runtime config.Config
 		return result, nil
 	}
 	reservationKey := "schema-migration:" + input.MigrationID + ":" + input.PreviewID
-	if err := s.reserve(runtime.StatePath, reservationKey, input.PreviewID); err != nil {
+	if err := s.reserveWithOperator(runtime.StatePath, reservationKey, input.PreviewID, runtime.WecomOperatorUserID); err != nil {
 		return nil, err
 	}
 
@@ -128,13 +128,13 @@ func (s *Server) applySchemaMigration(ctx context.Context, runtime config.Config
 		}
 		sheetID, err = resolveExactSheetID(ctx, client, plan.DocumentID, subjectSheetTitle)
 		if err != nil {
-			return map[string]any{"state": "applied_readback_pending", "migration_id": input.MigrationID, "preview_id": input.PreviewID, "readback_verified": false}, nil
+			return withOperatorAudit(map[string]any{"state": "applied_readback_pending", "migration_id": input.MigrationID, "preview_id": input.PreviewID, "readback_verified": false}, runtime.WecomOperatorUserID), nil
 		}
 	}
 
 	fields, err := readMigrationFields(ctx, client, plan.DocumentID, sheetID)
 	if err != nil {
-		return map[string]any{"state": "applied_readback_pending", "migration_id": input.MigrationID, "preview_id": input.PreviewID, "readback_verified": false}, nil
+		return withOperatorAudit(map[string]any{"state": "applied_readback_pending", "migration_id": input.MigrationID, "preview_id": input.PreviewID, "readback_verified": false}, runtime.WecomOperatorUserID), nil
 	}
 	expected, err := subjectMigrationFieldsFromOnlineContext(ctx, runtime, client, plan.DocumentID)
 	if err != nil {
@@ -171,10 +171,12 @@ func (s *Server) applySchemaMigration(ctx context.Context, runtime config.Config
 
 	readbackPlan, err := buildSchemaMigrationPlan(ctx, runtime, client, input.MigrationID)
 	if err != nil || len(readbackPlan.Operations) != 0 {
-		return map[string]any{"state": "applied_readback_pending", "migration_id": input.MigrationID, "preview_id": input.PreviewID, "readback_verified": false}, nil
+		return withOperatorAudit(map[string]any{"state": "applied_readback_pending", "migration_id": input.MigrationID, "preview_id": input.PreviewID, "readback_verified": false}, runtime.WecomOperatorUserID), nil
 	}
-	s.complete(runtime.StatePath, reservationKey, input.PreviewID)
-	return map[string]any{
+	if err := s.completeStateWithOperator(runtime.StatePath, reservationKey, input.PreviewID, runtime.WecomOperatorUserID); err != nil {
+		return withOperatorAudit(map[string]any{"state": "applied_idempotency_completion_pending", "migration_id": input.MigrationID, "preview_id": input.PreviewID, "readback_verified": true, "idempotency_error": err.Error()}, runtime.WecomOperatorUserID), nil
+	}
+	return withOperatorAudit(map[string]any{
 		"state":                   "applied",
 		"migration_id":            input.MigrationID,
 		"preview_id":              input.PreviewID,
@@ -184,7 +186,7 @@ func (s *Server) applySchemaMigration(ctx context.Context, runtime config.Config
 		"readback_verified":       true,
 		"local_mirror_updated":    false,
 		"next_required_operation": "Owner 授权后执行线上到本地 Schema 字典同步",
-	}, nil
+	}, runtime.WecomOperatorUserID), nil
 }
 
 func verifySchemaAdmin(runtime config.Config) error {

@@ -59,9 +59,12 @@ type instanceInitializeJournal struct {
 	PendingRegistryRow bool              `json:"pending_registry_row,omitempty"`
 	PendingRegistryOp  string            `json:"pending_registry_row_operation_id,omitempty"`
 	PendingRegistryID  string            `json:"pending_registry_record_id,omitempty"`
+	PendingAdminDocID  string            `json:"pending_admin_document_id,omitempty"`
+	PendingAdminOp     string            `json:"pending_admin_operation_id,omitempty"`
 	PreviewID          string            `json:"preview_id,omitempty"`
 	CatalogDigest      string            `json:"catalog_digest,omitempty"`
 	ConfigDigest       string            `json:"config_digest,omitempty"`
+	OperatorDigest     string            `json:"operator_digest,omitempty"`
 	LastErrorCode      string            `json:"last_error_code,omitempty"`
 	UpdatedAt          string            `json:"updated_at"`
 }
@@ -75,6 +78,10 @@ type initializeStatusInput struct {
 type initializeSnapshot struct {
 	InstanceName             string            `json:"instance_name"`
 	ConfigDigest             string            `json:"config_digest"`
+	OperatorDirectoryDigest  string            `json:"operator_directory_digest"`
+	OperatorVerified         bool              `json:"operator_verified"`
+	RegistryOperatorAdmin    bool              `json:"registry_operator_admin"`
+	BusinessOperatorAdmin    bool              `json:"business_operator_admin"`
 	JournalDigest            string            `json:"journal_digest"`
 	CatalogDigest            string            `json:"catalog_digest"`
 	CatalogVersion           string            `json:"catalog_version"`
@@ -584,11 +591,25 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 	if client == nil {
 		return nil, fmt.Errorf("企业微信客户端不可用")
 	}
-	for _, operation := range []string{"get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "create_smartsheet", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records"} {
+	for _, operation := range []string{"list_employees", "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "create_smartsheet", "grant_doc_readers", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records"} {
 		if !runtime.AllowsInGroup(instanceInitializeGroup, operation) {
 			return nil, fmt.Errorf("实例初始化专用 capability 未允许 %s；initializer 不会自行提升白名单", operation)
 		}
 	}
+	if runtime.WecomOperatorUserID == "" {
+		return nil, fmt.Errorf("实例未配置 wecom_operator_userid，初始化远程变更保持关闭")
+	}
+	if _, err := verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID); err != nil {
+		return nil, fmt.Errorf("wecom_operator_userid 未通过当前固定租户员工目录核验")
+	}
+	operatorDigest := digestValue(runtime.WecomOperatorUserID)
+	if journal.OperatorDigest != "" && journal.OperatorDigest != operatorDigest {
+		return nil, fmt.Errorf("初始化 journal 已绑定其他 business operator")
+	}
+	if journal.OperatorDigest == "" && (journal.Phase == "recovery_required" || journal.PendingAdminOp != "" || journal.PendingRegistryOp != "" || journal.PendingSheetOp != "" || journal.PendingFieldRole != "") {
+		return nil, fmt.Errorf("旧版未绑定 operator 的 pending journal 禁止继续远程写入")
+	}
+	journal.OperatorDigest = operatorDigest
 	persistRecovery := func(assetKind, errorCode string, cause error) error {
 		journal.Phase, journal.AssetKind, journal.LastErrorCode = "recovery_required", assetKind, errorCode
 		journal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -600,12 +621,12 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 	registryID := observation.Snapshot.RegistryDocumentID
 	registryCreated := false
 	if registryID == "" {
-		journal.Phase, journal.AssetKind, journal.OperationID = "registry_resolving", "registry", digestValue(map[string]string{"instance": runtime.InstanceName, "asset": "registry", "catalog": journal.CatalogDigest})
+		journal.Phase, journal.AssetKind, journal.OperationID = "registry_resolving", "registry", digestValue(map[string]string{"instance": runtime.InstanceName, "asset": "registry", "catalog": journal.CatalogDigest, "operator": operatorDigest})
 		journal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
 			return nil, err
 		}
-		created, err := client.Request(ctx, "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "SMART_SHEETS_IDS"})
+		created, err := client.Request(ctx, "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "SMART_SHEETS_IDS", "admin_users": []string{runtime.WecomOperatorUserID}})
 		registryID = initializeCreatedDocumentID(created)
 		if registryID != "" {
 			journal.RegistryDocumentID = registryID
@@ -621,6 +642,9 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 			return nil, fmt.Errorf("Registry 创建结果不确定；已保留 durable journal，禁止自动重试")
 		}
 		registryCreated = true
+	}
+	if err := ensureInitializeOperatorAdmin(ctx, client, registryID, runtime.WecomOperatorUserID, "registry", &journal, instanceInitializeJournalPath(runtime)); err != nil {
+		return nil, persistRecovery("registry", "operator_admin_repair_uncertain", err)
 	}
 	registryOwnedByOperation := registryCreated || observation.Snapshot.RegistryOwnedByJournal && observation.Snapshot.RegistryDocumentID == registryID
 	registrySheetID, err := reconcileInitializeRegistry(ctx, client, registryID, registryOwnedByOperation, &journal, instanceInitializeJournalPath(runtime))
@@ -650,12 +674,12 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 	}
 	businessCreated := false
 	if businessID == "" {
-		journal.Phase, journal.AssetKind, journal.OperationID = "business_resolving", "business", digestValue(map[string]string{"instance": runtime.InstanceName, "asset": "business", "catalog": journal.CatalogDigest})
+		journal.Phase, journal.AssetKind, journal.OperationID = "business_resolving", "business", digestValue(map[string]string{"instance": runtime.InstanceName, "asset": "business", "catalog": journal.CatalogDigest, "operator": operatorDigest})
 		journal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
 			return nil, err
 		}
-		created, err := client.Request(ctx, "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "Zoop｜" + runtime.RegistryKey})
+		created, err := client.Request(ctx, "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "Zoop｜" + runtime.RegistryKey, "admin_users": []string{runtime.WecomOperatorUserID}})
 		businessID = initializeCreatedDocumentID(created)
 		if businessID != "" {
 			journal.BusinessDocumentID = businessID
@@ -671,6 +695,9 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 			return nil, fmt.Errorf("业务文档创建结果不确定；已保留 durable journal，禁止自动重试")
 		}
 		businessCreated = true
+	}
+	if err := ensureInitializeOperatorAdmin(ctx, client, businessID, runtime.WecomOperatorUserID, "business", &journal, instanceInitializeJournalPath(runtime)); err != nil {
+		return nil, persistRecovery("business", "operator_admin_repair_uncertain", err)
 	}
 	businessOwnedByOperation := businessCreated || observation.Snapshot.BusinessOwnedByJournal && observation.Snapshot.BusinessDocumentID == businessID
 	roleSheetIDs, err := reconcileInitializeBusiness(ctx, client, businessID, businessCreated, businessOwnedByOperation, catalog, &journal, instanceInitializeJournalPath(runtime))
@@ -720,6 +747,53 @@ func initializeCreatedDocumentID(response map[string]any) string {
 		return ""
 	}
 	return documentID
+}
+
+func ensureInitializeOperatorAdmin(ctx context.Context, client wecomRequester, documentID, operatorUserID, assetKind string, journal *instanceInitializeJournal, journalPath string) error {
+	readAuth := func() (bool, string, error) {
+		response, err := client.Request(ctx, "get_doc_auth", map[string]any{"docid": documentID})
+		if err != nil || apiError(response) != nil {
+			return false, "", fmt.Errorf("operator document auth readback unavailable")
+		}
+		result, ok := response["result"].(map[string]any)
+		if !ok {
+			return false, "", fmt.Errorf("operator document auth response invalid")
+		}
+		if _, err := verifyInitializeManagementAuthorization(result); err != nil {
+			return false, "", err
+		}
+		return initializeDocumentMemberHasAuth(result, operatorUserID, 7), digestValue(result), nil
+	}
+	verified, preAuthDigest, err := readAuth()
+	if err != nil {
+		return err
+	}
+	if verified {
+		journal.PendingAdminDocID, journal.PendingAdminOp = "", ""
+		return nil
+	}
+	if journal.PendingAdminOp != "" {
+		return fmt.Errorf("operator 管理员权限写入结果仍不确定；禁止盲目重试")
+	}
+	journal.PendingAdminDocID = documentID
+	journal.PendingAdminOp = digestValue(map[string]string{"document": documentID, "operator": operatorUserID, "auth": "7", "pre_auth": preAuthDigest})
+	journal.Phase, journal.AssetKind, journal.UpdatedAt = "recovery_required", assetKind, time.Now().UTC().Format(time.RFC3339Nano)
+	if err := saveInstanceInitializeJournal(journalPath, *journal); err != nil {
+		return err
+	}
+	response, writeErr := client.Request(ctx, "grant_doc_readers", map[string]any{
+		"docid":                   documentID,
+		"update_file_member_list": []any{map[string]any{"type": 1, "userid": operatorUserID, "auth": 7}},
+	})
+	verified, _, readErr := readAuth()
+	if verified && readErr == nil {
+		journal.PendingAdminDocID, journal.PendingAdminOp = "", ""
+		return saveInstanceInitializeJournal(journalPath, *journal)
+	}
+	if writeErr != nil || apiError(response) != nil {
+		return fmt.Errorf("operator 管理员权限写入结果不确定；已保留 durable journal")
+	}
+	return fmt.Errorf("operator 管理员权限写后回读未收敛；已保留 durable journal")
 }
 
 func reconcileInitializeRegistry(ctx context.Context, client wecomRequester, documentID string, ownedByOperation bool, journal *instanceInitializeJournal, journalPath string) (string, error) {
@@ -845,7 +919,7 @@ func reconcileInitializeBusiness(ctx context.Context, client wecomRequester, doc
 		if len(matches) == 0 {
 			journal.Phase, journal.AssetKind = "business_sheet_resolving", "business"
 			journal.PendingSheetRole = role.Role
-			journal.PendingSheetOp = digestValue(map[string]string{"document": documentID, "role": role.Role})
+			journal.PendingSheetOp = digestValue(map[string]string{"document": documentID, "role": role.Role, "operator": journal.OperatorDigest})
 			journal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			if err := saveInstanceInitializeJournal(journalPath, *journal); err != nil {
 				return nil, err
@@ -1244,7 +1318,7 @@ func addInitializeActiveRow(ctx context.Context, client wecomRequester, registry
 		values[field.ID] = []any{map[string]any{"type": "text", "text": value}}
 	}
 	journal.PendingRegistryRow = true
-	journal.PendingRegistryOp = digestValue(map[string]string{"registry": registryID, "business": businessID, "registry_key": runtime.RegistryKey})
+	journal.PendingRegistryOp = digestValue(map[string]string{"registry": registryID, "business": businessID, "registry_key": runtime.RegistryKey, "operator": journal.OperatorDigest})
 	journal.Phase, journal.AssetKind, journal.UpdatedAt = "registry_row_resolving", "business", time.Now().UTC().Format(time.RFC3339Nano)
 	if err := saveInstanceInitializeJournal(journalPath, *journal); err != nil {
 		return err
@@ -1389,11 +1463,28 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	}
 	snapshot.BusinessOwnedByJournal = journalExists && journal.BusinessOwned && journal.BusinessDocumentID != "" && journal.BusinessDocumentID == businessRecoveryDocumentID
 	capabilityMissing := false
-	for _, operation := range []string{"get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records"} {
+	for _, operation := range []string{"list_employees", "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records"} {
 		if !runtime.AllowsInGroup(instanceInitializeGroup, operation) {
 			observation.Conflicts = append(observation.Conflicts, "instance_initialize_capability_missing:"+operation)
 			capabilityMissing = true
 		}
+	}
+	if runtime.WecomOperatorUserID == "" {
+		observation.Conflicts = append(observation.Conflicts, "wecom_operator_userid_missing")
+		observation.State = "conflict"
+		observation.Snapshot = snapshot
+		return finalizeInitializeObservation(observation)
+	}
+	if len(observation.Conflicts) == 0 && !(registryDocumentID == "" && registryRecoveryAllowed) && !capabilityMissing && clientErr == nil && client != nil {
+		directoryEvidence, err := verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID)
+		if err != nil {
+			observation.Conflicts = append(observation.Conflicts, "wecom_operator_not_verified_in_tenant")
+			observation.State = "conflict"
+			observation.Snapshot = snapshot
+			return finalizeInitializeObservation(observation)
+		}
+		snapshot.OperatorVerified = true
+		snapshot.OperatorDirectoryDigest = digestValue(directoryEvidence)
 	}
 	snapshot.RegistryDocumentID = registryDocumentID
 	if registryDocumentID == "" {
@@ -1436,7 +1527,7 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 		return finalizeInitializeObservation(observation)
 	}
 
-	registryIdentity, registryAuthorization, err := readInitializeDocumentIdentity(ctx, client, registryDocumentID, "SMART_SHEETS_IDS")
+	registryIdentity, registryAuthorization, err := readInitializeDocumentIdentity(ctx, client, registryDocumentID, "SMART_SHEETS_IDS", runtime.WecomOperatorUserID)
 	if err != nil {
 		observation.Conflicts = append(observation.Conflicts, "registry_identity_or_auth_unverified")
 		observation.Snapshot = snapshot
@@ -1444,6 +1535,13 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	}
 	snapshot.RegistryIdentityDigest = digestValue(registryIdentity)
 	snapshot.RegistryAuthDigest = digestValue(registryAuthorization)
+	snapshot.RegistryOperatorAdmin, _ = registryAuthorization["configured_operator_is_admin"].(bool)
+	if !snapshot.RegistryOperatorAdmin {
+		observation.PlannedOperations = append(observation.PlannedOperations, "grant_registry_operator_admin")
+		if !runtime.AllowsInGroup(instanceInitializeGroup, "grant_doc_readers") {
+			observation.Conflicts = append(observation.Conflicts, "instance_initialize_capability_missing:grant_doc_readers")
+		}
+	}
 	registrySheets, err := client.Request(ctx, "get_sheet", map[string]any{"docid": registryDocumentID})
 	if err != nil || apiError(registrySheets) != nil {
 		observation.State = "environment_unavailable"
@@ -1574,7 +1672,7 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 		return finalizeInitializeObservation(observation)
 	}
 
-	businessIdentity, businessAuthorization, err := readInitializeDocumentIdentity(ctx, client, snapshot.BusinessDocumentID, "")
+	businessIdentity, businessAuthorization, err := readInitializeDocumentIdentity(ctx, client, snapshot.BusinessDocumentID, "", runtime.WecomOperatorUserID)
 	if err != nil {
 		observation.Conflicts = append(observation.Conflicts, "business_identity_or_auth_unverified")
 		observation.Snapshot = snapshot
@@ -1582,6 +1680,13 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	}
 	snapshot.BusinessIdentityDigest = digestValue(businessIdentity)
 	snapshot.BusinessAuthDigest = digestValue(businessAuthorization)
+	snapshot.BusinessOperatorAdmin, _ = businessAuthorization["configured_operator_is_admin"].(bool)
+	if !snapshot.BusinessOperatorAdmin {
+		observation.PlannedOperations = append(observation.PlannedOperations, "grant_business_operator_admin")
+		if !runtime.AllowsInGroup(instanceInitializeGroup, "grant_doc_readers") {
+			observation.Conflicts = append(observation.Conflicts, "instance_initialize_capability_missing:grant_doc_readers")
+		}
+	}
 	businessSheets, err := client.Request(ctx, "get_sheet", map[string]any{"docid": snapshot.BusinessDocumentID})
 	if err != nil || apiError(businessSheets) != nil {
 		observation.State = "environment_unavailable"
@@ -1783,7 +1888,7 @@ func sheetNameForInitialize(sheet map[string]any) (string, bool) {
 	return "", false
 }
 
-func readInitializeDocumentIdentity(ctx context.Context, client wecomRequester, documentID, expectedName string) (map[string]any, map[string]any, error) {
+func readInitializeDocumentIdentity(ctx context.Context, client wecomRequester, documentID, expectedName, operatorUserID string) (map[string]any, map[string]any, error) {
 	base, err := client.Request(ctx, "get_doc_base_info", map[string]any{"docid": documentID})
 	if err != nil || apiError(base) != nil {
 		return nil, nil, fmt.Errorf("document base info unavailable")
@@ -1802,7 +1907,63 @@ func readInitializeDocumentIdentity(ctx context.Context, client wecomRequester, 
 	if err != nil {
 		return nil, nil, err
 	}
+	managementProof["configured_operator_is_admin"] = initializeDocumentMemberHasAuth(authResult, operatorUserID, 7)
 	return map[string]any{"doc_type": docType, "name_digest": digestValue(name), "expected_name_matched": expectedName == "" || name == expectedName}, managementProof, nil
+}
+
+func verifyInitializeOperatorEmployee(ctx context.Context, client wecomRequester, operatorUserID string) (map[string]any, error) {
+	response, err := client.Request(ctx, "list_employees", map[string]any{})
+	if err != nil || apiError(response) != nil {
+		return nil, fmt.Errorf("operator directory unavailable")
+	}
+	container := any(response)
+	if result, ok := response["result"].(map[string]any); ok {
+		container = result
+	}
+	object, _ := container.(map[string]any)
+	users, ok := object["userlist"].([]any)
+	if !ok {
+		users, ok = object["employees"].([]any)
+	}
+	if !ok {
+		return nil, fmt.Errorf("operator directory response invalid")
+	}
+	matches := 0
+	for _, raw := range users {
+		user, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("operator directory response invalid")
+		}
+		userid, _ := user["userid"].(string)
+		status, active := initializeInteger(user["status"])
+		if userid == operatorUserID && active && status == 1 {
+			matches++
+		}
+	}
+	if matches != 1 {
+		return nil, fmt.Errorf("configured operator is not a unique tenant employee")
+	}
+	return map[string]any{"operator_userid_digest": digestValue(operatorUserID), "unique_employee_match": true}, nil
+}
+
+func initializeDocumentMemberHasAuth(auth map[string]any, operatorUserID string, expectedAuth int) bool {
+	members, ok := auth["doc_member_list"].([]any)
+	if !ok {
+		return false
+	}
+	matches := 0
+	for _, raw := range members {
+		member, ok := raw.(map[string]any)
+		if !ok {
+			return false
+		}
+		userid, _ := member["userid"].(string)
+		authValue, valid := initializeInteger(member["auth"])
+		if userid == operatorUserID && valid && authValue == expectedAuth {
+			matches++
+		}
+	}
+	return matches == 1
 }
 
 // verifyInitializeManagementAuthorization follows the response contract for
