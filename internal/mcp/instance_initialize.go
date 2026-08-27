@@ -23,7 +23,7 @@ var initializeIdentifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,256}$`)
 
 var initializeJournalPhases = map[string]struct{}{
 	"registry_resolving": {}, "registry_identity_known": {}, "registry_schema_verified": {},
-	"business_resolving": {}, "business_identity_known": {}, "zoop_sheets_reconciled": {}, "registry_row_verified": {},
+	"business_resolving": {}, "business_identity_known": {}, "zoop_sheets_reconciled": {}, "registry_row_resolving": {}, "registry_row_identity_known": {}, "registry_row_verified": {},
 	"business_sheet_resolving": {}, "business_sheet_identity_known": {}, "fields_resolving": {}, "fields_verified": {},
 	"schema_staged": {}, "candidate_smoke_verified": {}, "config_committed": {}, "final_smoke_verified": {}, "ready": {}, "recovery_required": {},
 	"conflict": {}, "environment_unavailable": {},
@@ -55,6 +55,9 @@ type instanceInitializeJournal struct {
 	PendingSheetOp     string            `json:"pending_sheet_operation_id,omitempty"`
 	PendingFieldRole   string            `json:"pending_field_role,omitempty"`
 	PendingFieldTitles []string          `json:"pending_field_titles,omitempty"`
+	PendingRegistryRow bool              `json:"pending_registry_row,omitempty"`
+	PendingRegistryOp  string            `json:"pending_registry_row_operation_id,omitempty"`
+	PendingRegistryID  string            `json:"pending_registry_record_id,omitempty"`
 	PreviewID          string            `json:"preview_id,omitempty"`
 	CatalogDigest      string            `json:"catalog_digest,omitempty"`
 	ConfigDigest       string            `json:"config_digest,omitempty"`
@@ -172,7 +175,7 @@ func registryInitializeRecoveryPending(journal instanceInitializeJournal) bool {
 
 func businessInitializeRecoveryPending(journal instanceInitializeJournal) bool {
 	switch journal.Phase {
-	case "business_resolving", "business_identity_known", "business_sheet_resolving", "business_sheet_identity_known", "fields_resolving", "fields_verified", "zoop_sheets_reconciled":
+	case "business_resolving", "business_identity_known", "business_sheet_resolving", "business_sheet_identity_known", "fields_resolving", "fields_verified", "zoop_sheets_reconciled", "registry_row_resolving", "registry_row_identity_known":
 		return journal.AssetKind == "business"
 	case "recovery_required":
 		return journal.AssetKind == "business"
@@ -283,6 +286,9 @@ func (s *Server) instanceInitializeApply(ctx context.Context, runtime config.Con
 	if input.OwnerAuthorization != instanceInitializeAuthorization {
 		return nil, fmt.Errorf("缺少实例初始化固定 Owner 授权")
 	}
+	if err := s.verifyInitializeLocalIdentity(runtime); err != nil {
+		return nil, fmt.Errorf("实例初始化本机受保护身份校验失败")
+	}
 	s.previewMu.Lock()
 	preview, exists := s.previews[input.PreviewID]
 	s.previewMu.Unlock()
@@ -323,6 +329,9 @@ func (s *Server) instanceInitializeApply(ctx context.Context, runtime config.Con
 	lockedRuntime, err := s.store.BootstrapCandidate()
 	if err != nil {
 		return nil, fmt.Errorf("锁内重新加载实例配置失败")
+	}
+	if err := s.verifyInitializeLocalIdentity(lockedRuntime); err != nil {
+		return nil, fmt.Errorf("锁内实例初始化本机受保护身份校验失败")
 	}
 	lockedCatalog, lockedCatalogErr := s.currentInitializeCatalog()
 	lockedObservation := observeInstanceInitializationWithCatalog(ctx, lockedRuntime, client, clientErr, initializeStatusInput{
@@ -365,6 +374,13 @@ func (s *Server) instanceInitializeApply(ctx context.Context, runtime config.Con
 	}
 	if journal.BusinessDocumentID == "" {
 		journal.BusinessDocumentID = observation.Snapshot.BusinessDocumentID
+	}
+	if journal.PendingRegistryRow && observation.Snapshot.ActiveRegistryCount == 1 {
+		if observation.Snapshot.BusinessDocumentID != journal.BusinessDocumentID {
+			return nil, fmt.Errorf("Registry active row 回读与 pending journal 业务文档不一致")
+		}
+		journal.PendingRegistryRow, journal.PendingRegistryOp, journal.PendingRegistryID = false, "", ""
+		journal.Phase = "registry_row_verified"
 	}
 	if remotePlanned {
 		return s.applyRemoteInstanceInitialization(ctx, runtime, client, observation, catalog, journal)
@@ -583,10 +599,14 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 		return nil, err
 	}
 	if activeCount == 0 {
-		if err := addInitializeActiveRow(ctx, client, registryID, registrySheetID, registryFields, runtime, businessID, catalog.Version); err != nil {
+		if journal.PendingRegistryRow {
+			return nil, persistRecovery("business", "registry_row_uncertain_unresolved", fmt.Errorf("Registry active row 写入尚未可见；禁止重复 add_records"))
+		}
+		if err := addInitializeActiveRow(ctx, client, registryID, registrySheetID, registryFields, runtime, businessID, catalog.Version, &journal, instanceInitializeJournalPath(runtime)); err != nil {
 			return nil, persistRecovery("business", "registry_row_uncertain", err)
 		}
 	}
+	journal.PendingRegistryRow, journal.PendingRegistryOp, journal.PendingRegistryID = false, "", ""
 	journal.Phase, journal.UpdatedAt = "registry_row_verified", time.Now().UTC().Format(time.RFC3339Nano)
 	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
 		return nil, err
@@ -1082,7 +1102,7 @@ func initializeFieldWire(ctx context.Context, client wecomRequester, documentID 
 	return result, nil
 }
 
-func addInitializeActiveRow(ctx context.Context, client wecomRequester, registryID, registrySheetID string, fields map[string]config.Field, runtime config.Config, businessID, schemaVersion string) error {
+func addInitializeActiveRow(ctx context.Context, client wecomRequester, registryID, registrySheetID string, fields map[string]config.Field, runtime config.Config, businessID, schemaVersion string, journal *instanceInitializeJournal, journalPath string) error {
 	values := map[string]any{}
 	for title, value := range map[string]string{
 		"registry_key": runtime.RegistryKey, "docid": businessID, "lifecycle_status": "active", "name": "Zoop｜" + runtime.RegistryKey,
@@ -1094,12 +1114,26 @@ func addInitializeActiveRow(ctx context.Context, client wecomRequester, registry
 		}
 		values[field.ID] = []any{map[string]any{"type": "text", "text": value}}
 	}
+	journal.PendingRegistryRow = true
+	journal.PendingRegistryOp = digestValue(map[string]string{"registry": registryID, "business": businessID, "registry_key": runtime.RegistryKey})
+	journal.Phase, journal.AssetKind, journal.UpdatedAt = "registry_row_resolving", "business", time.Now().UTC().Format(time.RFC3339Nano)
+	if err := saveInstanceInitializeJournal(journalPath, *journal); err != nil {
+		return err
+	}
 	response, err := client.Request(ctx, "add_records", map[string]any{"docid": registryID, "sheet_id": registrySheetID, "key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID", "records": []any{map[string]any{"values": values}}})
+	journal.PendingRegistryID = initializeCreatedRecordID(response)
+	if journal.PendingRegistryID != "" {
+		journal.Phase, journal.UpdatedAt = "registry_row_identity_known", time.Now().UTC().Format(time.RFC3339Nano)
+		if saveErr := saveInstanceInitializeJournal(journalPath, *journal); saveErr != nil {
+			return fmt.Errorf("Registry active row 已返回 record_id 但 journal 写入失败；禁止重试")
+		}
+	}
 	if err != nil || apiError(response) != nil {
 		records, complete, readErr := readAllInitializeRecords(ctx, client, registryID, registrySheetID)
 		if readErr == nil && complete {
 			resolved, count := initializeActiveBusiness(records, fields, runtime.RegistryKey)
 			if count == 1 && resolved == businessID {
+				journal.PendingRegistryRow, journal.PendingRegistryOp, journal.PendingRegistryID = false, "", ""
 				return nil
 			}
 		}
@@ -1111,9 +1145,26 @@ func addInitializeActiveRow(ctx context.Context, client wecomRequester, registry
 	}
 	resolved, count := initializeActiveBusiness(records, fields, runtime.RegistryKey)
 	if count != 1 || resolved != businessID {
-		return fmt.Errorf("Registry active row 写后唯一性未通过")
+		return fmt.Errorf("Registry active row 写后唯一性未通过；保留不确定哨兵")
 	}
+	journal.PendingRegistryRow, journal.PendingRegistryOp, journal.PendingRegistryID = false, "", ""
 	return nil
+}
+
+func initializeCreatedRecordID(response map[string]any) string {
+	result, _ := response["result"].(map[string]any)
+	for _, raw := range resultSlice(response, "records") {
+		record, _ := raw.(map[string]any)
+		id, _ := record["record_id"].(string)
+		if initializeIdentifier.MatchString(id) {
+			return id
+		}
+	}
+	id, _ := result["record_id"].(string)
+	if initializeIdentifier.MatchString(id) {
+		return id
+	}
+	return ""
 }
 
 func observeInstanceInitialization(ctx context.Context, runtime config.Config, client wecomRequester, clientErr error, input initializeStatusInput) initializeObservation {
@@ -1354,6 +1405,13 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 		return finalizeInitializeObservation(observation)
 	}
 	if snapshot.ActiveRegistryCount == 0 {
+		if journal.PendingRegistryRow {
+			observation.State = "recovery_required"
+			observation.SnapshotComplete = true
+			observation.Conflicts = append(observation.Conflicts, "registry_row_write_uncertain_unresolved")
+			observation.Snapshot = snapshot
+			return finalizeInitializeObservation(observation)
+		}
 		if businessRecoveryAllowed {
 			observation.State = "recovery_required"
 			if businessRecoveryDocumentID == "" {
@@ -1908,6 +1966,9 @@ func validateInstanceInitializeJournal(journal instanceInitializeJournal) error 
 		if !strings.HasPrefix(role, "Z-S") || !initializeIdentifier.MatchString(sheetID) {
 			return fmt.Errorf("实例初始化 journal owned sheet 无效")
 		}
+	}
+	if journal.PendingRegistryRow && (journal.AssetKind != "business" || journal.PendingRegistryOp == "") {
+		return fmt.Errorf("实例初始化 journal active row pending 哨兵无效")
 	}
 	return nil
 }

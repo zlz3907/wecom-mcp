@@ -524,7 +524,7 @@ func TestInstanceInitializeApplyReadyIsIdempotentAndNeverWritesRemote(t *testing
 			mtime time.Time
 		}{string(data), info.ModTime()}
 	}
-	server := &Server{store: config.NewStore(configPath)}
+	server := &Server{store: config.NewStore(configPath), initializeLocalUser: func() (string, error) { return "symbolic-admin", nil }}
 	status, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatal(err)
@@ -558,9 +558,33 @@ func TestInstanceInitializeApplyReadyIsIdempotentAndNeverWritesRemote(t *testing
 	}
 }
 
+func TestInstanceInitializeApplyAlwaysRequiresProtectedLocalIdentity(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	configPath := filepath.Join(t.TempDir(), "instance.json")
+	runtimeJSON, _ := json.MarshalIndent(runtime, "", "  ")
+	if err := os.WriteFile(configPath, append(runtimeJSON, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: config.NewStore(configPath), initializeLocalUser: func() (string, error) { return "symbolic-admin", nil }}
+	statusResult, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := statusResult.(map[string]any)
+	server.initializeLocalUser = func() (string, error) { return "different-admin", nil }
+	before := len(fake.operations)
+	input, _ := json.Marshal(map[string]string{"preview_id": status["preview_id"].(string), "preview_expires_at": status["expires_at"].(string), "owner_authorization": instanceInitializeAuthorization})
+	if _, err := server.instanceInitializeApply(context.Background(), runtime, fake, nil, input); err == nil || !strings.Contains(err.Error(), "本机受保护身份") {
+		t.Fatalf("apply accepted mismatched protected local identity: %v", err)
+	}
+	if len(fake.operations) != before {
+		t.Fatalf("identity rejection performed online calls: before=%d after=%d", before, len(fake.operations))
+	}
+}
+
 func TestInstanceInitializePreviewInvalidatesWhenJournalChanges(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
-	server := &Server{}
+	server := &Server{initializeLocalUser: func() (string, error) { return "symbolic-admin", nil }}
 	status, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatal(err)
@@ -579,7 +603,7 @@ func TestInstanceInitializePreviewInvalidatesWhenJournalChanges(t *testing.T) {
 
 func TestInstanceInitializeApplyRequiresExactPreviewExpiry(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
-	server := &Server{}
+	server := &Server{initializeLocalUser: func() (string, error) { return "symbolic-admin", nil }}
 	status, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatal(err)
@@ -793,6 +817,9 @@ type initializeLifecycleFake struct {
 	updateFieldCount  int
 	smokeCount        int
 	failFinalResolver bool
+	addRecordCalls    int
+	hideRegistryReads int
+	hideReadsAfterAdd int
 }
 
 func (f *initializeLifecycleFake) nextID(prefix string) string {
@@ -939,6 +966,10 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 		if strings.HasPrefix(sheet.name, "Z-S01｜") {
 			f.smokeCount++
 		}
+		if document := f.documents[documentID]; document != nil && document.name == "SMART_SHEETS_IDS" && f.hideRegistryReads > 0 {
+			f.hideRegistryReads--
+			return map[string]any{"result": map[string]any{"errcode": float64(0), "has_more": false, "records": []any{}}}, nil
+		}
 		return map[string]any{"result": map[string]any{"errcode": float64(0), "has_more": false, "records": sheet.records}}, nil
 	case "delete_records":
 		sheet, err := f.sheet(documentID, sheetID)
@@ -949,19 +980,27 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 		f.deleteCount++
 		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
 	case "add_records":
+		f.addRecordCalls++
+		if f.hideReadsAfterAdd > 0 {
+			f.hideRegistryReads = f.hideReadsAfterAdd
+			f.hideReadsAfterAdd = 0
+		}
 		sheet, err := f.sheet(documentID, sheetID)
 		if err != nil {
 			return nil, err
 		}
 		items, _ := body["records"].([]any)
+		createdRecords := []any{}
 		for _, itemRaw := range items {
 			item, _ := itemRaw.(map[string]any)
-			sheet.records = append(sheet.records, map[string]any{"record_id": f.nextID("record"), "values": item["values"]})
+			record := map[string]any{"record_id": f.nextID("record"), "values": item["values"]}
+			sheet.records = append(sheet.records, record)
+			createdRecords = append(createdRecords, record)
 		}
 		if f.shouldFail(operation) {
 			return nil, fmt.Errorf("injected uncertain add_records")
 		}
-		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "records": createdRecords}}, nil
 	}
 	return nil, fmt.Errorf("unexpected lifecycle request %s %#v", operation, payload)
 }
@@ -1145,6 +1184,43 @@ func TestRemoteInitializerTreatsRegisterRowAsRemoteAndConvergesUncertainWrite(t 
 	}
 	if result.(map[string]any)["state"] != "ready" || !fake.failed {
 		t.Fatalf("uncertain active row write did not converge by readback: %#v", result)
+	}
+}
+
+func TestRemoteInitializerNeverRepeatsTemporarilyInvisibleActiveRowWrite(t *testing.T) {
+	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
+	fake.failOnceOperation = "add_records"
+	fake.hideReadsAfterAdd = 2
+	if _, _, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{}); err == nil {
+		t.Fatal("temporarily invisible active row write unexpectedly converged")
+	}
+	journal, _, exists, err := loadInstanceInitializeJournal(instanceInitializeJournalPath(runtime))
+	if err != nil || !exists || !journal.PendingRegistryRow || journal.BusinessDocumentID == "" || fake.addRecordCalls != 1 {
+		t.Fatalf("active row pending sentinel missing: journal=%#v calls=%d err=%v", journal, fake.addRecordCalls, err)
+	}
+	statusRaw, _ := json.Marshal(map[string]string{"recovery_business_document_id": journal.BusinessDocumentID})
+	statusResult, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, statusRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := statusResult.(map[string]any)
+	if status["state"] != "recovery_required" || status["preview_id"] != "" || !strings.Contains(fmt.Sprint(status["conflicts"]), "registry_row_write_uncertain_unresolved") || fake.addRecordCalls != 1 {
+		t.Fatalf("invisible active row did not remain read-only recovery: status=%#v add_calls=%d", status, fake.addRecordCalls)
+	}
+	_, result, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{"recovery_business_document_id": journal.BusinessDocumentID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.(map[string]any)["state"] != "ready" || fake.addRecordCalls != 1 {
+		t.Fatalf("visible pending active row did not converge without duplicate add: result=%#v add_calls=%d", result, fake.addRecordCalls)
+	}
+	convergedJournal, _, _, err := loadInstanceInitializeJournal(instanceInitializeJournalPath(runtime))
+	if err != nil || convergedJournal.PendingRegistryRow || convergedJournal.Phase != "ready" {
+		t.Fatalf("active row pending journal did not converge: %#v err=%v", convergedJournal, err)
+	}
+	registry := fake.documents[journal.RegistryDocumentID]
+	if registry == nil || len(registry.sheets[0].records) != 1 {
+		t.Fatalf("active row recovery formed duplicate rows: %#v", registry)
 	}
 }
 

@@ -36,6 +36,7 @@ func registryBootstrapStatePath(runtime config.Config) string {
 }
 
 func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, client wecomRequester, raw json.RawMessage) (any, error) {
+	prelockInstanceName, prelockTenantRoute := runtime.InstanceName, runtime.TenantRoute
 	var input struct {
 		OwnerAuthorization string `json:"owner_authorization"`
 	}
@@ -58,6 +59,9 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 	runtime, err = s.store.BootstrapCandidate()
 	if err != nil {
 		return nil, fmt.Errorf("锁内重新加载实例配置失败")
+	}
+	if runtime.InstanceName != prelockInstanceName || runtime.TenantRoute != prelockTenantRoute {
+		return nil, fmt.Errorf("锁内实例身份或 tenant_route 已变化；禁止使用锁外客户端写入")
 	}
 	if runtime.RegistryDocumentID != "" {
 		return map[string]any{

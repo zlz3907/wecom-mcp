@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/config"
@@ -105,6 +106,37 @@ func TestRegistryBootstrapCreatingSentinelStopsDuplicate(t *testing.T) {
 	}
 	if client.createCalls != 0 {
 		t.Fatalf("duplicate create calls=%d", client.createCalls)
+	}
+}
+
+func TestRegistryBootstrapRejectsPrelockTenantRouteChange(t *testing.T) {
+	path, runtime := bootstrapTestConfig(t)
+	release, err := acquireStateFileLock(instanceLifecycleLockPath(runtime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: config.NewStore(path)}
+	client := &bootstrapFakeClient{fields: map[string]map[string]any{}}
+	raw, _ := json.Marshal(map[string]string{"owner_authorization": "create_and_persist_default_registry"})
+	result := make(chan error, 1)
+	go func() {
+		_, callErr := server.bootstrapRegistry(context.Background(), runtime, client, raw)
+		result <- callErr
+	}()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := strings.Replace(string(data), "test-tenant-route", "changed-tenant-route", 1)
+	if err := os.WriteFile(path, []byte(changed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "tenant_route") {
+		t.Fatalf("prelock tenant route drift was accepted: %v", err)
+	}
+	if client.createCalls != 0 {
+		t.Fatalf("stale prelock client performed create: %d", client.createCalls)
 	}
 }
 
