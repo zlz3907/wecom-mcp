@@ -1,0 +1,10 @@
+{
+  "schema_version": "1",
+  "tenant": "tenant-test",
+  "userid": "CaseSensitiveUserID",
+  "active": true,
+  "effective_scopes": ["wecom.mcp"],
+  "effective_tools": ["*"],
+  "policy_version": "policy-test-v7",
+  "evaluated_at": "2026-08-29T08:00:00Z"
+}

@@ -13,45 +13,59 @@ import (
 )
 
 type Config struct {
-	InstanceConfigPath string
-	ListenAddress      string
-	PublicURL          string
-	MCPURL             string
-	MetadataURL        string
-	OIDCIssuer         string
-	OIDCAudience       string
-	AccessTokenClaim   string
-	AccessTokenValue   string
-	RolesClaim         string
-	ReaderRole         string
-	OperatorRole       string
-	AdminRole          string
-	RequiredScopes     []string
-	AdvertisedScopes   []string
-	AuditHMACKey       []byte
-	MaxConcurrentTools int
-	OIDCHTTPTimeout    time.Duration
-	ShutdownTimeout    time.Duration
+	InstanceConfigPath       string
+	ListenAddress            string
+	PublicURL                string
+	MCPURL                   string
+	MetadataURL              string
+	OIDCIssuer               string
+	OIDCAudience             string
+	AccessTokenClaim         string
+	AccessTokenValue         string
+	RolesClaim               string
+	ReaderRole               string
+	OperatorRole             string
+	AdminRole                string
+	RequiredScopes           []string
+	AdvertisedScopes         []string
+	AuditHMACKey             []byte
+	MaxConcurrentTools       int
+	OIDCHTTPTimeout          time.Duration
+	ShutdownTimeout          time.Duration
+	UserAuthorizationEnabled bool
+	AuthorizationEndpoint    string
+	AuthorizationTenant      string
+	AuthorizationResource    string
+	AuthorizationCacheTTL    time.Duration
+	AuthorizationTimeout     time.Duration
+	WeComUserIDClaim         string
 }
 
 func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 	cfg := Config{
-		InstanceConfigPath: instanceConfigPath,
-		ListenAddress:      firstNonEmpty(listenAddress, os.Getenv("TEAM_MCP_LISTEN_ADDR"), "127.0.0.1:17801"),
-		PublicURL:          strings.TrimSpace(os.Getenv("TEAM_MCP_PUBLIC_URL")),
-		OIDCIssuer:         strings.TrimSpace(os.Getenv("TEAM_MCP_OIDC_ISSUER")),
-		OIDCAudience:       strings.TrimSpace(os.Getenv("TEAM_MCP_OIDC_AUDIENCE")),
-		AccessTokenClaim:   strings.TrimSpace(os.Getenv("TEAM_MCP_ACCESS_TOKEN_CLAIM")),
-		AccessTokenValue:   strings.TrimSpace(os.Getenv("TEAM_MCP_ACCESS_TOKEN_VALUE")),
-		RolesClaim:         firstNonEmpty(os.Getenv("TEAM_MCP_ROLES_CLAIM"), "roles"),
-		ReaderRole:         firstNonEmpty(os.Getenv("TEAM_MCP_READER_ROLE"), "wecom-mcp-reader"),
-		OperatorRole:       firstNonEmpty(os.Getenv("TEAM_MCP_OPERATOR_ROLE"), "wecom-mcp-operator"),
-		AdminRole:          firstNonEmpty(os.Getenv("TEAM_MCP_ADMIN_ROLE"), "wecom-mcp-admin"),
-		RequiredScopes:     splitList(os.Getenv("TEAM_MCP_REQUIRED_SCOPES")),
-		AuditHMACKey:       []byte(os.Getenv("TEAM_MCP_AUDIT_HMAC_KEY")),
-		MaxConcurrentTools: 16,
-		OIDCHTTPTimeout:    10 * time.Second,
-		ShutdownTimeout:    20 * time.Second,
+		InstanceConfigPath:       instanceConfigPath,
+		ListenAddress:            firstNonEmpty(listenAddress, os.Getenv("TEAM_MCP_LISTEN_ADDR"), "127.0.0.1:17801"),
+		PublicURL:                strings.TrimSpace(os.Getenv("TEAM_MCP_PUBLIC_URL")),
+		OIDCIssuer:               strings.TrimSpace(os.Getenv("TEAM_MCP_OIDC_ISSUER")),
+		OIDCAudience:             strings.TrimSpace(os.Getenv("TEAM_MCP_OIDC_AUDIENCE")),
+		AccessTokenClaim:         strings.TrimSpace(os.Getenv("TEAM_MCP_ACCESS_TOKEN_CLAIM")),
+		AccessTokenValue:         strings.TrimSpace(os.Getenv("TEAM_MCP_ACCESS_TOKEN_VALUE")),
+		RolesClaim:               firstNonEmpty(os.Getenv("TEAM_MCP_ROLES_CLAIM"), "roles"),
+		ReaderRole:               firstNonEmpty(os.Getenv("TEAM_MCP_READER_ROLE"), "wecom-mcp-reader"),
+		OperatorRole:             firstNonEmpty(os.Getenv("TEAM_MCP_OPERATOR_ROLE"), "wecom-mcp-operator"),
+		AdminRole:                firstNonEmpty(os.Getenv("TEAM_MCP_ADMIN_ROLE"), "wecom-mcp-admin"),
+		RequiredScopes:           splitList(os.Getenv("TEAM_MCP_REQUIRED_SCOPES")),
+		AuditHMACKey:             []byte(os.Getenv("TEAM_MCP_AUDIT_HMAC_KEY")),
+		MaxConcurrentTools:       16,
+		OIDCHTTPTimeout:          10 * time.Second,
+		ShutdownTimeout:          20 * time.Second,
+		UserAuthorizationEnabled: strings.TrimSpace(os.Getenv("TEAM_MCP_USER_AUTHZ_ENABLED")) == "true",
+		AuthorizationEndpoint:    strings.TrimSpace(os.Getenv("TEAM_MCP_AUTHZ_RESOLVE_URL")),
+		AuthorizationTenant:      strings.TrimSpace(os.Getenv("TEAM_MCP_AUTHZ_TENANT")),
+		AuthorizationResource:    strings.TrimSpace(os.Getenv("TEAM_MCP_AUTHZ_RESOURCE")),
+		AuthorizationCacheTTL:    15 * time.Second,
+		AuthorizationTimeout:     3 * time.Second,
+		WeComUserIDClaim:         strings.TrimSpace(os.Getenv("TEAM_MCP_WECOM_USERID_CLAIM")),
 	}
 	if cfg.InstanceConfigPath == "" {
 		return Config{}, fmt.Errorf("--config is required")
@@ -89,6 +103,32 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 	if cfg.ReaderRole == cfg.OperatorRole || cfg.ReaderRole == cfg.AdminRole || cfg.OperatorRole == cfg.AdminRole {
 		return Config{}, fmt.Errorf("OIDC role values must be distinct")
 	}
+	if raw := strings.TrimSpace(os.Getenv("TEAM_MCP_USER_AUTHZ_ENABLED")); raw != "" && raw != "true" && raw != "false" {
+		return Config{}, fmt.Errorf("TEAM_MCP_USER_AUTHZ_ENABLED must be true or false")
+	}
+	if cfg.UserAuthorizationEnabled {
+		if err := validateHTTPSURL(cfg.AuthorizationEndpoint, "TEAM_MCP_AUTHZ_RESOLVE_URL"); err != nil {
+			return Config{}, err
+		}
+		if cfg.AuthorizationTenant == "" || strings.TrimSpace(cfg.AuthorizationTenant) != cfg.AuthorizationTenant {
+			return Config{}, fmt.Errorf("TEAM_MCP_AUTHZ_TENANT is required and must be canonical")
+		}
+		if cfg.AuthorizationResource == "" || strings.TrimSpace(cfg.AuthorizationResource) != cfg.AuthorizationResource {
+			return Config{}, fmt.Errorf("TEAM_MCP_AUTHZ_RESOURCE is required and must be canonical")
+		}
+		if cfg.WeComUserIDClaim == "" {
+			return Config{}, fmt.Errorf("TEAM_MCP_WECOM_USERID_CLAIM is required when user authorization is enabled")
+		}
+		var err error
+		cfg.AuthorizationCacheTTL, err = boundedDurationEnv("TEAM_MCP_AUTHZ_CACHE_TTL", cfg.AuthorizationCacheTTL, time.Nanosecond, time.Minute)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.AuthorizationTimeout, err = boundedDurationEnv("TEAM_MCP_AUTHZ_TIMEOUT", cfg.AuthorizationTimeout, time.Millisecond, 10*time.Second)
+		if err != nil {
+			return Config{}, err
+		}
+	}
 	if err := validateListenAddress(cfg.ListenAddress); err != nil {
 		return Config{}, err
 	}
@@ -101,6 +141,18 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 	slices.Sort(cfg.AdvertisedScopes)
 	cfg.AdvertisedScopes = slices.Compact(cfg.AdvertisedScopes)
 	return cfg, nil
+}
+
+func boundedDurationEnv(name string, fallback, minimum, maximum time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil || value < minimum || value > maximum {
+		return 0, fmt.Errorf("%s must be a duration from %s to %s", name, minimum, maximum)
+	}
+	return value, nil
 }
 
 func firstNonEmpty(values ...string) string {

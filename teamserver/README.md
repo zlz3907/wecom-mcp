@@ -20,6 +20,16 @@ flowchart TB
 - 审计日志只记录请求 ID、角色、工具、结果、耗时和 HMAC 密钥化的主体假名，不记录 Token、Secret、业务参数或响应内容；审计密钥按 PII/Secret 管理。
 - 应用层默认最多同时执行 16 个业务工具调用，可通过受控配置调低或调高；公网速率限制仍由组织 API Gateway/WAF 提供。
 
+## 用户授权候选边界
+
+当前候选分支提供默认关闭的 `TEAM_MCP_USER_AUTHZ_ENABLED` 门禁，以及与 GNAS 存储实现解耦的 `AuthorizationResolver` 适配接口。该候选不是已集成的生产合同：GNAS 最终接口 URL、服务鉴权和 OAuth userid claim 必须以 GNAS 项目经理交付的稳定合同为准。
+
+门禁开启后，MCP 必须取得唯一、大小写敏感的企业微信 `userid`，并以固定 `tenant + userid + resource` 查询授权。归一化决策包含 `active`、`effective_tools`、`effective_scopes`、`policy_version`；`tools=["*"]` 只展开为当前二进制公开的工具目录，且继续与静态 reader/operator/admin 角色取交集。`tools/list` 过滤发现列表，`tools/call` 在每次 HTTP 请求重新执行同一授权边界。
+
+以下情况全部失败关闭：userid 缺失或歧义、active=false、scope 缺失、未知工具、响应结构漂移、超时、非 200、策略版本缺失。缓存 TTL 上限为 60 秒，过期刷新失败时不返回旧授权。审计仅增加授权结果和 `policy_version`，不记录 userid、Token、Secret 或授权响应原文。
+
+当前 `main` 入口不会猜测 GNAS 服务鉴权；在稳定适配器接入前，若强行开启 feature flag，进程初始化会拒绝启动。回滚边界是关闭 feature flag 并重启候选服务，恢复既有静态 OIDC 角色路径，不改实例配置、Schema、GNAS 数据或企业微信资产。候选合同与测试说明见 [`AUTHORIZATION-CANDIDATE.md`](AUTHORIZATION-CANDIDATE.md)。
+
 ## HTTP 端点
 
 | 端点 | 认证 | 用途 |
