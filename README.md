@@ -2,6 +2,8 @@
 
 这是一个连接**企业微信智能表格**的 MCP 服务。
 
+面向国脉爱特团队共享、服务器部署和 WorkBuddy 远程接入的 Streamable HTTP 版本位于 [teamserver/README.md](teamserver/README.md)。它使用独立 Go 模块和服务端 OIDC，不改变本地 stdio 安装方式。
+
 安装后，Codex 或 TRAE 可以用自然语言查询 Zoop 的需求、任务等记录，也可以在明确指令下受控维护记录。它适合已经使用 Zoop 管理研发工作，希望直接在 AI 客户端里查看和更新企业微信智能表格的个人或团队。
 
 ## 非技术用户自动安装
