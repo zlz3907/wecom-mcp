@@ -17,7 +17,7 @@ case "$previous_release" in
   *) echo "invalid previous release path" >&2; exit 2 ;;
 esac
 
-systemctl stop wecom-mcp-team@gmzoop wecom-mcp-team@zhyczoop
+systemctl stop wecom-mcp-team@gmzoop
 
 if [ -L "$site_link" ]; then
   unlink "$site_link"

@@ -60,25 +60,21 @@ func TestLoadConfigRequiresExplicitTLSProxyForPublicListen(t *testing.T) {
 	}
 }
 
-func TestLoadConfigBuildsTenantPrefixedOAuthURLs(t *testing.T) {
-	for _, instance := range []string{"gmzoop", "zhyczoop"} {
-		t.Run(instance, func(t *testing.T) {
-			setRequiredConfigEnv(t)
-			t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.jyiai.com/"+instance+"/")
-			t.Setenv("TEAM_MCP_OIDC_ISSUER", "https://login.example.test")
-			t.Setenv("TEAM_MCP_OIDC_AUDIENCE", "wecom-team")
-			cfg, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			base := "https://mcp.jyiai.com/" + instance
-			if cfg.PublicURL != base || cfg.MCPURL != base+"/mcp" {
-				t.Fatalf("unexpected tenant endpoints: %#v", cfg)
-			}
-			if cfg.MetadataURL != "https://mcp.jyiai.com/.well-known/oauth-protected-resource/"+instance+"/mcp" {
-				t.Fatalf("metadata URL=%q", cfg.MetadataURL)
-			}
-		})
+func TestLoadConfigBuildsGMZoopPrefixedOAuthURLs(t *testing.T) {
+	setRequiredConfigEnv(t)
+	t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.jyiai.com/gmzoop/")
+	t.Setenv("TEAM_MCP_OIDC_ISSUER", "https://login.example.test")
+	t.Setenv("TEAM_MCP_OIDC_AUDIENCE", "wecom-team")
+	cfg, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "https://mcp.jyiai.com/gmzoop"
+	if cfg.PublicURL != base || cfg.MCPURL != base+"/mcp" {
+		t.Fatalf("unexpected tenant endpoints: %#v", cfg)
+	}
+	if cfg.MetadataURL != "https://mcp.jyiai.com/.well-known/oauth-protected-resource/gmzoop/mcp" {
+		t.Fatalf("metadata URL=%q", cfg.MetadataURL)
 	}
 }
 

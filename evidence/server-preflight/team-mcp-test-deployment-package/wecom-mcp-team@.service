@@ -28,8 +28,8 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 ReadWritePaths=/var/lib/wecom-mcp/%i
 
-# Per-instance ceiling. Two first-batch tenants may together reach 1.2 GiB;
-# start one instance at a time and measure before enabling the second.
+# Per-instance ceiling. This package enables gmzoop only; any future instance
+# requires a separate capacity review before it is configured or started.
 MemoryHigh=500M
 MemoryMax=600M
 TasksMax=48
