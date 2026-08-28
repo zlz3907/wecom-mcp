@@ -1,5 +1,5 @@
 [Unit]
-Description=Guomai Aite WeCom Team MCP tenant %i (test)
+Description=Guomai Aite WeCom MCP instance %i (test)
 After=network-online.target
 Wants=network-online.target
 
@@ -10,7 +10,7 @@ Group=wecom-mcp-%i
 EnvironmentFile=/etc/wecom-mcp/%i.env
 Environment=GOMEMLIMIT=512MiB
 Environment=GOGC=75
-ExecStart=/opt/wecom-mcp/current/wecom-mcp-team --config /var/lib/wecom-mcp/%i/config/instance.json
+ExecStart=/home/product/services/mcp/wecom/current/wecom-mcp-team --config /home/product/services/mcp/wecom/instances/%i/config/instance.json
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
@@ -18,7 +18,7 @@ OOMPolicy=stop
 
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectHome=true
+ProtectHome=read-only
 ProtectSystem=strict
 ProtectKernelTunables=true
 ProtectKernelModules=true
@@ -26,7 +26,7 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
-ReadWritePaths=/var/lib/wecom-mcp/%i
+ReadWritePaths=/home/product/services/mcp/wecom/instances/%i/data
 
 # Per-instance ceiling. This package enables gmzoop only; any future instance
 # requires a separate capacity review before it is configured or started.

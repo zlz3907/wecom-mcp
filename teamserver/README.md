@@ -6,7 +6,7 @@
 
 ```mermaid
 flowchart TB
-    WorkBuddy[WorkBuddy 团队成员] -->|HTTPS + OAuth Bearer Token| Proxy[Caddy / API Gateway]
+    WorkBuddy[WorkBuddy 团队成员] -->|HTTPS + OAuth Bearer Token| Proxy[Nginx mcp.jyiai.com/gmzoop]
     Proxy -->|保留 Authorization| TeamMCP[wecom-mcp-team /mcp]
     TeamMCP -->|OIDC JWT 校验与角色授权| TeamMCP
     TeamMCP -->|服务器持有 GNAS 应用身份| GNAS[GNAS]
@@ -29,7 +29,7 @@ flowchart TB
 | `GET /healthz` | 无 | 进程存活检查，不访问 GNAS |
 | `GET /readyz` | 无 | 实例配置、Schema 和 GNAS 环境结构检查；不访问远端或返回租户信息 |
 
-生产只应通过 HTTPS 反向代理暴露。进程默认监听 `127.0.0.1:17801`；非回环监听必须显式设置 `TEAM_MCP_BEHIND_TLS_PROXY=true`。
+生产只应通过 HTTPS 反向代理暴露。本轮唯一实例 gmzoop 监听 `127.0.0.1:7702`，公网基址为 `https://mcp.jyiai.com/gmzoop`；Nginx strip `/gmzoop` 后转发到内部根端点。`127.0.0.1:7701` 已被现有服务占用，禁止使用；本轮不配置其他实例。
 
 ## OIDC 约定
 
@@ -66,23 +66,17 @@ go vet ./...
 go build ./cmd/wecom-mcp-team
 ```
 
-容器从仓库根目录构建，以便同时读取根模块业务代码：
-
-```sh
-docker build -f teamserver/Dockerfile -t wecom-mcp-team:local .
-```
-
 ## 服务器部署
 
-1. 创建专用系统用户 `wecom-mcp`。每个不可变版本放入 `/opt/wecom-mcp/releases/<version>/wecom-mcp-team`，`/opt/wecom-mcp/current` 仅作为指向当前版本的原子符号链接。
-2. 将实例配置、Schema 镜像和状态目录放入 `/var/lib/wecom-mcp/`，权限仅授予专用用户。实例配置中的绝对路径必须对应服务器真实路径；其中 `schema_admin_user` 必须受控更新为服务器进程用户 `wecom-mcp`，否则 Schema/初始化管理工具会继续 fail closed。OIDC admin 不替代这一 OS 身份门禁。更新前保留配置备份，并通过同目录临时文件原子替换。
-3. 将 `deploy/teamserver.env.example` 复制到 `/etc/wecom-mcp/teamserver.env`，权限设为 root 可读；通过服务器 Secret 管理注入真实 GNAS 值。
-4. 将 `deploy/wecom-mcp-team.service.example` 审阅后安装为 systemd unit。
-5. 使用 `deploy/Caddyfile.example` 提供域名和 TLS；该示例本身不提供速率限制，公网部署必须再接组织 API Gateway/WAF 的限流能力。代理必须保留 `Authorization`。Caddy 示例把上游 `Host` 改为 loopback upstream，以保留官方 SDK 的 DNS-rebinding 防护；不要删除该配置或直接关闭防护。
+1. 创建无登录系统用户/组 `wecom-mcp-gmzoop`。共享程序版本只放入 `/home/product/services/mcp/wecom/releases/<version>/wecom-mcp-team`，`/home/product/services/mcp/wecom/current` 是指向选定版本的原子符号链接。
+2. gmzoop 实例只使用 `/home/product/services/mcp/wecom/instances/gmzoop/config` 与 `/home/product/services/mcp/wecom/instances/gmzoop/data`。config 只读，Schema generation、journal 和其他运行状态写入 data。实例配置中的绝对路径必须对应这些真实路径；`schema_admin_user` 必须受控更新为服务器进程用户 `wecom-mcp-gmzoop`，OIDC admin 不替代 OS 身份门禁。
+3. 将 `deploy/gmzoop.env.example` 审阅后写为 `/etc/wecom-mcp/gmzoop.env`，属主 root:root、权限 0600；通过服务器 Secret 管理注入 GNAS 与审计密钥。Secret 不得进入项目目录、Git、镜像或日志。
+4. 将 `deploy/wecom-mcp@.service.example` 审阅后安装为 `/etc/systemd/system/wecom-mcp@.service`，只启用 `wecom-mcp@gmzoop.service`。日志使用 journald。
+5. 使用项目交付包中的独立 `nginx-mcp.jyiai.com-gmzoop.conf`；只暴露 `/gmzoop` 精确路由，保留 `Authorization` 和流式响应，并把 upstream `Host` 固定为 `127.0.0.1:7702` 以保留 SDK DNS-rebinding 防护。不得覆盖既有站点。
 6. OIDC 管理员创建 audience 和三个团队角色，并为 WorkBuddy 注册 OAuth 客户端。回调 URL 必须使用 WorkBuddy 当前界面/文档实际展示的值，不在部署脚本中猜测。
 7. 先验证 `/healthz`、`/readyz` 和未认证 `/mcp` 的 `401 + WWW-Authenticate`，再执行 OAuth 登录、`initialize`、`tools/list` 和一个只读工具调用。
 
-systemd 示例允许程序原子更新 `/var/lib/wecom-mcp` 下的受控配置、Schema generation 和 journal；不会授予源码目录或用户主目录写权限。仓库根 `.dockerignore` 使用构建白名单，Dockerfile 也只复制编译所需源码，避免把本地配置、`.env`、journal、备份或 Git 历史发送进构建层。
+systemd 模板把 `/home/product/services/mcp/wecom` 设为只读，仅允许当前实例写入 `instances/%i/data`；源码目录、共享 release、实例 config 和其他实例目录均不可写。
 
 ## WorkBuddy 配置
 
@@ -93,7 +87,7 @@ systemd 示例允许程序原子更新 `/var/lib/wecom-mcp` 下的受控配置�
   "mcpServers": {
     "guomai-aite-wecom": {
       "type": "http",
-      "url": "https://mcp.example.com/mcp"
+      "url": "https://mcp.jyiai.com/gmzoop/mcp"
     }
   }
 }
@@ -122,13 +116,13 @@ owner_accepted=no
 production_deployed=no
 ```
 
-本地测试、容器构建或 HTTP 200 不能替代真实 WorkBuddy OAuth 登录和固定租户只读调用。
+本地测试、静态构建或 HTTP 200 不能替代真实 WorkBuddy OAuth 登录和固定租户只读调用。
 
 ## 回滚
 
-- 保留上一个 `/opt/wecom-mcp/releases/<version>/` 不可变二进制/镜像及其校验和。
+- 保留上一个 `/home/product/services/mcp/wecom/releases/<version>/` 不可变二进制及其校验和。
 - 回滚只切换程序版本，不覆盖实例配置、Schema、journal 或 GNAS 凭据。
-- 在 Linux 上创建指向目标 release 的 `current.next` 链接，再以同一文件系统内的原子 rename 替换 `/opt/wecom-mcp/current`，随后 `systemctl restart wecom-mcp-team`；不要原地覆盖正在运行的二进制。
+- 在 Linux 上创建指向目标 release 的 `current.next` 链接，再以同一文件系统内的原子 rename 替换 `/home/product/services/mcp/wecom/current`，随后 `systemctl restart wecom-mcp@gmzoop`；不要原地覆盖正在运行的二进制。
 - 切换后依次回读 `/healthz`、`/readyz`、OAuth、`initialize`、角色化 `tools/list` 和只读工具。
 - 未确认的企业微信远程写入按现有 journal/sentinel 恢复，禁止因程序回滚而盲目重放。
 

@@ -27,12 +27,27 @@ openssl pkey -in /root/nginx/cert/jyiai.com.key -pubout -outform DER | sha256sum
 
 1. 保存 `nginx -T` 基线和当前 systemd 状态。
 2. 校验发行归档和包内 `SHA256SUMS`，确认二进制为 amd64 静态 ELF。
-3. 建立 `wecom-mcp-gmzoop` 无登录用户；只能读取 gmzoop 的 env/config/state。建立不可变 release 目录和 gmzoop 状态目录。
-4. 审阅并安装通用 `wecom-mcp-team@.service`，本轮只加载 `gmzoop.env`；先验证回环 healthz/readyz。
+3. 建立 `wecom-mcp-gmzoop` 无登录用户；只能读取 gmzoop 的 env/config/data。共享程序放入 `/home/product/services/mcp/wecom/releases/<version>/`，`current` 原子链接到选定版本；实例仅放入 `/home/product/services/mcp/wecom/instances/gmzoop/{config,data}`。
+4. 将 Secret 注入 `/etc/wecom-mcp/gmzoop.env`（root:root、0600，禁止放项目目录），审阅并安装通用 `wecom-mcp@.service`，本轮只启动 `wecom-mcp@gmzoop.service`；先验证回环 healthz/readyz，日志使用 journald。
 5. 只读复核现有证书后，新建 `/etc/nginx/sites-available/wecom-mcp-team-test`，不得编辑既有文件。
 6. `nginx -t` 成功后才新增 sites-enabled 链接和 reload。
 7. 严格验证 TLS、OAuth、initialize、角色化 tools/list、只读 tools/call、WorkBuddy。
 8. 失败按 `rollback.sh.review-only` 回滚；脚本默认不执行。
+
+## 唯一目录基线
+
+```text
+/home/product/services/mcp/wecom/
+├── releases/<version>/wecom-mcp-team
+├── current -> releases/<version>
+└── instances/gmzoop/
+    ├── config/instance.json
+    └── data/
+
+/etc/wecom-mcp/gmzoop.env  # root:root 0600
+```
+
+`releases` 与 `current` 由 root 管理并对服务只读；`instances/gmzoop/config` 对 `wecom-mcp-gmzoop` 只读；仅 `instances/gmzoop/data` 可写。Secret 不得复制到 `/home/product/services/mcp/wecom`、项目仓库或任何镜像构建上下文。服务 stdout/stderr 进入 journald，排障使用 `journalctl -u wecom-mcp@gmzoop`。
 
 ## 当前状态
 
