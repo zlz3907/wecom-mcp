@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,7 +38,7 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 	cfg := Config{
 		InstanceConfigPath: instanceConfigPath,
 		ListenAddress:      firstNonEmpty(listenAddress, os.Getenv("TEAM_MCP_LISTEN_ADDR"), "127.0.0.1:17801"),
-		PublicURL:          strings.TrimRight(os.Getenv("TEAM_MCP_PUBLIC_URL"), "/"),
+		PublicURL:          strings.TrimSpace(os.Getenv("TEAM_MCP_PUBLIC_URL")),
 		OIDCIssuer:         strings.TrimSpace(os.Getenv("TEAM_MCP_OIDC_ISSUER")),
 		OIDCAudience:       strings.TrimSpace(os.Getenv("TEAM_MCP_OIDC_AUDIENCE")),
 		AccessTokenClaim:   strings.TrimSpace(os.Getenv("TEAM_MCP_ACCESS_TOKEN_CLAIM")),
@@ -58,10 +59,11 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 	if err := validatePublicURL(cfg.PublicURL, "TEAM_MCP_PUBLIC_URL"); err != nil {
 		return Config{}, err
 	}
-	publicURL, _ := url.Parse(cfg.PublicURL)
-	if publicURL.EscapedPath() != "" && publicURL.EscapedPath() != "/" {
-		return Config{}, fmt.Errorf("TEAM_MCP_PUBLIC_URL must not contain a path prefix")
+	normalizedPublicURL, err := normalizeTeamPublicURL(cfg.PublicURL)
+	if err != nil {
+		return Config{}, err
 	}
+	cfg.PublicURL = normalizedPublicURL
 	if err := validateHTTPSURL(cfg.OIDCIssuer, "TEAM_MCP_OIDC_ISSUER"); err != nil {
 		return Config{}, err
 	}
@@ -94,7 +96,7 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 		return Config{}, fmt.Errorf("non-loopback listen requires TEAM_MCP_BEHIND_TLS_PROXY=true")
 	}
 	cfg.MCPURL = cfg.PublicURL + "/mcp"
-	cfg.MetadataURL = cfg.PublicURL + "/.well-known/oauth-protected-resource"
+	cfg.MetadataURL = protectedResourceMetadataURL(cfg.MCPURL)
 	cfg.AdvertisedScopes = append([]string{"openid", "profile"}, cfg.RequiredScopes...)
 	slices.Sort(cfg.AdvertisedScopes)
 	cfg.AdvertisedScopes = slices.Compact(cfg.AdvertisedScopes)
@@ -133,6 +135,50 @@ func validatePublicURL(value, name string) error {
 		return fmt.Errorf("%s must use HTTPS except for loopback development", name)
 	}
 	return nil
+}
+
+func normalizeTeamPublicURL(value string) (string, error) {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("TEAM_MCP_PUBLIC_URL is invalid")
+	}
+	escapedPath := parsed.EscapedPath()
+	if escapedPath == "" || escapedPath == "/" {
+		parsed.Path = ""
+		parsed.RawPath = ""
+		return strings.TrimRight(parsed.String(), "/"), nil
+	}
+	if parsed.RawPath != "" || !strings.HasPrefix(escapedPath, "/") {
+		return "", fmt.Errorf("TEAM_MCP_PUBLIC_URL path prefix must be one unescaped instance segment")
+	}
+	if strings.HasSuffix(escapedPath, "//") {
+		return "", fmt.Errorf("TEAM_MCP_PUBLIC_URL path prefix must not contain repeated trailing slashes")
+	}
+	escapedPath = strings.TrimSuffix(escapedPath, "/")
+	segment := strings.TrimPrefix(escapedPath, "/")
+	if segment == "" || strings.Contains(segment, "/") || !validInstancePathSegment(segment) {
+		return "", fmt.Errorf("TEAM_MCP_PUBLIC_URL path prefix must be one instance segment containing only letters, digits, '_' or '-'")
+	}
+	parsed.Path = "/" + segment
+	parsed.RawPath = ""
+	return parsed.String(), nil
+}
+
+func protectedResourceMetadataURL(resourceURL string) string {
+	parsed, _ := url.Parse(resourceURL)
+	parsed.Path = path.Join("/.well-known/oauth-protected-resource", parsed.Path)
+	parsed.RawPath = ""
+	return parsed.String()
+}
+
+func validInstancePathSegment(value string) bool {
+	for index, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || (index > 0 && (r == '_' || r == '-')) {
+			continue
+		}
+		return false
+	}
+	return value != ""
 }
 
 func validateHTTPSURL(value, name string) error {

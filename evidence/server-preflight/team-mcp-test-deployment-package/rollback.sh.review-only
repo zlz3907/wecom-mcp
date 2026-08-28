@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+# This package is inert by default. The explicit value below is granted only
+# for an Owner-approved TEST rollback after targets are reviewed.
+if [ "${OWNER_APPROVED_TEST_ROLLBACK:-no}" != "yes" ]; then
+  echo "dry-run: set OWNER_APPROVED_TEST_ROLLBACK=yes only after Owner approval" >&2
+  exit 2
+fi
+
+site_link=/etc/nginx/sites-enabled/wecom-mcp-team-test
+previous_release=${1:-}
+
+case "$previous_release" in
+  /opt/wecom-mcp/releases/*) ;;
+  "") ;;
+  *) echo "invalid previous release path" >&2; exit 2 ;;
+esac
+
+systemctl stop wecom-mcp-team@gmzoop wecom-mcp-team@zhyczoop
+
+if [ -L "$site_link" ]; then
+  unlink "$site_link"
+fi
+nginx -t
+systemctl reload nginx
+
+if [ -n "$previous_release" ]; then
+  [ -x "$previous_release/wecom-mcp-team" ] || {
+    echo "previous release binary is missing or not executable" >&2
+    exit 1
+  }
+  next_link=/opt/wecom-mcp/current.rollback-next
+  [ ! -e "$next_link" ] || {
+    echo "rollback staging link already exists" >&2
+    exit 1
+  }
+  ln -s "$previous_release" "$next_link"
+  mv -Tf "$next_link" /opt/wecom-mcp/current
+fi
+
+echo "test rollback completed; service remains stopped pending health review"

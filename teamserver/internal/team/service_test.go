@@ -48,6 +48,44 @@ func TestOAuthMetadataAndUnauthorizedChallenge(t *testing.T) {
 	}
 }
 
+func TestTenantPrefixedOAuthMetadataAndChallenge(t *testing.T) {
+	cfg := testServiceConfig(t)
+	cfg.PublicURL = "https://mcp.jyiai.com/gmzoop"
+	cfg.MCPURL = cfg.PublicURL + "/mcp"
+	cfg.MetadataURL = "https://mcp.jyiai.com/.well-known/oauth-protected-resource/gmzoop/mcp"
+	service, err := NewService(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := func(_ context.Context, _ string, _ *http.Request) (*sdkauth.TokenInfo, error) {
+		return nil, sdkauth.ErrInvalidToken
+	}
+	server := httptest.NewServer(service.Handler(verifier))
+	defer server.Close()
+
+	response := postRPC(t, server.URL+"/mcp", "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d", response.StatusCode)
+	}
+	if challenge := response.Header.Get("WWW-Authenticate"); !strings.Contains(challenge, `resource_metadata="`+cfg.MetadataURL+`"`) {
+		t.Fatalf("challenge=%q", challenge)
+	}
+
+	metadataResponse, err := http.Get(server.URL + "/.well-known/oauth-protected-resource")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer metadataResponse.Body.Close()
+	var metadata map[string]any
+	if err := json.NewDecoder(metadataResponse.Body).Decode(&metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata["resource"] != cfg.MCPURL {
+		t.Fatalf("metadata=%#v", metadata)
+	}
+}
+
 func TestReaderAndAdminReceiveDifferentToolLists(t *testing.T) {
 	server := newTestHTTPServer(t)
 	defer server.Close()

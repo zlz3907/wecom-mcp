@@ -1,0 +1,17 @@
+# Owner authorization is required before installing this HTTP-only ACME
+# bootstrap server. It never reuses the invalid *.caeri.com.cn certificate.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name mcp.jyiai.com;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/lib/acme-webroot;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 404;
+    }
+}

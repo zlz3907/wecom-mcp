@@ -17,7 +17,7 @@ func TestLoadConfigDefaultsToLoopbackAndBuildsOAuthURLs(t *testing.T) {
 	if cfg.ListenAddress != "127.0.0.1:17801" || cfg.MCPURL != "https://mcp.example.test/mcp" {
 		t.Fatalf("unexpected endpoints: %#v", cfg)
 	}
-	if cfg.MetadataURL != "https://mcp.example.test/.well-known/oauth-protected-resource" {
+	if cfg.MetadataURL != "https://mcp.example.test/.well-known/oauth-protected-resource/mcp" {
 		t.Fatalf("metadata URL=%q", cfg.MetadataURL)
 	}
 }
@@ -60,13 +60,44 @@ func TestLoadConfigRequiresExplicitTLSProxyForPublicListen(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRejectsPublicURLPathPrefix(t *testing.T) {
-	setRequiredConfigEnv(t)
-	t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.example.test/team")
-	t.Setenv("TEAM_MCP_OIDC_ISSUER", "https://login.example.test")
-	t.Setenv("TEAM_MCP_OIDC_AUDIENCE", "wecom-team")
-	if _, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), ""); err == nil {
-		t.Fatal("public URL path prefix must fail closed because handlers are rooted")
+func TestLoadConfigBuildsTenantPrefixedOAuthURLs(t *testing.T) {
+	for _, instance := range []string{"gmzoop", "zhyczoop"} {
+		t.Run(instance, func(t *testing.T) {
+			setRequiredConfigEnv(t)
+			t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.jyiai.com/"+instance+"/")
+			t.Setenv("TEAM_MCP_OIDC_ISSUER", "https://login.example.test")
+			t.Setenv("TEAM_MCP_OIDC_AUDIENCE", "wecom-team")
+			cfg, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := "https://mcp.jyiai.com/" + instance
+			if cfg.PublicURL != base || cfg.MCPURL != base+"/mcp" {
+				t.Fatalf("unexpected tenant endpoints: %#v", cfg)
+			}
+			if cfg.MetadataURL != "https://mcp.jyiai.com/.well-known/oauth-protected-resource/"+instance+"/mcp" {
+				t.Fatalf("metadata URL=%q", cfg.MetadataURL)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRejectsAmbiguousPublicURLPathPrefix(t *testing.T) {
+	for _, publicURL := range []string{
+		"https://mcp.example.test/gmzoop/nested",
+		"https://mcp.example.test/%67mzoop",
+		"https://mcp.example.test/-gmzoop",
+		"https://mcp.example.test/gmzoop//",
+	} {
+		t.Run(publicURL, func(t *testing.T) {
+			setRequiredConfigEnv(t)
+			t.Setenv("TEAM_MCP_PUBLIC_URL", publicURL)
+			t.Setenv("TEAM_MCP_OIDC_ISSUER", "https://login.example.test")
+			t.Setenv("TEAM_MCP_OIDC_AUDIENCE", "wecom-team")
+			if _, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), ""); err == nil {
+				t.Fatal("ambiguous public URL path prefix must fail closed")
+			}
+		})
 	}
 }
 

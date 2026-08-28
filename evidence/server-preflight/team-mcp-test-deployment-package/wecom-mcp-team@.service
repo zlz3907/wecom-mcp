@@ -1,0 +1,40 @@
+[Unit]
+Description=Guomai Aite WeCom Team MCP tenant %i (test)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wecom-mcp-%i
+Group=wecom-mcp-%i
+EnvironmentFile=/etc/wecom-mcp/%i.env
+Environment=GOMEMLIMIT=512MiB
+Environment=GOGC=75
+ExecStart=/opt/wecom-mcp/current/wecom-mcp-team --config /var/lib/wecom-mcp/%i/config/instance.json
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+OOMPolicy=stop
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/wecom-mcp/%i
+
+# Per-instance ceiling. Two first-batch tenants may together reach 1.2 GiB;
+# start one instance at a time and measure before enabling the second.
+MemoryHigh=500M
+MemoryMax=600M
+TasksMax=48
+LimitNOFILE=4096
+CPUQuota=75%
+
+[Install]
+WantedBy=multi-user.target
