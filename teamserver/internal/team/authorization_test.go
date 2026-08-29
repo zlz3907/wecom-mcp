@@ -26,7 +26,7 @@ func TestResolveAuthorizationV1FixtureAndHTTPAdapter(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer adapter-test" {
+		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer adapter-test" || r.Header.Get("X-Auth-Type") != "service_jwt" {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -34,7 +34,7 @@ func TestResolveAuthorizationV1FixtureAndHTTPAdapter(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&query); err != nil {
 			t.Fatal(err)
 		}
-		if query != (AuthorizationQuery{Tenant: "tenant-test", UserID: "CaseSensitiveUserID", Resource: "gmzoop"}) {
+		if query != testAuthorizationQuery() {
 			t.Fatalf("query=%#v", query)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -43,14 +43,9 @@ func TestResolveAuthorizationV1FixtureAndHTTPAdapter(t *testing.T) {
 	defer server.Close()
 
 	resolver := &HTTPAuthorizationResolver{
-		Endpoint: server.URL,
-		Client:   server.Client(),
-		Authorize: func(request *http.Request) error {
-			request.Header.Set("Authorization", "Bearer adapter-test")
-			return nil
-		},
+		Endpoint: server.URL, Client: server.Client(), TokenProvider: staticServiceJWTProvider("adapter-test"),
 	}
-	query := AuthorizationQuery{Tenant: "tenant-test", UserID: "CaseSensitiveUserID", Resource: "gmzoop"}
+	query := testAuthorizationQuery()
 	decision, err := resolver.ResolveAuthorization(context.Background(), query)
 	if err != nil {
 		t.Fatal(err)
@@ -62,11 +57,12 @@ func TestResolveAuthorizationV1FixtureAndHTTPAdapter(t *testing.T) {
 
 func TestHTTPAuthorizationResolverRejectsStructuralDrift(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"schema_version":"1","tenant":"tenant-test","userid":"CaseSensitiveUserID","active":true,"effective_scopes":[],"effective_tools":[],"policy_version":"v1","evaluated_at":"2026-08-29T08:00:00Z","unexpected":true}`)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":200,"data":{"schema_version":1,"tenant":"tenant-test","userid":"CaseSensitiveUserID","resource":"gmzoop","active":true,"effective_scopes":[],"effective_tools":[],"policy_version":"v1","evaluated_at":"2026-08-29T08:00:00Z","unexpected":true}}`)
 	}))
 	defer server.Close()
-	resolver := &HTTPAuthorizationResolver{Endpoint: server.URL, Client: server.Client(), Authorize: func(*http.Request) error { return nil }}
-	_, err := resolver.ResolveAuthorization(context.Background(), AuthorizationQuery{Tenant: "tenant-test", UserID: "CaseSensitiveUserID", Resource: "gmzoop"})
+	resolver := &HTTPAuthorizationResolver{Endpoint: server.URL, Client: server.Client(), TokenProvider: staticServiceJWTProvider("adapter-test")}
+	_, err := resolver.ResolveAuthorization(context.Background(), testAuthorizationQuery())
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("err=%v", err)
 	}
@@ -82,33 +78,80 @@ func TestHTTPAuthorizationResolverHonorsContextTimeout(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	resolver := &HTTPAuthorizationResolver{Endpoint: server.URL, Client: server.Client(), Authorize: func(*http.Request) error { return nil }}
+	resolver := &HTTPAuthorizationResolver{Endpoint: server.URL, Client: server.Client(), TokenProvider: staticServiceJWTProvider("adapter-test")}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, err := resolver.ResolveAuthorization(ctx, AuthorizationQuery{Tenant: "tenant-test", UserID: "CaseSensitiveUserID", Resource: "gmzoop"})
+	_, err := resolver.ResolveAuthorization(ctx, testAuthorizationQuery())
 	if err == nil {
 		t.Fatal("resolver timeout must fail closed")
 	}
 }
 
-func TestCachedAuthorizationResolverNeverServesExpiredDecisionOnFailure(t *testing.T) {
-	upstream := &sequenceAuthorizationResolver{decisions: []AuthorizationDecision{testAuthorizationDecision("*")}, errors: []error{nil, errors.New("upstream unavailable")}}
-	cache, err := NewCachedAuthorizationResolver(upstream, time.Second)
-	if err != nil {
+func TestGNASServiceJWTProviderUsesProtectedJSONPostAndNoTokenCache(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodPost || r.URL.RawQuery != "" || r.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("request=%s %s content-type=%q", r.Method, r.URL.String(), r.Header.Get("Content-Type"))
+		}
+		var request gnasServiceJWTRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.AppID != "gmzoop-test" || request.AppSecret != "protected-test-secret" {
+			t.Fatalf("request=%#v", request)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":200,"data":{"token":"short-lived-test-jwt","app_id":"gmzoop-test","expires_at":4102444800}}`)
+	}))
+	defer server.Close()
+	provider := &GNASServiceJWTProvider{Endpoint: server.URL, Client: server.Client(), AppID: "gmzoop-test", Secret: "protected-test-secret", now: time.Now}
+	for range 2 {
+		if token, err := provider.Token(context.Background()); err != nil || token != "short-lived-test-jwt" {
+			t.Fatalf("token=%q err=%v", token, err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("Service JWT calls=%d, want 2", calls)
+	}
+}
+
+func TestNewGNASAuthorizationResolverRequiresStableSameOriginPaths(t *testing.T) {
+	cfg := testUserAuthorizationConfig(t)
+	cfg.AuthorizationEndpoint = "https://gnas.example.test/gnas/service/resolveAuthorizationV1"
+	cfg.AuthorizationTokenEndpoint = "https://gnas.example.test/gnas/service/getJwtToken"
+	cfg.AuthorizationServiceAppID = "gmzoop-test"
+	cfg.AuthorizationServiceAppSecret = "protected-test-secret"
+	if _, err := NewGNASAuthorizationResolver(cfg); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Unix(1000, 0)
-	cache.now = func() time.Time { return now }
-	query := AuthorizationQuery{Tenant: "tenant-test", UserID: "CaseSensitiveUserID", Resource: "gmzoop"}
-	if _, err := cache.ResolveAuthorization(context.Background(), query); err != nil {
-		t.Fatal(err)
+	cfg.AuthorizationTokenEndpoint = "https://other.example.test/gnas/service/getJwtToken"
+	if _, err := NewGNASAuthorizationResolver(cfg); err == nil {
+		t.Fatal("cross-origin token endpoint must fail closed")
 	}
-	if _, err := cache.ResolveAuthorization(context.Background(), query); err != nil || upstream.calls != 1 {
-		t.Fatalf("cache miss: calls=%d err=%v", upstream.calls, err)
+	cfg.AuthorizationTokenEndpoint = "https://gnas.example.test/gnas/service/getToken"
+	if _, err := NewGNASAuthorizationResolver(cfg); err == nil {
+		t.Fatal("legacy token endpoint path must fail closed")
 	}
-	now = now.Add(2 * time.Second)
-	if _, err := cache.ResolveAuthorization(context.Background(), query); err == nil || upstream.calls != 2 {
-		t.Fatalf("stale authorization served: calls=%d err=%v", upstream.calls, err)
+}
+
+func TestHTTPAuthorizationResolverMapsExactGNASFailureContract(t *testing.T) {
+	tests := []struct{ status, code int }{{401, 40101}, {403, 40301}, {405, 40501}, {400, 40001}, {503, 50301}}
+	for _, test := range tests {
+		t.Run(http.StatusText(test.status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(test.status)
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": test.code, "message": "redacted"})
+			}))
+			defer server.Close()
+			resolver := &HTTPAuthorizationResolver{Endpoint: server.URL, Client: server.Client(), TokenProvider: staticServiceJWTProvider("adapter-test")}
+			_, err := resolver.ResolveAuthorization(context.Background(), testAuthorizationQuery())
+			var resolveErr *AuthorizationResolveError
+			if !errors.As(err, &resolveErr) || resolveErr.HTTPStatus != test.status || resolveErr.BusinessCode != test.code {
+				t.Fatalf("err=%v", err)
+			}
+		})
 	}
 }
 
@@ -154,6 +197,27 @@ func TestUserAuthorizationWildcardIsStillRoleBounded(t *testing.T) {
 	admin := listTools(t, adminServer.URL, "admin")
 	if !admin["wecom_record_apply"] || !admin["wecom_registry_bootstrap"] {
 		t.Fatalf("admin wildcard tools=%#v", admin)
+	}
+}
+
+func TestToolsListAndCallResolveAuthorizationAgainWithoutCache(t *testing.T) {
+	allowed := testAuthorizationDecision("wecom_record_query")
+	revoked := allowed
+	revoked.Active = false
+	resolver := &sequenceAuthorizationResolver{decisions: []AuthorizationDecision{allowed, revoked}}
+	server := newUserAuthorizationHTTPServer(t, RoleReader, resolver, io.Discard)
+	defer server.Close()
+	tools := listTools(t, server.URL, "reader")
+	if !tools["wecom_record_query"] {
+		t.Fatalf("tools=%#v", tools)
+	}
+	response := postRPC(t, server.URL+"/mcp", "reader", `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"wecom_record_query","arguments":{}}}`)
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("post-revoke tools/call status=%d", response.StatusCode)
+	}
+	if resolver.calls != 2 {
+		t.Fatalf("resolver calls=%d, want 2", resolver.calls)
 	}
 }
 
@@ -227,6 +291,7 @@ func TestUserAuthorizationRequiresMappedWeComUserIDAndAuditsWithoutPII(t *testin
 		extra := map[string]any{"role": string(RoleReader), "issuer": "https://login.example.test"}
 		if token != "missing-userid" {
 			extra["wecom_userid"] = "CaseSensitiveUserID"
+			extra["gnas_principal_assertion"] = "signed-principal-test"
 		}
 		return &sdkauth.TokenInfo{Expiration: time.Now().Add(time.Hour), UserID: "opaque-subject", Scopes: []string{"wecom.mcp"}, Extra: extra}, nil
 	}
@@ -257,6 +322,12 @@ func TestUserAuthorizationRequiresMappedWeComUserIDAndAuditsWithoutPII(t *testin
 type staticAuthorizationResolver struct {
 	decision AuthorizationDecision
 	err      error
+}
+
+type staticServiceJWTProvider string
+
+func (p staticServiceJWTProvider) Token(context.Context) (string, error) {
+	return string(p), nil
 }
 
 func (r *staticAuthorizationResolver) ResolveAuthorization(_ context.Context, query AuthorizationQuery) (AuthorizationDecision, error) {
@@ -299,14 +370,17 @@ func testAuthorizationDecision(tools ...string) AuthorizationDecision {
 	}
 }
 
+func testAuthorizationQuery() AuthorizationQuery {
+	return AuthorizationQuery{Tenant: "tenant-test", UserID: "CaseSensitiveUserID", Resource: "gmzoop", PrincipalAssertion: "signed-principal-test"}
+}
+
 func testUserAuthorizationConfig(t *testing.T) Config {
 	cfg := testServiceConfig(t)
 	cfg.RequiredScopes = []string{"wecom.mcp"}
 	cfg.UserAuthorizationEnabled = true
 	cfg.AuthorizationTenant = "tenant-test"
 	cfg.AuthorizationResource = "gmzoop"
-	cfg.AuthorizationCacheTTL = time.Nanosecond
-	cfg.AuthorizationTimeout = time.Second
+	cfg.AuthorizationTimeout = 2 * time.Second
 	return cfg
 }
 
@@ -320,7 +394,7 @@ func newUserAuthorizationHTTPServer(t *testing.T, role Role, resolver Authorizat
 	verifier := func(_ context.Context, _ string, _ *http.Request) (*sdkauth.TokenInfo, error) {
 		return &sdkauth.TokenInfo{
 			Expiration: time.Now().Add(time.Hour), UserID: "opaque-subject", Scopes: []string{"wecom.mcp"},
-			Extra: map[string]any{"role": string(role), "issuer": "https://login.example.test", "wecom_userid": "CaseSensitiveUserID"},
+			Extra: map[string]any{"role": string(role), "issuer": "https://login.example.test", "wecom_userid": "CaseSensitiveUserID", "gnas_principal_assertion": "signed-principal-test"},
 		}, nil
 	}
 	return httptest.NewServer(service.Handler(verifier))

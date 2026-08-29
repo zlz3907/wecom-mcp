@@ -68,6 +68,11 @@ func (a *OIDCAuthenticator) Verify(ctx context.Context, rawToken string, _ *http
 			return nil, fmt.Errorf("%w: unique enterprise WeCom userid claim required", sdkauth.ErrInvalidToken)
 		}
 		extra["wecom_userid"] = userids[0]
+		assertions, assertionErr := claimStrings(claims, a.config.PrincipalAssertionClaim)
+		if assertionErr != nil || len(assertions) != 1 || assertions[0] == "" || strings.TrimSpace(assertions[0]) != assertions[0] || len(assertions[0]) > authorizationBodyMaxBytes {
+			return nil, fmt.Errorf("%w: unique GNAS principal assertion claim required", sdkauth.ErrInvalidToken)
+		}
+		extra["gnas_principal_assertion"] = assertions[0]
 	}
 	if role, roleErr := resolveRole(claimedRoles, a.config); roleErr == nil {
 		extra["role"] = string(role)

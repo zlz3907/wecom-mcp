@@ -26,9 +26,9 @@ flowchart TB
 
 门禁开启后，MCP 必须取得唯一、大小写敏感的企业微信 `userid`，并以固定 `tenant + userid + resource` 查询授权。归一化决策包含 `active`、`effective_tools`、`effective_scopes`、`policy_version`；`tools=["*"]` 只展开为当前二进制公开的工具目录，且继续与静态 reader/operator/admin 角色取交集。`tools/list` 过滤发现列表，`tools/call` 在每次 HTTP 请求重新执行同一授权边界。
 
-以下情况全部失败关闭：userid 缺失或歧义、active=false、scope 缺失、未知工具、响应结构漂移、超时、非 200、策略版本缺失。缓存 TTL 上限为 60 秒，过期刷新失败时不返回旧授权。审计仅增加授权结果和 `policy_version`，不记录 userid、Token、Secret 或授权响应原文。
+以下情况全部失败关闭：userid 或 GNAS 签名 `principal_assertion` 缺失/歧义、active=false、scope 缺失、未知工具、响应结构漂移、GNAS 错误码不匹配、两秒超时、策略版本缺失。授权正向和拒绝结果均不缓存；每次 `tools/list`、`tools/call` 都实时获取短期 Service JWT 并调用 ResolveAuthorizationV1，撤权在下一请求生效。审计仅增加授权结果和 `policy_version`，不记录 userid、Token、Secret、身份断言或授权响应原文。
 
-当前 `main` 入口不会猜测 GNAS 服务鉴权；在稳定适配器接入前，若强行开启 feature flag，进程初始化会拒绝启动。回滚边界是关闭 feature flag 并重启候选服务，恢复既有静态 OIDC 角色路径，不改实例配置、Schema、GNAS 数据或企业微信资产。候选合同与测试说明见 [`AUTHORIZATION-CANDIDATE.md`](AUTHORIZATION-CANDIDATE.md)。
+feature flag 开启时必须同时提供同源的 GNAS Service JWT 与 resolver HTTPS URL、专用 caller app 凭据，以及已验证 OAuth Token 中的 userid 和 GNAS 签名 assertion claim；缺任一项即拒绝启动或拒绝请求。回滚边界是关闭 feature flag 并重启候选服务，恢复既有静态 OIDC 角色路径，不改实例配置、Schema、GNAS 数据或企业微信资产。候选合同与测试说明见 [`AUTHORIZATION-CANDIDATE.md`](AUTHORIZATION-CANDIDATE.md)。
 
 ## HTTP 端点
 

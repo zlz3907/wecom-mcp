@@ -56,11 +56,6 @@ func newService(cfg Config, logger *slog.Logger, resolver AuthorizationResolver)
 		if resolver == nil {
 			return nil, fmt.Errorf("user authorization is enabled but the GNAS resolver adapter is not configured")
 		}
-		cached, cacheErr := NewCachedAuthorizationResolver(resolver, cfg.AuthorizationCacheTTL)
-		if cacheErr != nil {
-			return nil, cacheErr
-		}
-		resolver = cached
 	}
 	return &Service{
 		config:                cfg,
@@ -238,13 +233,13 @@ func (s *Service) authorizationMiddleware(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		info := sdkauth.TokenInfoFromContext(r.Context())
-		userid, ok := weComUserIDFromTokenInfo(info)
+		userid, assertion, ok := authorizationIdentityFromTokenInfo(info)
 		if !ok {
-			s.auditor.Authorization(r.Context(), AuthorizationDecision{}, fmt.Errorf("mapped enterprise WeCom userid required"))
+			s.auditor.Authorization(r.Context(), AuthorizationDecision{}, fmt.Errorf("mapped enterprise WeCom userid and principal assertion required"))
 			http.Error(w, "user authorization denied", http.StatusForbidden)
 			return
 		}
-		query := AuthorizationQuery{Tenant: s.config.AuthorizationTenant, UserID: userid, Resource: s.config.AuthorizationResource}
+		query := AuthorizationQuery{Tenant: s.config.AuthorizationTenant, UserID: userid, Resource: s.config.AuthorizationResource, PrincipalAssertion: assertion}
 		ctx, cancel := context.WithTimeout(r.Context(), s.config.AuthorizationTimeout)
 		defer cancel()
 		decision, err := s.authorizationResolver.ResolveAuthorization(ctx, query)
@@ -264,12 +259,14 @@ func (s *Service) authorizationMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func weComUserIDFromTokenInfo(info *sdkauth.TokenInfo) (string, bool) {
+func authorizationIdentityFromTokenInfo(info *sdkauth.TokenInfo) (string, string, bool) {
 	if info == nil || info.Extra == nil {
-		return "", false
+		return "", "", false
 	}
 	userid, ok := info.Extra["wecom_userid"].(string)
-	return userid, ok && userid != "" && strings.TrimSpace(userid) == userid
+	assertion, assertionOK := info.Extra["gnas_principal_assertion"].(string)
+	valid := ok && assertionOK && userid != "" && strings.TrimSpace(userid) == userid && assertion != "" && strings.TrimSpace(assertion) == assertion && len(assertion) <= authorizationBodyMaxBytes
+	return userid, assertion, valid
 }
 
 func requireRole(next http.Handler) http.Handler {
