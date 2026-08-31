@@ -30,6 +30,7 @@ mkdir -p "$stage"
 chmod 0755 "$stage/wecom-mcp-team"
 cp "$repo_dir/teamserver/deploy/gmzoop.env.example" "$stage/gmzoop.env.example"
 cp "$repo_dir/teamserver/deploy/create-gmzoop-env.sh" "$stage/create-gmzoop-env.sh"
+cp "$repo_dir/teamserver/deploy/INSTALL-GMZOOP-TEST.md" "$stage/INSTALL-GMZOOP-TEST.md"
 cp "$repo_dir/teamserver/deploy/wecom-mcp@.service.example" "$stage/wecom-mcp@.service"
 cp "$repo_dir/evidence/server-preflight/team-mcp-test-deployment-package/nginx-mcp.jyiai.com-gmzoop.conf" "$stage/nginx-mcp.jyiai.com-gmzoop.conf"
 cp "$repo_dir/teamserver/WECHAT-SUBJECT-BINDING.md" "$stage/WECHAT-SUBJECT-BINDING.md"
@@ -48,7 +49,7 @@ sha256() {
 } > "$stage/DEPLOY-MANIFEST.txt"
 (
   cd "$stage"
-  for file in DEPLOY-MANIFEST.txt LICENSE WECHAT-SUBJECT-BINDING.md create-gmzoop-env.sh gmzoop.env.example nginx-mcp.jyiai.com-gmzoop.conf wecom-mcp-team wecom-mcp@.service; do
+  for file in DEPLOY-MANIFEST.txt INSTALL-GMZOOP-TEST.md LICENSE WECHAT-SUBJECT-BINDING.md create-gmzoop-env.sh gmzoop.env.example nginx-mcp.jyiai.com-gmzoop.conf wecom-mcp-team wecom-mcp@.service; do
     printf '%s  %s\n' "$(sha256 "$file")" "$file"
   done > SHA256SUMS
 )
