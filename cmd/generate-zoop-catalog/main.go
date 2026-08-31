@@ -222,9 +222,6 @@ func convert(source sourceMirror) (catalog, error) {
 						}
 					}
 					converted.Formula = verifiedProgressFormula()
-					converted.UnsupportedForCreate = true
-					result.CompleteForCreation = false
-					result.UnsupportedForCreate = append(result.UnsupportedForCreate, role+"."+field.Title)
 				} else {
 					converted.UnsupportedForCreate = true
 					result.CompleteForCreation = false

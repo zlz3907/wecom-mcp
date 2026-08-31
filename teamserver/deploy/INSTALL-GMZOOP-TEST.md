@@ -21,6 +21,7 @@ sudo install -d -o root -g root -m 0755 /home/product/services/mcp/wecom/release
 sudo install -d -o root -g wecom-mcp-gmzoop -m 0750 /home/product/services/mcp/wecom/instances/gmzoop/config
 sudo install -d -o wecom-mcp-gmzoop -g wecom-mcp-gmzoop -m 0700 /home/product/services/mcp/wecom/instances/gmzoop/data
 sudo install -o root -g root -m 0755 wecom-mcp-team /home/product/services/mcp/wecom/releases/<revision>/wecom-mcp-team
+sudo install -o root -g root -m 0755 wecom-mcp-instance-init /home/product/services/mcp/wecom/releases/<revision>/wecom-mcp-instance-init
 sudo ln -s /home/product/services/mcp/wecom/releases/<revision> /home/product/services/mcp/wecom/current.next
 sudo mv -Tf /home/product/services/mcp/wecom/current.next /home/product/services/mcp/wecom/current
 sudo install -o root -g root -m 0644 wecom-mcp@.service /etc/systemd/system/wecom-mcp@.service
@@ -52,6 +53,20 @@ sudoedit /etc/wecom-mcp/gmzoop.env
 实例配置的 `schema_admin_user` 必须为 `wecom-mcp-gmzoop`，`schema_mirror_path` 与 `state_path` 必须指向服务器的 gmzoop 路径。不要复制其他租户配置、Schema 或文档 ID。
 
 ## 5. 启动与只读验收
+
+若 gmzoop 尚无既有 Registry 与九表，先由服务器本地受保护账号执行一次 dry-run；只在它输出可执行 preview 后才加 `--apply`。该命令不开放 HTTP 端口，也不使用 WorkBuddy 的共享 API Key：
+
+```sh
+sudo -u wecom-mcp-gmzoop /home/product/services/mcp/wecom/current/wecom-mcp-instance-init \
+  --config /home/product/services/mcp/wecom/instances/gmzoop/config/instance.json
+
+sudo -u wecom-mcp-gmzoop /home/product/services/mcp/wecom/current/wecom-mcp-instance-init \
+  --config /home/product/services/mcp/wecom/instances/gmzoop/config/instance.json --apply
+```
+
+初始化器会创建或恢复固定的 Registry 与九张 Zoop 表、回读字段、生成本地 Schema 并原子写回实例配置。任何不确定创建状态都会保留 journal 并停止，不能重复执行 `--apply` 另建一套表。
+
+## 6. 启动与只读验收
 
 ```sh
 sudo systemctl start wecom-mcp@gmzoop.service

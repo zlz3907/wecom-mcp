@@ -1423,7 +1423,7 @@ func TestRemoteInitializerNeverRepeatsTemporarilyInvisibleActiveRowWrite(t *test
 	}
 }
 
-func TestInstanceInitializeFreshPublicMainlineKeepsFormulaWriteFailClosed(t *testing.T) {
+func TestInstanceInitializeFreshPublicMainlinePlansVerifiedFormulaCreation(t *testing.T) {
 	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
 	server.initializeCatalog = nil
 	result, err := server.instanceInitializeFacade(context.Background(), runtime, fake, nil, json.RawMessage(`{"action":"status"}`))
@@ -1431,12 +1431,12 @@ func TestInstanceInitializeFreshPublicMainlineKeepsFormulaWriteFailClosed(t *tes
 		t.Fatal(err)
 	}
 	status := result.(map[string]any)
-	if status["state"] != "capability_gap" || status["preview_id"] != "" || status["catalog_creation_complete"] != false {
-		t.Fatalf("fresh public mainline did not keep formula write fail-closed: %#v", status)
+	if status["state"] != "changes_planned" || status["preview_id"] == "" || status["catalog_creation_complete"] != true {
+		t.Fatalf("fresh public mainline did not plan verified formula creation: %#v", status)
 	}
 }
 
-func TestInstanceInitializeRegistryRecoveryWithMissingFieldsBlocksUnprovenFormulaWrite(t *testing.T) {
+func TestInstanceInitializeRegistryRecoveryPlansVerifiedFormulaWriteWithoutStatusMutation(t *testing.T) {
 	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
 	server.initializeCatalog = nil
 	registryResponse, err := fake.Request(context.Background(), "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "SMART_SHEETS_IDS"})
@@ -1458,8 +1458,8 @@ func TestInstanceInitializeRegistryRecoveryWithMissingFieldsBlocksUnprovenFormul
 		t.Fatal(err)
 	}
 	status := result.(map[string]any)
-	if status["state"] != "capability_gap" || status["capability_gap"] != true || status["preview_id"] != "" || !strings.Contains(fmt.Sprint(status["conflicts"]), "downstream_business_state_unproven") {
-		t.Fatalf("unproven formula write did not block Registry recovery: %#v", status)
+	if status["state"] != "recovery_required" || status["capability_gap"] != false || status["preview_id"] == "" {
+		t.Fatalf("verified formula recovery did not produce an executable preview: %#v", status)
 	}
 	applyRaw, _ := json.Marshal(map[string]string{
 		"preview_id": strings.Repeat("0", 64), "preview_expires_at": time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano),

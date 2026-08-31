@@ -26,8 +26,10 @@ mkdir -p "$stage"
 (
   cd "$repo_dir/teamserver"
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$stage/wecom-mcp-team" ./cmd/wecom-mcp-team
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$stage/wecom-mcp-instance-init" ./cmd/wecom-mcp-instance-init
 )
 chmod 0755 "$stage/wecom-mcp-team"
+chmod 0755 "$stage/wecom-mcp-instance-init"
 cp "$repo_dir/teamserver/deploy/gmzoop.env.example" "$stage/gmzoop.env.example"
 cp "$repo_dir/teamserver/deploy/create-gmzoop-env.sh" "$stage/create-gmzoop-env.sh"
 cp "$repo_dir/teamserver/deploy/INSTALL-GMZOOP-TEST.md" "$stage/INSTALL-GMZOOP-TEST.md"
@@ -45,11 +47,12 @@ sha256() {
   echo "source_commit=$(git -C "$repo_dir" rev-parse HEAD)"
   echo "platform=linux/amd64"
   echo "authentication_mode=connector_api_key_reader_only"
-  echo "binary_sha256=$(sha256 "$stage/wecom-mcp-team")"
+  echo "server_binary_sha256=$(sha256 "$stage/wecom-mcp-team")"
+  echo "initializer_binary_sha256=$(sha256 "$stage/wecom-mcp-instance-init")"
 } > "$stage/DEPLOY-MANIFEST.txt"
 (
   cd "$stage"
-  for file in DEPLOY-MANIFEST.txt INSTALL-GMZOOP-TEST.md LICENSE WECHAT-SUBJECT-BINDING.md create-gmzoop-env.sh gmzoop.env.example nginx-mcp.jyiai.com-gmzoop.conf wecom-mcp-team wecom-mcp@.service; do
+  for file in DEPLOY-MANIFEST.txt INSTALL-GMZOOP-TEST.md LICENSE WECHAT-SUBJECT-BINDING.md create-gmzoop-env.sh gmzoop.env.example nginx-mcp.jyiai.com-gmzoop.conf wecom-mcp-instance-init wecom-mcp-team wecom-mcp@.service; do
     printf '%s  %s\n' "$(sha256 "$file")" "$file"
   done > SHA256SUMS
 )
