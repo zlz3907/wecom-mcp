@@ -3,6 +3,7 @@ package team
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadConfigDefaultsToLoopbackAndBuildsOAuthURLs(t *testing.T) {
@@ -105,6 +106,55 @@ func TestLoadConfigRejectsAuditKeyPlaceholder(t *testing.T) {
 	t.Setenv("TEAM_MCP_AUDIT_HMAC_KEY", "REPLACE_WITH_RANDOM_32_BYTE_OR_LONGER_SECRET")
 	if _, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), ""); err == nil {
 		t.Fatal("published audit key placeholder must fail closed")
+	}
+}
+
+func TestLoadConfigUserAuthorizationFeatureFlagIsFailClosed(t *testing.T) {
+	setRequiredConfigEnv(t)
+	t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.example.test")
+	t.Setenv("TEAM_MCP_OIDC_ISSUER", "https://login.example.test")
+	t.Setenv("TEAM_MCP_OIDC_AUDIENCE", "wecom-team")
+	t.Setenv("TEAM_MCP_USER_AUTHZ_ENABLED", "true")
+	t.Setenv("TEAM_MCP_AUTHZ_RESOLVE_URL", "https://gnas.example.test/gnas/service/resolveAuthorizationV1")
+	t.Setenv("TEAM_MCP_GNAS_SERVICE_TOKEN_URL", "https://gnas.example.test/gnas/service/getJwtToken")
+	t.Setenv("TEAM_MCP_GNAS_SERVICE_APP_ID", "gmzoop-test")
+	t.Setenv("TEAM_MCP_GNAS_SERVICE_APP_SECRET", "protected-test-secret")
+	t.Setenv("TEAM_MCP_AUTHZ_TENANT", "tenant-test")
+	t.Setenv("TEAM_MCP_AUTHZ_RESOURCE", "gmzoop")
+	t.Setenv("TEAM_MCP_WECOM_USERID_CLAIM", "wecom.userid")
+	t.Setenv("TEAM_MCP_GNAS_PRINCIPAL_ASSERTION_CLAIM", "gnas.principal_assertion")
+	cfg, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.UserAuthorizationEnabled || cfg.AuthorizationTimeout != 2*time.Second || cfg.AuthorizationServiceAppID != "gmzoop-test" || cfg.PrincipalAssertionClaim != "gnas.principal_assertion" {
+		t.Fatalf("cfg=%#v", cfg)
+	}
+	if _, err := NewService(cfg, nil); err == nil || err.Error() != "user authorization is enabled but the GNAS resolver adapter is not configured" {
+		t.Fatalf("feature enabled without adapter err=%v", err)
+	}
+}
+
+func TestLoadConfigRejectsLegacyAuthorizationCacheAndTimeoutKnobs(t *testing.T) {
+	setRequiredConfigEnv(t)
+	t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.example.test")
+	t.Setenv("TEAM_MCP_OIDC_ISSUER", "https://login.example.test")
+	t.Setenv("TEAM_MCP_OIDC_AUDIENCE", "wecom-team")
+	t.Setenv("TEAM_MCP_USER_AUTHZ_ENABLED", "true")
+	t.Setenv("TEAM_MCP_AUTHZ_CACHE_TTL", "1s")
+	if _, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), ""); err == nil {
+		t.Fatal("legacy authorization cache setting must fail closed")
+	}
+}
+
+func TestLoadConfigRejectsIncompleteUserAuthorization(t *testing.T) {
+	setRequiredConfigEnv(t)
+	t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.example.test")
+	t.Setenv("TEAM_MCP_OIDC_ISSUER", "https://login.example.test")
+	t.Setenv("TEAM_MCP_OIDC_AUDIENCE", "wecom-team")
+	t.Setenv("TEAM_MCP_USER_AUTHZ_ENABLED", "true")
+	if _, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), ""); err == nil {
+		t.Fatal("enabled authorization without endpoint/tenant/resource/userid claim must fail")
 	}
 }
 

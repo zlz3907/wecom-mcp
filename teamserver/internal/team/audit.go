@@ -36,13 +36,34 @@ func (a *Auditor) ToolCall(ctx context.Context, tool string, role Role, started 
 		outcome = "tool_error"
 	}
 	info := sdkauth.TokenInfoFromContext(ctx)
-	a.logger.Info("team_mcp_tool_call",
+	attributes := []any{
 		"request_id", requestID(ctx),
 		"subject_hash", a.subjectHash(info),
 		"role", string(role),
 		"tool", tool,
 		"outcome", outcome,
 		"duration_ms", time.Since(started).Milliseconds(),
+	}
+	if authorization, ok := requestAuthorizationFromContext(ctx); ok {
+		attributes = append(attributes, "authz_policy_version", authorization.decision.PolicyVersion)
+	}
+	a.logger.Info("team_mcp_tool_call", attributes...)
+}
+
+func (a *Auditor) Authorization(ctx context.Context, decision AuthorizationDecision, err error) {
+	if a == nil || a.logger == nil {
+		return
+	}
+	outcome := "authorized"
+	if err != nil {
+		outcome = "denied"
+	}
+	info := sdkauth.TokenInfoFromContext(ctx)
+	a.logger.Info("team_mcp_user_authorization",
+		"request_id", requestID(ctx),
+		"subject_hash", a.subjectHash(info),
+		"outcome", outcome,
+		"policy_version", decision.PolicyVersion,
 	)
 }
 

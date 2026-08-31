@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,17 +22,26 @@ import (
 const serverVersion = "0.1.0"
 
 type Service struct {
-	config      Config
-	legacy      *legacymcp.Server
-	definitions []legacymcp.ToolDefinition
-	auditor     *Auditor
-	logger      *slog.Logger
-	serversMu   sync.Mutex
-	servers     map[Role]*sdkmcp.Server
-	toolSlots   chan struct{}
+	config                Config
+	legacy                *legacymcp.Server
+	definitions           []legacymcp.ToolDefinition
+	auditor               *Auditor
+	logger                *slog.Logger
+	serversMu             sync.Mutex
+	servers               map[string]*sdkmcp.Server
+	toolSlots             chan struct{}
+	authorizationResolver AuthorizationResolver
 }
 
 func NewService(cfg Config, logger *slog.Logger) (*Service, error) {
+	return newService(cfg, logger, nil)
+}
+
+func NewServiceWithAuthorizationResolver(cfg Config, logger *slog.Logger, resolver AuthorizationResolver) (*Service, error) {
+	return newService(cfg, logger, resolver)
+}
+
+func newService(cfg Config, logger *slog.Logger, resolver AuthorizationResolver) (*Service, error) {
 	if len(cfg.AuditHMACKey) < 32 {
 		return nil, fmt.Errorf("audit HMAC key must contain at least 32 bytes")
 	}
@@ -41,14 +52,20 @@ func NewService(cfg Config, logger *slog.Logger) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.UserAuthorizationEnabled {
+		if resolver == nil {
+			return nil, fmt.Errorf("user authorization is enabled but the GNAS resolver adapter is not configured")
+		}
+	}
 	return &Service{
-		config:      cfg,
-		legacy:      legacymcp.New(cfg.InstanceConfigPath),
-		definitions: definitions,
-		auditor:     NewAuditor(logger, cfg.AuditHMACKey),
-		logger:      logger,
-		servers:     make(map[Role]*sdkmcp.Server),
-		toolSlots:   make(chan struct{}, cfg.MaxConcurrentTools),
+		config:                cfg,
+		legacy:                legacymcp.New(cfg.InstanceConfigPath),
+		definitions:           definitions,
+		auditor:               NewAuditor(logger, cfg.AuditHMACKey),
+		logger:                logger,
+		servers:               make(map[string]*sdkmcp.Server),
+		toolSlots:             make(chan struct{}, cfg.MaxConcurrentTools),
+		authorizationResolver: resolver,
 	}, nil
 }
 
@@ -58,7 +75,7 @@ func (s *Service) Handler(verifier sdkauth.TokenVerifier) http.Handler {
 		if !ok {
 			return nil
 		}
-		return s.serverForRole(role)
+		return s.serverForRequest(r.Context(), role)
 	}, &sdkmcp.StreamableHTTPOptions{
 		Stateless:                    true,
 		JSONResponse:                 true,
@@ -72,7 +89,7 @@ func (s *Service) Handler(verifier sdkauth.TokenVerifier) http.Handler {
 		ResourceMetadataURL: s.config.MetadataURL,
 		Scopes:              s.config.RequiredScopes,
 		ClockSkew:           30 * time.Second,
-	})(requireRole(streamable))
+	})(requireRole(s.authorizationMiddleware(streamable)))
 
 	metadata := &oauthex.ProtectedResourceMetadata{
 		Resource:               s.config.MCPURL,
@@ -91,9 +108,33 @@ func (s *Service) Handler(verifier sdkauth.TokenVerifier) http.Handler {
 }
 
 func (s *Service) serverForRole(role Role) *sdkmcp.Server {
+	return s.serverForTools(role, nil)
+}
+
+func (s *Service) serverForRequest(ctx context.Context, role Role) *sdkmcp.Server {
+	if !s.config.UserAuthorizationEnabled {
+		return s.serverForRole(role)
+	}
+	authorization, ok := requestAuthorizationFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	return s.serverForTools(role, authorization.tools)
+}
+
+func (s *Service) serverForTools(role Role, authorized map[string]bool) *sdkmcp.Server {
+	key := string(role)
+	if authorized != nil {
+		names := make([]string, 0, len(authorized))
+		for name := range authorized {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		key += "\x00" + strings.Join(names, "\x00")
+	}
 	s.serversMu.Lock()
 	defer s.serversMu.Unlock()
-	if existing := s.servers[role]; existing != nil {
+	if existing := s.servers[key]; existing != nil {
 		return existing
 	}
 	server := sdkmcp.NewServer(&sdkmcp.Implementation{
@@ -107,6 +148,9 @@ func (s *Service) serverForRole(role Role) *sdkmcp.Server {
 		if !allows(role, definition.Access) {
 			continue
 		}
+		if authorized != nil && !authorized[definition.Name] {
+			continue
+		}
 		definition := definition
 		readOnly := definition.Access == legacymcp.ToolAccessReader
 		server.AddTool(&sdkmcp.Tool{
@@ -118,13 +162,21 @@ func (s *Service) serverForRole(role Role) *sdkmcp.Server {
 			return s.callTool(ctx, request, role, definition)
 		})
 	}
-	s.servers[role] = server
+	s.servers[key] = server
 	return server
 }
 
 func (s *Service) callTool(ctx context.Context, request *sdkmcp.CallToolRequest, role Role, definition legacymcp.ToolDefinition) (*sdkmcp.CallToolResult, error) {
 	if !allows(role, definition.Access) {
 		return nil, fmt.Errorf("tool is not authorized for this team role")
+	}
+	if s.config.UserAuthorizationEnabled {
+		authorization, ok := requestAuthorizationFromContext(ctx)
+		if !ok || !authorization.tools[definition.Name] {
+			err := fmt.Errorf("tool is not authorized for this user policy")
+			s.auditor.ToolCall(ctx, definition.Name, role, time.Now(), err)
+			return &sdkmcp.CallToolResult{IsError: true, Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: err.Error()}}}, nil
+		}
 	}
 	started := time.Now()
 	select {
@@ -161,6 +213,60 @@ func (s *Service) callTool(ctx context.Context, request *sdkmcp.CallToolRequest,
 		Content:           []sdkmcp.Content{&sdkmcp.TextContent{Text: string(encoded)}},
 		StructuredContent: value,
 	}, nil
+}
+
+type requestAuthorizationKey struct{}
+
+type requestAuthorization struct {
+	decision AuthorizationDecision
+	tools    map[string]bool
+}
+
+func requestAuthorizationFromContext(ctx context.Context) (requestAuthorization, bool) {
+	value, ok := ctx.Value(requestAuthorizationKey{}).(requestAuthorization)
+	return value, ok
+}
+
+func (s *Service) authorizationMiddleware(next http.Handler) http.Handler {
+	if !s.config.UserAuthorizationEnabled {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		info := sdkauth.TokenInfoFromContext(r.Context())
+		userid, assertion, ok := authorizationIdentityFromTokenInfo(info)
+		if !ok {
+			s.auditor.Authorization(r.Context(), AuthorizationDecision{}, fmt.Errorf("mapped enterprise WeCom userid and principal assertion required"))
+			http.Error(w, "user authorization denied", http.StatusForbidden)
+			return
+		}
+		query := AuthorizationQuery{Tenant: s.config.AuthorizationTenant, UserID: userid, Resource: s.config.AuthorizationResource, PrincipalAssertion: assertion}
+		ctx, cancel := context.WithTimeout(r.Context(), s.config.AuthorizationTimeout)
+		defer cancel()
+		decision, err := s.authorizationResolver.ResolveAuthorization(ctx, query)
+		if err != nil {
+			s.auditor.Authorization(r.Context(), AuthorizationDecision{}, err)
+			http.Error(w, "user authorization denied", http.StatusForbidden)
+			return
+		}
+		tools, err := authorizedToolSet(decision, s.definitions, s.config.RequiredScopes)
+		s.auditor.Authorization(r.Context(), decision, err)
+		if err != nil {
+			http.Error(w, "user authorization denied", http.StatusForbidden)
+			return
+		}
+		value := requestAuthorization{decision: decision, tools: tools}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestAuthorizationKey{}, value)))
+	})
+}
+
+func authorizationIdentityFromTokenInfo(info *sdkauth.TokenInfo) (string, string, bool) {
+	if info == nil || info.Extra == nil {
+		return "", "", false
+	}
+	userid, ok := info.Extra["wecom_userid"].(string)
+	assertion, assertionOK := info.Extra["gnas_principal_assertion"].(string)
+	valid := ok && assertionOK && userid != "" && strings.TrimSpace(userid) == userid && assertion != "" && strings.TrimSpace(assertion) == assertion && len(assertion) <= authorizationBodyMaxBytes
+	return userid, assertion, valid
 }
 
 func requireRole(next http.Handler) http.Handler {

@@ -42,6 +42,7 @@ func TestOIDCAuthenticatorVerifiesSignatureAudienceAndRole(t *testing.T) {
 		OIDCIssuer: issuer.URL, OIDCAudience: "team-audience", RolesClaim: "realm_access.roles",
 		AccessTokenClaim: "token_use", AccessTokenValue: "access",
 		ReaderRole: "reader", OperatorRole: "operator", AdminRole: "admin", RequiredScopes: []string{"wecom.mcp"},
+		UserAuthorizationEnabled: true, WeComUserIDClaim: "wecom.userid", PrincipalAssertionClaim: "gnas.principal_assertion",
 	}
 	authenticator, err := NewOIDCAuthenticator(context.Background(), cfg)
 	if err != nil {
@@ -49,14 +50,14 @@ func TestOIDCAuthenticatorVerifiesSignatureAudienceAndRole(t *testing.T) {
 	}
 	valid := signOIDCToken(t, privateKey, keyID, tokenSpec{
 		issuer: issuer.URL, subject: "subject-1", audience: "team-audience", roles: []string{"operator"},
-		tokenUse: "access", scope: "openid profile wecom.mcp", expiry: time.Now().Add(time.Hour),
+		tokenUse: "access", scope: "openid profile wecom.mcp", userid: "CaseSensitiveUserID", principalAssertion: "signed-principal-test", expiry: time.Now().Add(time.Hour),
 	})
 	info, err := authenticator.Verify(context.Background(), valid, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	role, ok := roleFromTokenInfo(info)
-	if !ok || role != RoleOperator || info.UserID != "subject-1" {
+	if !ok || role != RoleOperator || info.UserID != "subject-1" || info.Extra["wecom_userid"] != "CaseSensitiveUserID" || info.Extra["gnas_principal_assertion"] != "signed-principal-test" {
 		t.Fatalf("token info=%#v", info)
 	}
 
@@ -67,7 +68,7 @@ func TestOIDCAuthenticatorVerifiesSignatureAudienceAndRole(t *testing.T) {
 		t.Fatal("wrong audience must be rejected")
 	}
 	wrongRole := signOIDCToken(t, privateKey, keyID, tokenSpec{
-		issuer: issuer.URL, subject: "subject-1", audience: "team-audience", roles: []string{"unrelated"}, tokenUse: "access", expiry: time.Now().Add(time.Hour),
+		issuer: issuer.URL, subject: "subject-1", audience: "team-audience", roles: []string{"unrelated"}, tokenUse: "access", userid: "CaseSensitiveUserID", principalAssertion: "signed-principal-test", expiry: time.Now().Add(time.Hour),
 	})
 	wrongRoleInfo, err := authenticator.Verify(context.Background(), wrongRole, nil)
 	if err != nil {
@@ -164,13 +165,15 @@ func TestOIDCJWKSTimesOut(t *testing.T) {
 }
 
 type tokenSpec struct {
-	issuer   string
-	subject  string
-	audience string
-	roles    []string
-	tokenUse string
-	scope    string
-	expiry   time.Time
+	issuer             string
+	subject            string
+	audience           string
+	roles              []string
+	tokenUse           string
+	scope              string
+	userid             string
+	principalAssertion string
+	expiry             time.Time
 }
 
 func signOIDCToken(t *testing.T, key *rsa.PrivateKey, keyID string, spec tokenSpec) string {
@@ -185,6 +188,8 @@ func signOIDCToken(t *testing.T, key *rsa.PrivateKey, keyID string, spec tokenSp
 		IssuedAt: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(spec.expiry),
 	}).Claims(map[string]any{
 		"realm_access": map[string]any{"roles": spec.roles},
+		"wecom":        map[string]any{"userid": spec.userid},
+		"gnas":         map[string]any{"principal_assertion": spec.principalAssertion},
 		"scope":        spec.scope,
 		"token_use":    spec.tokenUse,
 	}).Serialize()

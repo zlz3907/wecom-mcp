@@ -29,7 +29,17 @@ func main() {
 		logger.Error("OIDC initialization failed", "error", err)
 		os.Exit(1)
 	}
-	service, err := team.NewService(cfg, logger)
+	var service *team.Service
+	if cfg.UserAuthorizationEnabled {
+		resolver, resolverErr := team.NewGNASAuthorizationResolver(cfg)
+		if resolverErr != nil {
+			logger.Error("GNAS authorization adapter initialization failed", "error", resolverErr)
+			os.Exit(1)
+		}
+		service, err = team.NewServiceWithAuthorizationResolver(cfg, logger, resolver)
+	} else {
+		service, err = team.NewService(cfg, logger)
+	}
 	if err != nil {
 		logger.Error("team MCP initialization failed", "error", err)
 		os.Exit(1)

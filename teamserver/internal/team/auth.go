@@ -62,6 +62,18 @@ func (a *OIDCAuthenticator) Verify(ctx context.Context, rawToken string, _ *http
 	}
 	scopes := tokenScopes(claims)
 	extra := map[string]any{"issuer": a.config.OIDCIssuer}
+	if a.config.UserAuthorizationEnabled {
+		userids, useridErr := claimStrings(claims, a.config.WeComUserIDClaim)
+		if useridErr != nil || len(userids) != 1 || userids[0] == "" || strings.TrimSpace(userids[0]) != userids[0] {
+			return nil, fmt.Errorf("%w: unique enterprise WeCom userid claim required", sdkauth.ErrInvalidToken)
+		}
+		extra["wecom_userid"] = userids[0]
+		assertions, assertionErr := claimStrings(claims, a.config.PrincipalAssertionClaim)
+		if assertionErr != nil || len(assertions) != 1 || assertions[0] == "" || strings.TrimSpace(assertions[0]) != assertions[0] || len(assertions[0]) > authorizationBodyMaxBytes {
+			return nil, fmt.Errorf("%w: unique GNAS principal assertion claim required", sdkauth.ErrInvalidToken)
+		}
+		extra["gnas_principal_assertion"] = assertions[0]
+	}
 	if role, roleErr := resolveRole(claimedRoles, a.config); roleErr == nil {
 		extra["role"] = string(role)
 	}
