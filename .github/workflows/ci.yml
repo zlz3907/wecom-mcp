@@ -41,3 +41,25 @@ jobs:
       - name: Windows installer regression
         shell: powershell
         run: .\scripts\test-windows-installer.ps1
+
+  teamserver:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: teamserver
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: teamserver/go.mod
+          cache-dependency-path: teamserver/go.sum
+      - name: Verify modules
+        run: go mod verify
+      - name: Go tests
+        run: go test -count=1 ./...
+      - name: Race tests
+        run: go test -race -count=1 ./...
+      - name: Go vet
+        run: go vet ./...
+      - name: Build
+        run: go build -trimpath ./cmd/wecom-mcp-team
