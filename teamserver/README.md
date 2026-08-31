@@ -22,13 +22,13 @@ flowchart TB
 
 ## 用户授权候选边界
 
-当前候选分支提供默认关闭的 `TEAM_MCP_USER_AUTHZ_ENABLED` 门禁，以及与 GNAS 存储实现解耦的 `AuthorizationResolver` 适配接口。该候选不是已集成的生产合同：GNAS 最终接口 URL、服务鉴权和 OAuth userid claim 必须以 GNAS 项目经理交付的稳定合同为准。
+当前版本提供 `TEAM_MCP_USER_AUTHZ_ENABLED` 门禁，以及与 GNAS 存储实现解耦的 `AuthorizationResolver` 适配接口。团队 gmzoop 示例默认开启该门禁：它从同一组 `GNAS_BASE_URL`、`GNAS_APP_ID`、`GNAS_APP_SECRET` 推导两个固定 GNAS 服务地址并取得短期 Service JWT，不再重复配置第二组应用凭据。`app_info` 仍是应用身份和服务路由授权的权威来源；逐用户 MCP 工具授权仍由 `mcp_user_authorizations` 经 `ResolveAuthorizationV1` 返回，二者不能互相替代。
 
 门禁开启后，MCP 必须取得唯一、大小写敏感的企业微信 `userid`，并以固定 `tenant + userid + resource` 查询授权。归一化决策包含 `active`、`effective_tools`、`effective_scopes`、`policy_version`；`tools=["*"]` 只展开为当前二进制公开的工具目录，且继续与静态 reader/operator/admin 角色取交集。`tools/list` 过滤发现列表，`tools/call` 在每次 HTTP 请求重新执行同一授权边界。
 
 以下情况全部失败关闭：userid 或 GNAS 签名 `principal_assertion` 缺失/歧义、active=false、scope 缺失、未知工具、响应结构漂移、GNAS 错误码不匹配、两秒超时、策略版本缺失。授权正向和拒绝结果均不缓存；每次 `tools/list`、`tools/call` 都实时获取短期 Service JWT 并调用 ResolveAuthorizationV1，撤权在下一请求生效。审计仅增加授权结果和 `policy_version`，不记录 userid、Token、Secret、身份断言或授权响应原文。
 
-feature flag 开启时必须同时提供同源的 GNAS Service JWT 与 resolver HTTPS URL、专用 caller app 凭据，以及已验证 OAuth Token 中的 userid 和 GNAS 签名 assertion claim；缺任一项即拒绝启动或拒绝请求。回滚边界是关闭 feature flag 并重启候选服务，恢复既有静态 OIDC 角色路径，不改实例配置、Schema、GNAS 数据或企业微信资产。候选合同与测试说明见 [`AUTHORIZATION-CANDIDATE.md`](AUTHORIZATION-CANDIDATE.md)。
+feature flag 开启时，MCP 从 `GNAS_BASE_URL` 推导同源的 Service JWT 与 resolver HTTPS URL，并复用 `GNAS_APP_ID` / `GNAS_APP_SECRET`；仍必须提供经核验的 GNAS tenant key、OAuth Token 中的企业微信 userid claim 与 GNAS 签名 assertion claim。缺任一项即拒绝启动或拒绝请求。回滚边界是关闭 feature flag 并重启候选服务，恢复既有静态 OIDC 角色路径，不改实例配置、Schema、GNAS 数据或企业微信资产。候选合同与测试说明见 [`AUTHORIZATION-CANDIDATE.md`](AUTHORIZATION-CANDIDATE.md)。
 
 ## HTTP 端点
 

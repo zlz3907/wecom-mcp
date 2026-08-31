@@ -45,6 +45,11 @@ type Config struct {
 }
 
 func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
+	gnasBaseURL := strings.TrimSpace(os.Getenv("GNAS_BASE_URL"))
+	authorizationServiceSecret := os.Getenv("TEAM_MCP_GNAS_SERVICE_APP_SECRET")
+	if authorizationServiceSecret == "" {
+		authorizationServiceSecret = os.Getenv("GNAS_APP_SECRET")
+	}
 	cfg := Config{
 		InstanceConfigPath:            instanceConfigPath,
 		ListenAddress:                 firstNonEmpty(listenAddress, os.Getenv("TEAM_MCP_LISTEN_ADDR"), "127.0.0.1:17801"),
@@ -63,10 +68,10 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 		OIDCHTTPTimeout:               10 * time.Second,
 		ShutdownTimeout:               20 * time.Second,
 		UserAuthorizationEnabled:      strings.TrimSpace(os.Getenv("TEAM_MCP_USER_AUTHZ_ENABLED")) == "true",
-		AuthorizationEndpoint:         strings.TrimSpace(os.Getenv("TEAM_MCP_AUTHZ_RESOLVE_URL")),
-		AuthorizationTokenEndpoint:    strings.TrimSpace(os.Getenv("TEAM_MCP_GNAS_SERVICE_TOKEN_URL")),
-		AuthorizationServiceAppID:     strings.TrimSpace(os.Getenv("TEAM_MCP_GNAS_SERVICE_APP_ID")),
-		AuthorizationServiceAppSecret: os.Getenv("TEAM_MCP_GNAS_SERVICE_APP_SECRET"),
+		AuthorizationEndpoint:         firstNonEmpty(os.Getenv("TEAM_MCP_AUTHZ_RESOLVE_URL"), gnasServiceURL(gnasBaseURL, "/gnas/service/resolveAuthorizationV1")),
+		AuthorizationTokenEndpoint:    firstNonEmpty(os.Getenv("TEAM_MCP_GNAS_SERVICE_TOKEN_URL"), gnasServiceURL(gnasBaseURL, "/gnas/service/getJwtToken")),
+		AuthorizationServiceAppID:     firstNonEmpty(os.Getenv("TEAM_MCP_GNAS_SERVICE_APP_ID"), os.Getenv("GNAS_APP_ID")),
+		AuthorizationServiceAppSecret: authorizationServiceSecret,
 		AuthorizationTenant:           strings.TrimSpace(os.Getenv("TEAM_MCP_AUTHZ_TENANT")),
 		AuthorizationResource:         strings.TrimSpace(os.Getenv("TEAM_MCP_AUTHZ_RESOURCE")),
 		AuthorizationTimeout:          2 * time.Second,
@@ -84,6 +89,10 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.PublicURL = normalizedPublicURL
+	if cfg.AuthorizationResource == "" {
+		parsedPublicURL, _ := url.Parse(cfg.PublicURL)
+		cfg.AuthorizationResource = strings.TrimPrefix(parsedPublicURL.Path, "/")
+	}
 	if err := validateHTTPSURL(cfg.OIDCIssuer, "TEAM_MCP_OIDC_ISSUER"); err != nil {
 		return Config{}, err
 	}
@@ -153,6 +162,19 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 	slices.Sort(cfg.AdvertisedScopes)
 	cfg.AdvertisedScopes = slices.Compact(cfg.AdvertisedScopes)
 	return cfg, nil
+}
+
+// gnasServiceURL derives only the two fixed GNAS service endpoints from the
+// same root used by the fixed-route WeCom transport. Returning an empty value
+// leaves the existing fail-closed required-value validation in charge.
+func gnasServiceURL(baseURL, endpointPath string) string {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return ""
+	}
+	parsed.Path = endpointPath
+	parsed.RawPath = ""
+	return parsed.String()
 }
 
 func firstNonEmpty(values ...string) string {

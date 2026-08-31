@@ -135,6 +135,28 @@ func TestLoadConfigUserAuthorizationFeatureFlagIsFailClosed(t *testing.T) {
 	}
 }
 
+func TestLoadConfigUserAuthorizationReusesGNASAppInfoIdentity(t *testing.T) {
+	setRequiredConfigEnv(t)
+	t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.jyiai.com/gmzoop")
+	t.Setenv("TEAM_MCP_OIDC_ISSUER", "https://login.example.test")
+	t.Setenv("TEAM_MCP_OIDC_AUDIENCE", "wecom-team")
+	t.Setenv("TEAM_MCP_USER_AUTHZ_ENABLED", "true")
+	t.Setenv("GNAS_BASE_URL", "https://jyiai.com")
+	t.Setenv("GNAS_APP_ID", "gmzoop-service-app")
+	t.Setenv("GNAS_APP_SECRET", "protected-service-secret")
+	t.Setenv("TEAM_MCP_AUTHZ_TENANT", "tenant-test")
+	t.Setenv("TEAM_MCP_WECOM_USERID_CLAIM", "wecom.userid")
+	t.Setenv("TEAM_MCP_GNAS_PRINCIPAL_ASSERTION_CLAIM", "gnas.principal_assertion")
+
+	cfg, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthorizationEndpoint != "https://jyiai.com/gnas/service/resolveAuthorizationV1" || cfg.AuthorizationTokenEndpoint != "https://jyiai.com/gnas/service/getJwtToken" || cfg.AuthorizationServiceAppID != "gmzoop-service-app" || cfg.AuthorizationServiceAppSecret != "protected-service-secret" || cfg.AuthorizationResource != "gmzoop" {
+		t.Fatalf("unexpected derived authorization config: %#v", cfg)
+	}
+}
+
 func TestLoadConfigRejectsLegacyAuthorizationCacheAndTimeoutKnobs(t *testing.T) {
 	setRequiredConfigEnv(t)
 	t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.example.test")
