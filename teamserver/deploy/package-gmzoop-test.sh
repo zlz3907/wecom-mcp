@@ -55,5 +55,7 @@ sha256() {
 )
 mkdir -p "$output"
 archive="$output/wecom-mcp-team_gmzoop-test_${revision}_linux_amd64.tar.gz"
-tar -C "$work" -czf "$archive" "$(basename "$stage")"
+# macOS tar otherwise writes AppleDouble `._*` entries for filesystem metadata.
+# They are not deployment assets and produce noisy Linux extraction warnings.
+COPYFILE_DISABLE=1 tar -C "$work" -czf "$archive" "$(basename "$stage")"
 printf 'package=%s\nsha256=%s\n' "$archive" "$(sha256 "$archive")"
