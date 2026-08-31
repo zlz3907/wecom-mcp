@@ -111,6 +111,42 @@ func TestAuthenticatedWorkBuddyStyleInitialize(t *testing.T) {
 	}
 }
 
+func TestConnectorAPIKeyModeIsReaderOnlyAndHasNoOAuthMetadata(t *testing.T) {
+	cfg := testServiceConfig(t)
+	cfg.AuthenticationMode = AuthenticationModeConnectorAPIKey
+	cfg.ConnectorAPIKey = "0123456789abcdef0123456789abcdef"
+	cfg.UserAuthorizationEnabled = false
+	service, err := NewService(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticator, err := NewConnectorAPIKeyAuthenticator(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(service.Handler(authenticator.Verify))
+	defer server.Close()
+
+	response := postRPC(t, server.URL+"/mcp", cfg.ConnectorAPIKey, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("status=%d body=%s", response.StatusCode, body)
+	}
+	tools := listTools(t, server.URL, cfg.ConnectorAPIKey)
+	if !tools["wecom_record_query"] || tools["wecom_record_apply"] || tools["wecom_registry_bootstrap"] {
+		t.Fatalf("connector tools=%#v", tools)
+	}
+	metadata, err := http.Get(server.URL + "/.well-known/oauth-protected-resource")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer metadata.Body.Close()
+	if metadata.StatusCode != http.StatusNotFound {
+		t.Fatalf("metadata status=%d", metadata.StatusCode)
+	}
+}
+
 func TestLoopbackProxyPreservesSDKDNSRebindingProtection(t *testing.T) {
 	upstream := newTestHTTPServer(t)
 	defer upstream.Close()

@@ -31,3 +31,20 @@ func TestResolveRoleUsesHighestAuthorizedRole(t *testing.T) {
 		t.Fatal("unrelated role must be denied")
 	}
 }
+
+func TestConnectorAPIKeyAuthenticatorUsesReaderServiceIdentity(t *testing.T) {
+	authenticator, err := NewConnectorAPIKeyAuthenticator(Config{AuthenticationMode: AuthenticationModeConnectorAPIKey, ConnectorAPIKey: "0123456789abcdef0123456789abcdef"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := authenticator.Verify(t.Context(), "0123456789abcdef0123456789abcdef", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if role, ok := roleFromTokenInfo(info); !ok || role != RoleReader || info.UserID != "workbuddy-enterprise-connector" {
+		t.Fatalf("unexpected connector identity: %#v", info)
+	}
+	if _, err := authenticator.Verify(t.Context(), "wrong", nil); err == nil {
+		t.Fatal("wrong connector key must be rejected")
+	}
+}

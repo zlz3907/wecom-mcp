@@ -157,6 +157,41 @@ func TestLoadConfigUserAuthorizationReusesGNASAppInfoIdentity(t *testing.T) {
 	}
 }
 
+func TestLoadConfigConnectorAPIKeyModeNeedsNoOIDC(t *testing.T) {
+	t.Setenv("TEAM_MCP_AUTH_MODE", "connector_api_key")
+	t.Setenv("TEAM_MCP_CONNECTOR_API_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.jyiai.com/gmzoop")
+	t.Setenv("TEAM_MCP_AUDIT_HMAC_KEY", "abcdef0123456789abcdef0123456789")
+	cfg, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthenticationMode != AuthenticationModeConnectorAPIKey || cfg.UserAuthorizationEnabled {
+		t.Fatalf("unexpected connector config: %#v", cfg)
+	}
+}
+
+func TestLoadConfigRejectsPerUserAuthorizationWithConnectorAPIKey(t *testing.T) {
+	t.Setenv("TEAM_MCP_AUTH_MODE", "connector_api_key")
+	t.Setenv("TEAM_MCP_CONNECTOR_API_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.jyiai.com/gmzoop")
+	t.Setenv("TEAM_MCP_AUDIT_HMAC_KEY", "abcdef0123456789abcdef0123456789")
+	t.Setenv("TEAM_MCP_USER_AUTHZ_ENABLED", "true")
+	if _, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), ""); err == nil {
+		t.Fatal("connector API key mode must reject per-user authorization")
+	}
+}
+
+func TestLoadConfigRejectsConnectorPlaceholderKey(t *testing.T) {
+	t.Setenv("TEAM_MCP_AUTH_MODE", "connector_api_key")
+	t.Setenv("TEAM_MCP_CONNECTOR_API_KEY", "<PROTECTED_RANDOM_32_BYTE_OR_LONGER_VALUE>")
+	t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.jyiai.com/gmzoop")
+	t.Setenv("TEAM_MCP_AUDIT_HMAC_KEY", "abcdef0123456789abcdef0123456789")
+	if _, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), ""); err == nil {
+		t.Fatal("connector placeholder key must fail closed")
+	}
+}
+
 func TestLoadConfigRejectsLegacyAuthorizationCacheAndTimeoutKnobs(t *testing.T) {
 	setRequiredConfigEnv(t)
 	t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.example.test")

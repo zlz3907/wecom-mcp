@@ -6,23 +6,29 @@
 
 ```mermaid
 flowchart TB
-    WorkBuddy[WorkBuddy 团队成员] -->|HTTPS + OAuth Bearer Token| Proxy[Nginx mcp.jyiai.com/gmzoop]
+    WorkBuddy[WorkBuddy 企业连接器] -->|HTTPS + Connector API Key| Proxy[Nginx mcp.jyiai.com/gmzoop]
     Proxy -->|保留 Authorization| TeamMCP[wecom-mcp-team /mcp]
-    TeamMCP -->|OIDC JWT 校验与角色授权| TeamMCP
+    TeamMCP -->|连接器服务身份与只读门禁| TeamMCP
     TeamMCP -->|服务器持有 GNAS 应用身份| GNAS[GNAS]
     GNAS --> WeCom[企业微信智能表格]
 ```
 
-- 团队成员身份来自组织 OIDC，MCP 不接受客户端自报的用户或角色。
+- 默认部署使用 WorkBuddy 企业自定义连接器的 API Key；MCP 只接受 `Authorization: Bearer <connector-key>`，固定为 reader，不能读取或推断当前 WorkBuddy 成员身份。
 - 国脉爱特的 `GNAS_APP_ID` / `GNAS_APP_SECRET` 只存在于服务器 Secret 或受保护环境文件。
 - `reader`、`operator`、`admin` 角色逐层继承；`tools/list` 只展示已授权工具，`tools/call` 再次校验。
 - 现有固定租户、API 白名单、Schema、幂等、写后回读和初始化恢复门禁仍是最终业务边界。
 - 审计日志只记录请求 ID、角色、工具、结果、耗时和 HMAC 密钥化的主体假名，不记录 Token、Secret、业务参数或响应内容；审计密钥按 PII/Secret 管理。
 - 应用层默认最多同时执行 16 个业务工具调用，可通过受控配置调低或调高；公网速率限制仍由组织 API Gateway/WAF 提供。
 
-## 用户授权候选边界
+## WorkBuddy Connector API Key 测试模式
 
-当前版本提供 `TEAM_MCP_USER_AUTHZ_ENABLED` 门禁，以及与 GNAS 存储实现解耦的 `AuthorizationResolver` 适配接口。团队 gmzoop 示例默认开启该门禁：它从同一组 `GNAS_BASE_URL`、`GNAS_APP_ID`、`GNAS_APP_SECRET` 推导两个固定 GNAS 服务地址并取得短期 Service JWT，不再重复配置第二组应用凭据。`app_info` 仍是应用身份和服务路由授权的权威来源；逐用户 MCP 工具授权仍由 `mcp_user_authorizations` 经 `ResolveAuthorizationV1` 返回，二者不能互相替代。
+当前 `deploy/gmzoop.env.example` 是最小可运行模式：在 WorkBuddy 企业后台创建自定义连接器，认证方式选择 **API Key**，Header Name 填 `Authorization`，Header Value 填 `Bearer <与服务器受保护环境相同的值>`，MCP Server URL 填 `https://mcp.jyiai.com/gmzoop/mcp`。该模式只暴露 reader 工具；不发布 OAuth metadata，且拒绝同时启用 `TEAM_MCP_USER_AUTHZ_ENABLED=true`。
+
+这是连接器服务身份，不是用户登录或逐人授权。审计会记录为 `workbuddy-enterprise-connector`，不能把它写入 Zoop 的“需求提出主体”等业务字段。真实业务主体必须在后续企业微信授权绑定后取得。
+
+## OIDC / 用户授权候选边界
+
+启用 `TEAM_MCP_AUTH_MODE=oidc` 后，可使用 `TEAM_MCP_USER_AUTHZ_ENABLED` 门禁和与 GNAS 存储实现解耦的 `AuthorizationResolver`。它从同一组 `GNAS_BASE_URL`、`GNAS_APP_ID`、`GNAS_APP_SECRET` 推导两个固定 GNAS 服务地址并取得短期 Service JWT，不再重复配置第二组应用凭据。`app_info` 仍是应用身份和服务路由授权的权威来源；逐用户 MCP 工具授权仍由 `mcp_user_authorizations` 经 `ResolveAuthorizationV1` 返回，二者不能互相替代。
 
 门禁开启后，MCP 必须取得唯一、大小写敏感的企业微信 `userid`，并以固定 `tenant + userid + resource` 查询授权。归一化决策包含 `active`、`effective_tools`、`effective_scopes`、`policy_version`；`tools=["*"]` 只展开为当前二进制公开的工具目录，且继续与静态 reader/operator/admin 角色取交集。`tools/list` 过滤发现列表，`tools/call` 在每次 HTTP 请求重新执行同一授权边界。
 
@@ -34,8 +40,8 @@ feature flag 开启时，MCP 从 `GNAS_BASE_URL` 推导同源的 Service JWT 与
 
 | 端点 | 认证 | 用途 |
 | --- | --- | --- |
-| `POST /mcp` | OIDC Bearer Token | 官方 Streamable HTTP MCP；JSON 或客户端声明的标准响应 |
-| `GET /.well-known/oauth-protected-resource` | 无 | RFC 9728 OAuth 资源发现，供 WorkBuddy 发起 OAuth |
+| `POST /mcp` | Connector API Key 或 OIDC Bearer Token | 官方 Streamable HTTP MCP；JSON 或客户端声明的标准响应 |
+| `GET /.well-known/oauth-protected-resource` | 无 | 仅 OIDC 模式提供 RFC 9728 OAuth 资源发现 |
 | `GET /healthz` | 无 | 进程存活检查，不访问 GNAS |
 | `GET /readyz` | 无 | 实例配置、Schema 和 GNAS 环境结构检查；不访问远端或返回租户信息 |
 

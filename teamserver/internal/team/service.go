@@ -85,23 +85,27 @@ func (s *Service) Handler(verifier sdkauth.TokenVerifier) http.Handler {
 		Logger:                       s.logger,
 	})
 
-	protected := sdkauth.RequireBearerToken(verifier, &sdkauth.RequireBearerTokenOptions{
-		ResourceMetadataURL: s.config.MetadataURL,
-		Scopes:              s.config.RequiredScopes,
-		ClockSkew:           30 * time.Second,
-	})(requireRole(s.authorizationMiddleware(streamable)))
-
-	metadata := &oauthex.ProtectedResourceMetadata{
-		Resource:               s.config.MCPURL,
-		AuthorizationServers:   []string{s.config.OIDCIssuer},
-		ScopesSupported:        s.config.AdvertisedScopes,
-		BearerMethodsSupported: []string{"header"},
-		ResourceName:           "Guomai Aite WeCom Team MCP",
+	requireOptions := &sdkauth.RequireBearerTokenOptions{
+		Scopes:    s.config.RequiredScopes,
+		ClockSkew: 30 * time.Second,
 	}
+	if s.config.AuthenticationMode != AuthenticationModeConnectorAPIKey {
+		requireOptions.ResourceMetadataURL = s.config.MetadataURL
+	}
+	protected := sdkauth.RequireBearerToken(verifier, requireOptions)(requireRole(s.authorizationMiddleware(streamable)))
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", protected)
-	mux.Handle("/.well-known/oauth-protected-resource", sdkauth.ProtectedResourceMetadataHandler(metadata))
+	if s.config.AuthenticationMode != AuthenticationModeConnectorAPIKey {
+		metadata := &oauthex.ProtectedResourceMetadata{
+			Resource:               s.config.MCPURL,
+			AuthorizationServers:   []string{s.config.OIDCIssuer},
+			ScopesSupported:        s.config.AdvertisedScopes,
+			BearerMethodsSupported: []string{"header"},
+			ResourceName:           "Guomai Aite WeCom Team MCP",
+		}
+		mux.Handle("/.well-known/oauth-protected-resource", sdkauth.ProtectedResourceMetadataHandler(metadata))
+	}
 	mux.HandleFunc("/healthz", s.health)
 	mux.HandleFunc("/readyz", s.ready)
 	return requestIDMiddleware(securityHeaders(mux))
