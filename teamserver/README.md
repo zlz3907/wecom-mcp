@@ -89,8 +89,8 @@ go build ./cmd/wecom-mcp-team
 3. 将 `deploy/gmzoop.env.example` 审阅后写为 `/etc/wecom-mcp/gmzoop.env`，属主 root:root、权限 0600；通过服务器 Secret 管理注入 GNAS 与审计密钥。Secret 不得进入项目目录、Git、镜像或日志。
 4. 将 `deploy/wecom-mcp@.service.example` 审阅后安装为 `/etc/systemd/system/wecom-mcp@.service`，只启用 `wecom-mcp@gmzoop.service`。日志使用 journald。
 5. 使用项目交付包中的独立 `nginx-mcp.jyiai.com-gmzoop.conf`；只暴露 `/gmzoop` 精确路由，保留 `Authorization` 和流式响应，并把 upstream `Host` 固定为 `127.0.0.1:7702` 以保留 SDK DNS-rebinding 防护。不得覆盖既有站点。
-6. OIDC 管理员创建 audience 和三个团队角色，并为 WorkBuddy 注册 OAuth 客户端。回调 URL 必须使用 WorkBuddy 当前界面/文档实际展示的值，不在部署脚本中猜测。
-7. 先验证 `/healthz`、`/readyz` 和未认证 `/mcp` 的 `401 + WWW-Authenticate`，再执行 OAuth 登录、`initialize`、`tools/list` 和一个只读工具调用。
+6. API Key 测试模式下，在服务器执行交付包的 `create-gmzoop-env.sh /etc/wecom-mcp/gmzoop.env`；脚本在服务器本地生成 Connector Key 与审计 Key，随后由 Secret 管理注入 GNAS App ID/Secret。不要把生成的 Key 写入 Git、压缩包或聊天。
+7. 先验证 `/healthz`、`/readyz` 和未认证 `/mcp` 的 `401`，再在 WorkBuddy 企业自定义连接器中配置 `Authorization: Bearer <Connector Key>`，执行 `initialize`、`tools/list` 和一个只读工具调用。
 
 systemd 模板把 `/home/product/services/mcp/wecom` 设为只读，仅允许当前实例写入 `instances/%i/data`；源码目录、共享 release、实例 config 和其他实例目录均不可写。
 
@@ -109,7 +109,7 @@ systemd 模板把 `/home/product/services/mcp/wecom` 设为只读，仅允许当
 }
 ```
 
-不要在配置中填写 GNAS Secret。WorkBuddy 首次连接收到 OAuth 资源发现挑战后，应跳转组织登录；登录后由 WorkBuddy 保存自己的 OAuth Token。腾讯云 MCP 市场模板可能显示 `transportType: "streamable-http"`；WorkBuddy 当前 HTTP 配置契约使用 `type: "http"`。不同 WorkBuddy 版本若使用 UI 而非 JSON，以该版本官方界面生成的配置为准，不直接覆盖内部文件。
+不要在配置中填写 GNAS Secret。当前 API Key 测试模式不走 OAuth：在企业自定义连接器中选择 API Key，将 Header Name 设为 `Authorization`、Header Value 设为 `Bearer <Connector Key>`。腾讯云 MCP 市场模板可能显示 `transportType: "streamable-http"`；WorkBuddy 当前 HTTP 配置契约使用 `type: "http"`。不同 WorkBuddy 版本若使用 UI 而非 JSON，以该版本官方界面生成的配置为准，不直接覆盖内部文件。
 
 ## 验收层级
 
