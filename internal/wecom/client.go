@@ -4,6 +4,8 @@ package wecom
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -122,6 +124,14 @@ func (c *Client) Request(ctx context.Context, operation string, payload any) (ma
 	if !ok {
 		return nil, fmt.Errorf("不支持的企业微信 API: %s", operation)
 	}
+	requestID := ""
+	if operation == "send_app_message" {
+		var random [16]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return nil, fmt.Errorf("无法生成企业微信请求标识")
+		}
+		requestID = "mcp-" + hex.EncodeToString(random[:])
+	}
 	for attempt := 0; attempt < 2; attempt++ {
 		token, err := c.jwt(ctx, attempt == 1)
 		if err != nil {
@@ -135,13 +145,24 @@ func (c *Client) Request(ctx context.Context, operation string, payload any) (ma
 			}
 			body = bytes.NewReader(encoded)
 		}
-		req, err := http.NewRequestWithContext(ctx, definition.Method, c.baseURL+"/api/"+c.route+definition.Path, body)
+		requestURL := c.baseURL + "/api/" + c.route + definition.Path
+		if operation == "send_app_message" {
+			requestURL = c.baseURL + "/gnas/service/wecomExecute"
+		}
+		req, err := http.NewRequestWithContext(ctx, definition.Method, requestURL, body)
 		if err != nil {
 			return nil, fmt.Errorf("构造企业微信请求失败")
 		}
 		req.Header.Set("authorization", "Bearer "+token)
 		req.Header.Set("content-type", "application/json")
 		req.Header.Set("accept", "application/json")
+		if operation == "send_app_message" {
+			req.Header.Set("X-Auth-Type", "service_jwt")
+			req.Header.Set("X-GNAS-Managed-Source", c.route)
+			req.Header.Set("X-GNAS-Upstream-Method", definition.Method)
+			req.Header.Set("X-GNAS-Upstream-Path", definition.Path)
+			req.Header.Set("X-Request-ID", requestID)
+		}
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("企业微信受管请求失败")
