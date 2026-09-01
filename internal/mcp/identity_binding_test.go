@@ -210,3 +210,54 @@ func TestIdentityCellContainsOnlyExplicitUserID(t *testing.T) {
 		t.Fatal("user cell matching widened beyond explicit userid")
 	}
 }
+
+func TestResolveUniquePersonnelSubjectIgnoresAIWithSharedUserID(t *testing.T) {
+	records := []any{
+		identitySubjectRecord("human", "user-one", "人员主体", "启用"),
+		identitySubjectRecord("workbuddy-ai", "user-one", "AI 执行主体", "启用"),
+		identitySubjectRecord("codex-ai", "user-one", "AI 执行主体", "启用"),
+	}
+	recordID, err := resolveUniquePersonnelSubjectRecordID(records, "user-one", "member", "type", "status")
+	if err != nil || recordID != "human" {
+		t.Fatalf("shared AI userid blocked human binding: record=%q err=%v", recordID, err)
+	}
+}
+
+func TestResolveUniquePersonnelSubjectRequiresOneEnabledHuman(t *testing.T) {
+	tests := []struct {
+		name    string
+		records []any
+	}{
+		{name: "paused human", records: []any{identitySubjectRecord("human", "user-one", "人员主体", "暂停")}},
+		{name: "AI only", records: []any{identitySubjectRecord("ai", "user-one", "AI 执行主体", "启用")}},
+		{name: "duplicate enabled humans", records: []any{
+			identitySubjectRecord("human-one", "user-one", "人员主体", "启用"),
+			identitySubjectRecord("human-two", "user-one", "人员主体", "启用"),
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := resolveUniquePersonnelSubjectRecordID(test.records, "user-one", "member", "type", "status"); err == nil {
+				t.Fatal("invalid personnel subject set was accepted")
+			}
+		})
+	}
+}
+
+func TestIdentityCellContainsOnlyExplicitText(t *testing.T) {
+	cell := []any{map[string]any{"id": "option-one", "text": "人员主体"}}
+	if !identityCellContainsText(cell, "人员主体") || identityCellContainsText(cell, "option-one") || identityCellContainsText(map[string]any{"name": "人员主体"}, "人员主体") {
+		t.Fatal("select text matching widened beyond explicit text")
+	}
+}
+
+func identitySubjectRecord(recordID, userid, subjectType, status string) map[string]any {
+	return map[string]any{
+		"record_id": recordID,
+		"values": map[string]any{
+			"member": []any{map[string]any{"id_type": float64(1), "user_id": userid}},
+			"type":   []any{map[string]any{"text": subjectType}},
+			"status": []any{map[string]any{"text": status}},
+		},
+	}
+}

@@ -538,9 +538,17 @@ func resolveIdentityCandidate(ctx context.Context, runtime config.Config, client
 	if err != nil {
 		return verifiedIdentity{}, err
 	}
-	field, ok := schema.Roles["Z-S09"]["企业微信成员或责任人"]
-	if !ok || field.Type != "FIELD_TYPE_USER" || field.ID == "" {
+	memberField, ok := schema.Roles["Z-S09"]["企业微信成员或责任人"]
+	if !ok || memberField.Type != "FIELD_TYPE_USER" || memberField.ID == "" {
 		return verifiedIdentity{}, fmt.Errorf("Z-S09 缺少企业微信成员绑定字段")
+	}
+	typeField, ok := schema.Roles["Z-S09"]["主体类型"]
+	if !ok || typeField.Type != "FIELD_TYPE_SINGLE_SELECT" || typeField.ID == "" {
+		return verifiedIdentity{}, fmt.Errorf("Z-S09 缺少主体类型字段")
+	}
+	statusField, ok := schema.Roles["Z-S09"]["主体状态"]
+	if !ok || statusField.Type != "FIELD_TYPE_SINGLE_SELECT" || statusField.ID == "" {
+		return verifiedIdentity{}, fmt.Errorf("Z-S09 缺少主体状态字段")
 	}
 	if !runtime.Allows("get_records") {
 		return verifiedIdentity{}, fmt.Errorf("实例白名单未允许读取 Z-S09 主体")
@@ -552,24 +560,41 @@ func resolveIdentityCandidate(ctx context.Context, runtime config.Config, client
 	recordResponse, err := client.Request(ctx, "get_records", map[string]any{
 		"docid": target.DocumentID, "sheet_id": target.SheetID,
 		"key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID", "limit": 200,
-		"field_ids": []string{field.ID},
+		"field_ids": []string{memberField.ID, typeField.ID, statusField.ID},
 	})
 	if err != nil || apiError(recordResponse) != nil || recordSetMayBeIncomplete(recordResponse, 200) {
 		return verifiedIdentity{}, fmt.Errorf("无法取得完整 Z-S09 主体快照")
 	}
-	subjectMatches := make([]string, 0, 1)
-	for _, rawRecord := range recordsFrom(recordResponse) {
+	subjectRecordID, err := resolveUniquePersonnelSubjectRecordID(
+		recordsFrom(recordResponse),
+		matches[0].UserID,
+		memberField.ID,
+		typeField.ID,
+		statusField.ID,
+	)
+	if err != nil {
+		return verifiedIdentity{}, err
+	}
+	matches[0].SubjectRecordID = subjectRecordID
+	return matches[0], nil
+}
+
+func resolveUniquePersonnelSubjectRecordID(records []any, userid, memberFieldID, typeFieldID, statusFieldID string) (string, error) {
+	matches := make([]string, 0, 1)
+	for _, rawRecord := range records {
 		record, _ := rawRecord.(map[string]any)
 		recordID, _ := record["record_id"].(string)
 		values, _ := record["values"].(map[string]any)
-		if recordID != "" && identityCellContainsUserID(values[field.ID], matches[0].UserID) {
-			subjectMatches = append(subjectMatches, recordID)
+		if recordID != "" &&
+			identityCellContainsUserID(values[memberFieldID], userid) &&
+			identityCellContainsText(values[typeFieldID], "人员主体") &&
+			identityCellContainsText(values[statusFieldID], "启用") {
+			matches = append(matches, recordID)
 		}
 	}
-	if len(subjectMatches) != 1 {
-		return verifiedIdentity{}, fmt.Errorf("企业微信员工未唯一登记到 Z-S09，拒绝建立业务主体绑定")
+	if len(matches) != 1 {
+		return "", fmt.Errorf("企业微信员工未唯一登记为启用的 Z-S09 人员主体，拒绝建立业务主体绑定")
 	}
-	matches[0].SubjectRecordID = subjectMatches[0]
 	return matches[0], nil
 }
 
@@ -590,6 +615,29 @@ func identityCellContainsUserID(value any, userid string) bool {
 	case []any:
 		for _, child := range current {
 			if identityCellContainsUserID(child, userid) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func identityCellContainsText(value any, expected string) bool {
+	switch current := value.(type) {
+	case map[string]any:
+		for key, child := range current {
+			if strings.EqualFold(strings.TrimSpace(key), "text") {
+				if text, ok := child.(string); ok && text == expected {
+					return true
+				}
+			}
+			if identityCellContainsText(child, expected) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range current {
+			if identityCellContainsText(child, expected) {
 				return true
 			}
 		}

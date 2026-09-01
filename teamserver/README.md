@@ -24,7 +24,7 @@ flowchart TB
 
 当前 `deploy/gmzoop.env.example` 是固定连接器模式：在 WorkBuddy 企业后台创建自定义连接器，认证方式选择 **API Key**，Header Name 填 `Authorization`，Header Value 填 `Bearer <与服务器受保护环境相同的值>`，MCP Server URL 填 `https://mcp.jyiai.com/gmzoop/mcp`。示例把 `TEAM_MCP_CONNECTOR_ROLE` 设为 `admin`，暴露当前二进制实现的全部 MCP 工具；不发布 OAuth metadata，且拒绝同时启用 `TEAM_MCP_USER_AUTHZ_ENABLED=true`。固定租户、Schema、幂等、写后回读和 API 白名单继续生效。
 
-这是连接器服务身份，不是用户登录或逐人授权。它不能写入 Zoop 的“需求提出主体”等业务字段。operator/admin 工具必须另外提供永久 `identity_binding_id`：首次使用时，WorkBuddy 询问企业微信通讯录完整姓名，`wecom_identity_binding_start` 唯一匹配启用成员与 Z-S09 主体，并由自建应用向该成员发送 6 位验证码；`wecom_identity_binding_confirm` 验证成功后生成绑定。验证码一次性、最多输错 5 次；绑定本身不设有效期，并支持持有原句柄时换绑。
+这是连接器服务身份，不是用户登录或逐人授权。它不能写入 Zoop 的“需求提出主体”等业务字段。operator/admin 工具必须另外提供永久 `identity_binding_id`：首次使用时，WorkBuddy 询问企业微信通讯录完整姓名，`wecom_identity_binding_start` 唯一匹配启用成员与 Z-S09 中唯一启用的人员主体（同 `userid` 的 AI 执行主体不参与匹配），并由自建应用向该成员发送 6 位验证码；`wecom_identity_binding_confirm` 验证成功后生成绑定。验证码一次性、最多输错 5 次；绑定本身不设有效期，并支持持有原句柄时换绑。
 
 绑定句柄只解决当前业务操作由谁发起，不会把共享 Connector API Key 升格为逐用户访问授权。实例配置中的 `ai_execution_subject_record_id` 固定指向一个已登记且启用的 Z-S09 WorkBuddy AI 执行主体；缺失时团队 operator/admin 调用失败关闭。`wecom_record_apply` 新建记录时自动注入双主体：Z-S01/Z-S02 使用人员发起者，Z-S04/Z-S05 使用 AI 执行者，Z-S06 同时填写发起者与执行者；显式提交冲突主体会被拒绝。Z-S03 的责任与执行主体由治理流程按实际分工显式填写。
 

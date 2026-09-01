@@ -9,7 +9,7 @@ Use the fixed gmzoop MCP as the execution boundary and this Skill as the governa
 
 ## Start with the execution context
 
-1. Confirm the current conversation has an active `identity_binding_id`. If not, ask for the exact Enterprise WeCom directory name, call `wecom_identity_binding_start`, ask for the six-digit application-message code, and call `wecom_identity_binding_confirm`.
+1. Confirm the current conversation has an active `identity_binding_id`. If not, ask for the exact Enterprise WeCom directory name of the human initiator, call `wecom_identity_binding_start`, ask for the six-digit application-message code, and call `wecom_identity_binding_confirm`. Never use an AI execution-subject name for this binding; the server resolves that subject separately.
 2. Keep the returned binding handle only in tool-call context. Do not print it, write it into project files, or place it in Zoop records.
 3. Call `wecom_identity_binding_status` when the current initiator or configured AI execution subject is uncertain. Require one personnel subject and one server-configured AI execution subject.
 4. Stop before an operator or admin action if identity binding, the configured AI subject, the local Schema mirror, or the fixed gmzoop instance is unavailable.
