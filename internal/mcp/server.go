@@ -687,7 +687,7 @@ func (s *Server) apply(ctx context.Context, runtime config.Config, schema config
 	if err != nil {
 		return nil, err
 	}
-	input, err = withVerifiedActorReference(ctx, input)
+	input, err = withVerifiedActorReferences(ctx, input)
 	if err != nil {
 		return nil, err
 	}

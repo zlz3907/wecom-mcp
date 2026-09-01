@@ -4,6 +4,7 @@
   "tenant_route": "REPLACE_WITH_LOCAL_TENANT_ROUTE",
   "schema_admin_user": "REPLACE_WITH_LOCAL_ADMIN_USER",
   "wecom_operator_userid": "REPLACE_WITH_WECOM_OPERATOR_USERID",
+  "ai_execution_subject_record_id": "REPLACE_WITH_Z_S09_AI_SUBJECT_RECORD_ID",
   "registry_document_id": "",
   "registry_key": "REPLACE_WITH_LOCAL_REGISTRY_KEY",
   "schema_mirror_path": "/absolute/path/to/local/schema-mirror.md",

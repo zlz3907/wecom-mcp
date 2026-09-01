@@ -35,6 +35,12 @@ type verifiedIdentity struct {
 
 type verifiedIdentityContextKey struct{}
 
+type verifiedExecutionSubject struct {
+	RecordID string
+}
+
+type verifiedExecutionSubjectContextKey struct{}
+
 type identityBindingState struct {
 	Version  int                             `json:"version"`
 	Bindings map[string]identityBindingEntry `json:"bindings"`
@@ -349,7 +355,7 @@ func (s *Server) confirmIdentityBinding(runtime config.Config, raw json.RawMessa
 	if err := saveIdentityBindingState(statePath, state); err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	result := map[string]any{
 		"state":                  "bound",
 		"identity_binding_id":    input.BindingID,
 		"verified_userid":        entry.ActiveUserID,
@@ -358,7 +364,11 @@ func (s *Server) confirmIdentityBinding(runtime config.Config, raw json.RawMessa
 		"binding_generation":     entry.Generation,
 		"binding_expires":        false,
 		"rebind_supported":       true,
-	}, nil
+	}
+	if runtime.AIExecutionSubjectRecordID != "" {
+		result["verified_execution_subject_record_id"] = runtime.AIExecutionSubjectRecordID
+	}
+	return result, nil
 }
 
 func (s *Server) identityBindingStatus(runtime config.Config, raw json.RawMessage) (any, error) {
@@ -376,7 +386,7 @@ func (s *Server) identityBindingStatus(runtime config.Config, raw json.RawMessag
 	if entry.PendingCodeDigest != "" {
 		state = "bound_rebind_pending"
 	}
-	return map[string]any{
+	result := map[string]any{
 		"state":                  state,
 		"verified_userid":        identity.UserID,
 		"verified_name":          identity.DisplayName,
@@ -384,7 +394,11 @@ func (s *Server) identityBindingStatus(runtime config.Config, raw json.RawMessag
 		"binding_generation":     entry.Generation,
 		"binding_expires":        false,
 		"rebind_supported":       true,
-	}, nil
+	}
+	if runtime.AIExecutionSubjectRecordID != "" {
+		result["verified_execution_subject_record_id"] = runtime.AIExecutionSubjectRecordID
+	}
+	return result, nil
 }
 
 func (s *Server) resolveIdentityBinding(runtime config.Config, bindingID string) (verifiedIdentity, identityBindingEntry, error) {
@@ -588,6 +602,18 @@ func verifiedIdentityFromContext(ctx context.Context) (verifiedIdentity, bool) {
 	return identity, ok && identity.UserID != "" && identity.SubjectRecordID != ""
 }
 
+func configuredAIExecutionSubject(runtime config.Config) (verifiedExecutionSubject, error) {
+	if runtime.AIExecutionSubjectRecordID == "" {
+		return verifiedExecutionSubject{}, fmt.Errorf("实例未配置 ai_execution_subject_record_id，团队写入保持关闭")
+	}
+	return verifiedExecutionSubject{RecordID: runtime.AIExecutionSubjectRecordID}, nil
+}
+
+func verifiedExecutionSubjectFromContext(ctx context.Context) (verifiedExecutionSubject, bool) {
+	subject, ok := ctx.Value(verifiedExecutionSubjectContextKey{}).(verifiedExecutionSubject)
+	return subject, ok && subject.RecordID != ""
+}
+
 func businessActorUserID(ctx context.Context, runtime config.Config) string {
 	if identity, ok := verifiedIdentityFromContext(ctx); ok {
 		return identity.UserID
@@ -595,39 +621,71 @@ func businessActorUserID(ctx context.Context, runtime config.Config) string {
 	return runtime.WecomOperatorUserID
 }
 
-var actorReferenceFields = map[string]string{
-	"Z-S01": "需求提出主体",
-	"Z-S02": "决策主体",
-	"Z-S04": "操作主体",
-	"Z-S05": "调度主体",
-	"Z-S06": "发起主体",
+type actorReferenceSource int
+
+const (
+	actorReferenceInitiator actorReferenceSource = iota
+	actorReferenceExecutor
+)
+
+type actorReferenceSpec struct {
+	FieldTitle string
+	Source     actorReferenceSource
 }
 
-func withVerifiedActorReference(ctx context.Context, input applyInput) (applyInput, error) {
-	identity, ok := verifiedIdentityFromContext(ctx)
-	if !ok {
+var actorReferenceFields = map[string][]actorReferenceSpec{
+	"Z-S01": {{FieldTitle: "需求提出主体", Source: actorReferenceInitiator}},
+	"Z-S02": {{FieldTitle: "决策主体", Source: actorReferenceInitiator}},
+	"Z-S04": {{FieldTitle: "操作主体", Source: actorReferenceExecutor}},
+	"Z-S05": {{FieldTitle: "调度主体", Source: actorReferenceExecutor}},
+	"Z-S06": {
+		{FieldTitle: "发起主体", Source: actorReferenceInitiator},
+		{FieldTitle: "执行主体", Source: actorReferenceExecutor},
+	},
+}
+
+func withVerifiedActorReferences(ctx context.Context, input applyInput) (applyInput, error) {
+	initiator, hasInitiator := verifiedIdentityFromContext(ctx)
+	executor, hasExecutor := verifiedExecutionSubjectFromContext(ctx)
+	if !hasInitiator && !hasExecutor {
 		return input, nil
 	}
-	fieldTitle := actorReferenceFields[input.TargetRole]
-	if fieldTitle == "" {
+	specs := actorReferenceFields[input.TargetRole]
+	if len(specs) == 0 {
 		return input, nil
 	}
-	want := []any{map[string]any{"record_id": identity.SubjectRecordID}}
 	for index := range input.Records {
 		if len(input.Records[index].Values) == 0 {
 			return input, fmt.Errorf("每条记录至少要有一个业务字段")
 		}
-		existing, provided := input.Records[index].Values[fieldTitle]
-		if provided {
-			encodedExisting, _ := json.Marshal(existing)
-			encodedWant, _ := json.Marshal(want)
-			if !hmac.Equal(encodedExisting, encodedWant) {
-				return input, fmt.Errorf("字段 %s 必须匹配已验证的 Z-S09 业务主体", fieldTitle)
+		for _, spec := range specs {
+			recordID := ""
+			switch spec.Source {
+			case actorReferenceInitiator:
+				if hasInitiator {
+					recordID = initiator.SubjectRecordID
+				}
+			case actorReferenceExecutor:
+				if hasExecutor {
+					recordID = executor.RecordID
+				}
 			}
-			continue
-		}
-		if input.Operation == "add_records" {
-			input.Records[index].Values[fieldTitle] = want
+			if recordID == "" {
+				continue
+			}
+			want := []any{map[string]any{"record_id": recordID}}
+			existing, provided := input.Records[index].Values[spec.FieldTitle]
+			if provided {
+				encodedExisting, _ := json.Marshal(existing)
+				encodedWant, _ := json.Marshal(want)
+				if !hmac.Equal(encodedExisting, encodedWant) {
+					return input, fmt.Errorf("字段 %s 必须匹配已验证的 Z-S09 业务主体", spec.FieldTitle)
+				}
+				continue
+			}
+			if input.Operation == "add_records" {
+				input.Records[index].Values[spec.FieldTitle] = want
+			}
 		}
 	}
 	return input, nil

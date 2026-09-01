@@ -28,8 +28,9 @@ func identityBindingFixture(t *testing.T) (*Server, config.Config, *identityBind
 	t.Helper()
 	t.Setenv(identityBindingSecretEnv, "0123456789abcdef0123456789abcdef")
 	runtime := config.Config{
-		InstanceName: "identity-test",
-		StatePath:    filepath.Join(t.TempDir(), "state.json"),
+		InstanceName:               "identity-test",
+		StatePath:                  filepath.Join(t.TempDir(), "state.json"),
+		AIExecutionSubjectRecordID: "subject-ai",
 		APIWhitelist: map[string][]string{
 			appMessageCapabilityGroup: {"list_employees", "send_app_message"},
 		},
@@ -77,6 +78,9 @@ func TestIdentityBindingHappyPathAndIdempotentStart(t *testing.T) {
 	bound := confirmed.(map[string]any)
 	if bound["state"] != "bound" || bound["verified_userid"] != "user-one" || bound["zoop_subject_record_id"] != "subject-one" || bound["binding_expires"] != false {
 		t.Fatalf("unexpected binding result: %#v", bound)
+	}
+	if bound["verified_execution_subject_record_id"] != "subject-ai" {
+		t.Fatalf("configured AI execution subject missing: %#v", bound)
 	}
 	if _, err := server.confirmIdentityBinding(runtime, mustMarshal(map[string]string{"identity_binding_id": bindingID, "verification_code": code})); err == nil {
 		t.Fatal("one-time verification code was accepted twice")
@@ -150,8 +154,9 @@ func TestCompletedBindingCannotRestartWithoutExplicitRebind(t *testing.T) {
 
 func TestVerifiedActorReferenceIsInjectedAndCannotBeSpoofed(t *testing.T) {
 	ctx := context.WithValue(context.Background(), verifiedIdentityContextKey{}, verifiedIdentity{UserID: "user-one", DisplayName: "第一人", SubjectRecordID: "subject-one"})
+	ctx = context.WithValue(ctx, verifiedExecutionSubjectContextKey{}, verifiedExecutionSubject{RecordID: "subject-ai"})
 	input := applyInput{TargetRole: "Z-S01", Operation: "add_records", Records: []recordInput{{Values: map[string]any{"需求标题": "测试"}}}}
-	prepared, err := withVerifiedActorReference(ctx, input)
+	prepared, err := withVerifiedActorReferences(ctx, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,12 +166,41 @@ func TestVerifiedActorReferenceIsInjectedAndCannotBeSpoofed(t *testing.T) {
 		t.Fatalf("actor reference not injected: %s", encoded)
 	}
 	input.Records[0].Values["需求提出主体"] = []any{map[string]any{"record_id": "subject-other"}}
-	if _, err := withVerifiedActorReference(ctx, input); err == nil {
+	if _, err := withVerifiedActorReferences(ctx, input); err == nil {
 		t.Fatal("spoofed actor reference was accepted")
 	}
+	audit := applyInput{TargetRole: "Z-S04", Operation: "add_records", Records: []recordInput{{Values: map[string]any{"审计事件编号": "AUDIT-1"}}}}
+	prepared, err = withVerifiedActorReferences(ctx, audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ = json.Marshal(prepared.Records[0].Values["操作主体"])
+	if string(encoded) != `[{"record_id":"subject-ai"}]` {
+		t.Fatalf("AI executor reference not injected: %s", encoded)
+	}
+	session := applyInput{TargetRole: "Z-S06", Operation: "add_records", Records: []recordInput{{Values: map[string]any{"会话编号与标题": "SESSION-1"}}}}
+	prepared, err = withVerifiedActorReferences(ctx, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initiator, _ := json.Marshal(prepared.Records[0].Values["发起主体"])
+	executor, _ := json.Marshal(prepared.Records[0].Values["执行主体"])
+	if string(initiator) != `[{"record_id":"subject-one"}]` || string(executor) != `[{"record_id":"subject-ai"}]` {
+		t.Fatalf("session dual actors not injected: initiator=%s executor=%s", initiator, executor)
+	}
 	empty := applyInput{TargetRole: "Z-S02", Operation: "add_records", Records: []recordInput{{Values: map[string]any{}}}}
-	if _, err := withVerifiedActorReference(ctx, empty); err == nil {
+	if _, err := withVerifiedActorReferences(ctx, empty); err == nil {
 		t.Fatal("actor injection turned an empty business record into a valid record")
+	}
+}
+
+func TestConfiguredAIExecutionSubjectFailsClosed(t *testing.T) {
+	if _, err := configuredAIExecutionSubject(config.Config{}); err == nil {
+		t.Fatal("missing configured AI execution subject was accepted")
+	}
+	subject, err := configuredAIExecutionSubject(config.Config{AIExecutionSubjectRecordID: "subject-ai"})
+	if err != nil || subject.RecordID != "subject-ai" {
+		t.Fatalf("configured AI execution subject not resolved: %#v err=%v", subject, err)
 	}
 }
 

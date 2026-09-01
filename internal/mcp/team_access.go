@@ -105,15 +105,26 @@ func (s *Server) CallTool(ctx context.Context, name string, arguments json.RawMe
 	if err != nil {
 		return nil, err
 	}
+	executionSubject, err := configuredAIExecutionSubject(runtime)
+	if err != nil {
+		return nil, err
+	}
 	ctx = context.WithValue(ctx, verifiedIdentityContextKey{}, identity)
+	ctx = context.WithValue(ctx, verifiedExecutionSubjectContextKey{}, executionSubject)
 	value, err := s.call(ctx, name, cleaned)
 	if err != nil {
 		return nil, err
 	}
 	if output, ok := value.(map[string]any); ok {
+		// Keep the verified_actor fields for existing clients while exposing the
+		// initiator/executor split explicitly for Zoop governance.
 		output["verified_actor_userid"] = identity.UserID
 		output["verified_actor_name"] = identity.DisplayName
 		output["verified_actor_subject_record_id"] = identity.SubjectRecordID
+		output["verified_initiator_userid"] = identity.UserID
+		output["verified_initiator_name"] = identity.DisplayName
+		output["verified_initiator_subject_record_id"] = identity.SubjectRecordID
+		output["verified_execution_subject_record_id"] = executionSubject.RecordID
 		output["identity_binding_verified"] = true
 	}
 	return value, nil

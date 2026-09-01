@@ -104,7 +104,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 
 `wecom_instance_initialize_status` 是首次初始化的只读入口，同时也是 dry-run。它通过专用的 `instance_initialize` capability group 回读 Registry、唯一 active row、Z-S01 至 Z-S09、生成版 Schema、初始化 journal 和 Z-S01 `limit=1` smoke，只输出结构计数、冲突、计划操作、快照摘要、短期 `preview_id` 与 `expires_at`，不返回业务记录内容。线上字段的 ID、类型、选项和逻辑关联必须与本地 Schema 逐项一致，且 generation 元数据完整，才可能返回 `ready`。`registry_document_id` 是无未决 sentinel 时的既有 Registry 导入候选；`recovery_registry_document_id` / `recovery_business_document_id` 只能绑定已有 uncertain sentinel；业务恢复会继续核验该 sentinel 指向的同一文档，不会猜测或新建替代资产。任一分页、文档管理权限或结构快照不完整时不会签发可用于 apply 的 preview。
 
-`wecom_operator_userid` 是受保护配置中的固定企业微信成员 userid。初始化器先通过成员目录确认其属于当前固定租户，并确保 Registry 与业务文档中该成员为管理员（`auth=7`）；这不代表文档 owner。常规记录写入不接受调用方传入 actor，审计只声明 `business_operator_userid`，并明确原生 API 修改主体仍为 `native_api_actor=application`，不会伪装成企业微信系统修改人。旧配置仍可加载，但缺少该值时初始化远程变更和记录写入保持关闭。
+`wecom_operator_userid` 是受保护配置中的固定企业微信成员 userid。初始化器先通过成员目录确认其属于当前固定租户，并确保 Registry 与业务文档中该成员为管理员（`auth=7`）；这不代表文档 owner。`ai_execution_subject_record_id` 可固定指向 Z-S09 中已登记的 AI 执行主体；团队 HTTP operator/admin 调用要求该值与验证码确认的人员主体同时存在，用于区分人员发起者与 AI 执行者。原生 API 修改主体仍为 `native_api_actor=application`，不会伪装成企业微信系统修改人。旧 stdio 配置仍可加载，但缺少固定人员或相应 capability 时远程变更保持关闭。
 
 文档权限核验遵循企业微信“获取文档权限信息”（官方文档 path 97461）的实际响应结构，并依赖该接口只能访问调用应用所创建文档的权限约束证明应用管理面；`doc_member_list` 中的人类成员可以是只读、可编辑或管理员，初始化器会严格校验其官方结构。`schema_admin_user` 仅作为受保护本机操作系统账号门禁，不与企业微信 `userid` 混用；Windows 必须填写 `whoami` 返回的完整 `域或电脑名\\用户名`，运行时按 Windows 规则对完整身份忽略大小写比较，不会丢弃 authority 前缀或把不同安全主体的同名账号视为同一人。空的部门权限列表被上游省略时按空列表处理。任意自造的 `auth_type=admin` 等字段不会被视为管理权限证据。
 

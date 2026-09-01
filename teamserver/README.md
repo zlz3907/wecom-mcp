@@ -26,7 +26,7 @@ flowchart TB
 
 这是连接器服务身份，不是用户登录或逐人授权。它不能写入 Zoop 的“需求提出主体”等业务字段。operator/admin 工具必须另外提供永久 `identity_binding_id`：首次使用时，WorkBuddy 询问企业微信通讯录完整姓名，`wecom_identity_binding_start` 唯一匹配启用成员与 Z-S09 主体，并由自建应用向该成员发送 6 位验证码；`wecom_identity_binding_confirm` 验证成功后生成绑定。验证码一次性、最多输错 5 次；绑定本身不设有效期，并支持持有原句柄时换绑。
 
-绑定句柄只解决当前业务操作属于谁以及 Zoop 主体自动归属，不会把共享 Connector API Key 升格为逐用户访问授权。所有 operator/admin 工具在团队 HTTP 传输上都校验绑定；只读工具不要求绑定。`wecom_record_apply` 新建 Z-S01、Z-S02、Z-S04、Z-S05、Z-S06 记录时会自动注入对应的已验证 Z-S09 主体字段，显式提交不同主体会被拒绝。
+绑定句柄只解决当前业务操作由谁发起，不会把共享 Connector API Key 升格为逐用户访问授权。实例配置中的 `ai_execution_subject_record_id` 固定指向一个已登记且启用的 Z-S09 WorkBuddy AI 执行主体；缺失时团队 operator/admin 调用失败关闭。`wecom_record_apply` 新建记录时自动注入双主体：Z-S01/Z-S02 使用人员发起者，Z-S04/Z-S05 使用 AI 执行者，Z-S06 同时填写发起者与执行者；显式提交冲突主体会被拒绝。Z-S03 的责任与执行主体由治理流程按实际分工显式填写。
 
 ## OIDC / 用户授权候选边界
 
@@ -120,6 +120,12 @@ systemd 模板把 `/home/product/services/mcp/wecom` 设为只读，仅允许当
 ```
 
 不要在配置中填写 GNAS Secret。当前 API Key 测试模式不走 OAuth：在企业自定义连接器中选择 API Key，将 Header Name 设为 `Authorization`、Header Value 设为 `Bearer <Connector Key>`。腾讯云 MCP 市场模板可能显示 `transportType: "streamable-http"`；WorkBuddy 当前 HTTP 配置契约使用 `type: "http"`。不同 WorkBuddy 版本若使用 UI 而非 JSON，以该版本官方界面生成的配置为准，不直接覆盖内部文件。
+
+## WorkBuddy Zoop Skill
+
+项目级治理 Skill 位于 [`.codebuddy/skills/zoop-workbuddy-governance`](../.codebuddy/skills/zoop-workbuddy-governance/SKILL.md)。WorkBuddy 支持从本地技能包导入，也会优先发现工作区 `.codebuddy/skills/` 下的项目 Skill。该 Skill 负责九表路由、状态机、人员发起者与 AI 执行者分离、去重、独立验证/Review、三次受控恢复与人工升级；MCP 继续负责不可绕过的身份、Schema、capability、幂等和回读门禁。
+
+安装后在同一 WorkBuddy 任务中启用 `zoop-workbuddy-governance` 与 gmzoop MCP。首次 operator/admin 操作先完成企业微信验证码绑定；不得把 Skill、连接器 API Key 或工具可见性当成用户授权。
 
 ## 验收层级
 
