@@ -21,6 +21,7 @@ umask 077
   printf '%s\n' 'TEAM_MCP_LISTEN_ADDR=127.0.0.1:7702'
   printf '%s\n' 'TEAM_MCP_AUTH_MODE=connector_api_key'
   printf 'TEAM_MCP_CONNECTOR_API_KEY=%s\n' "$connector_key"
+  printf '%s\n' 'TEAM_MCP_CONNECTOR_ROLE=admin'
   printf '%s\n' 'TEAM_MCP_USER_AUTHZ_ENABLED=false'
   printf 'TEAM_MCP_AUDIT_HMAC_KEY=%s\n' "$audit_key"
   printf '%s\n' 'TEAM_MCP_MAX_CONCURRENT_TOOLS=2'

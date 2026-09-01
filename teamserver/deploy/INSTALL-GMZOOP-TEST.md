@@ -66,7 +66,7 @@ sudo -u wecom-mcp-gmzoop /home/product/services/mcp/wecom/current/wecom-mcp-inst
 
 初始化器会创建或恢复固定的 Registry 与九张 Zoop 表、回读字段、生成本地 Schema 并原子写回实例配置。任何不确定创建状态都会保留 journal 并停止，不能重复执行 `--apply` 另建一套表。
 
-## 6. 启动与只读验收
+## 6. 启动与全能力目录验收
 
 ```sh
 sudo systemctl start wecom-mcp@gmzoop.service
@@ -76,4 +76,4 @@ curl -fsS http://127.0.0.1:7702/healthz
 curl -fsS http://127.0.0.1:7702/readyz
 ```
 
-确认回环端点通过后，再复核已有 Nginx 代理配置：`sudo nginx -t`，然后从外部读取 `https://mcp.jyiai.com/gmzoop/healthz` 与 `/readyz`。首次 WorkBuddy 验收只调用 `initialize`、`tools/list` 和一个只读工具；API Key 模式不允许写工具。
+确认回环端点通过后，再复核已有 Nginx 代理配置：`sudo nginx -t`，然后从外部读取 `https://mcp.jyiai.com/gmzoop/healthz` 与 `/readyz`。先调用 `initialize` 和 `tools/list`，确认 `TEAM_MCP_CONNECTOR_ROLE=admin` 时当前二进制实现的全部工具均可发现；目录验收不得顺带执行真实写入。随后再按单项业务用例执行带幂等键、写后回读和审计核验的受控写入烟测。

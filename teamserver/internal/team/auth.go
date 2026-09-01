@@ -15,14 +15,18 @@ import (
 )
 
 type ConnectorAPIKeyAuthenticator struct {
-	key []byte
+	key  []byte
+	role Role
 }
 
 func NewConnectorAPIKeyAuthenticator(cfg Config) (*ConnectorAPIKeyAuthenticator, error) {
 	if cfg.AuthenticationMode != AuthenticationModeConnectorAPIKey || len(cfg.ConnectorAPIKey) < 32 {
 		return nil, fmt.Errorf("connector API key authentication is not configured")
 	}
-	return &ConnectorAPIKeyAuthenticator{key: []byte(cfg.ConnectorAPIKey)}, nil
+	if cfg.ConnectorRole != RoleReader && cfg.ConnectorRole != RoleOperator && cfg.ConnectorRole != RoleAdmin {
+		return nil, fmt.Errorf("connector API key role is not configured")
+	}
+	return &ConnectorAPIKeyAuthenticator{key: []byte(cfg.ConnectorAPIKey), role: cfg.ConnectorRole}, nil
 }
 
 func (a *ConnectorAPIKeyAuthenticator) Verify(_ context.Context, rawToken string, _ *http.Request) (*sdkauth.TokenInfo, error) {
@@ -33,7 +37,7 @@ func (a *ConnectorAPIKeyAuthenticator) Verify(_ context.Context, rawToken string
 	return &sdkauth.TokenInfo{
 		UserID:     "workbuddy-enterprise-connector",
 		Expiration: time.Now().Add(5 * time.Minute),
-		Extra:      map[string]any{"issuer": "workbuddy_connector_api_key", "role": string(RoleReader)},
+		Extra:      map[string]any{"issuer": "workbuddy_connector_api_key", "role": string(a.role)},
 	}, nil
 }
 

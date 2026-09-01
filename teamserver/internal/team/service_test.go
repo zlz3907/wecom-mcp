@@ -106,15 +106,16 @@ func TestAuthenticatedWorkBuddyStyleInitialize(t *testing.T) {
 	response := postRPC(t, server.URL+"/mcp", "reader", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"workbuddy-test","version":"1"}}}`)
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK || !bytes.Contains(body, []byte(`"name":"guomai-aite-wecom-team-mcp"`)) {
+	if response.StatusCode != http.StatusOK || !bytes.Contains(body, []byte(`"name":"guomai-aite-wecom-team-mcp"`)) || !bytes.Contains(body, []byte("Z-S09")) || !bytes.Contains(body, []byte("workbuddy-enterprise-connector")) {
 		t.Fatalf("status=%d body=%s", response.StatusCode, body)
 	}
 }
 
-func TestConnectorAPIKeyModeIsReaderOnlyAndHasNoOAuthMetadata(t *testing.T) {
+func TestConnectorAPIKeyModeUsesConfiguredAdminRoleAndHasNoOAuthMetadata(t *testing.T) {
 	cfg := testServiceConfig(t)
 	cfg.AuthenticationMode = AuthenticationModeConnectorAPIKey
 	cfg.ConnectorAPIKey = "0123456789abcdef0123456789abcdef"
+	cfg.ConnectorRole = RoleAdmin
 	cfg.UserAuthorizationEnabled = false
 	service, err := NewService(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
@@ -134,7 +135,7 @@ func TestConnectorAPIKeyModeIsReaderOnlyAndHasNoOAuthMetadata(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.StatusCode, body)
 	}
 	tools := listTools(t, server.URL, cfg.ConnectorAPIKey)
-	if !tools["wecom_record_query"] || tools["wecom_record_apply"] || tools["wecom_registry_bootstrap"] {
+	if !tools["wecom_record_query"] || !tools["wecom_record_apply"] || !tools["wecom_registry_bootstrap"] || len(tools) != len(service.definitions) {
 		t.Fatalf("connector tools=%#v", tools)
 	}
 	metadata, err := http.Get(server.URL + "/.well-known/oauth-protected-resource")

@@ -16,6 +16,7 @@ type Config struct {
 	InstanceConfigPath            string
 	AuthenticationMode            AuthenticationMode
 	ConnectorAPIKey               string
+	ConnectorRole                 Role
 	ListenAddress                 string
 	PublicURL                     string
 	MCPURL                        string
@@ -63,6 +64,7 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 		InstanceConfigPath:            instanceConfigPath,
 		AuthenticationMode:            AuthenticationMode(firstNonEmpty(os.Getenv("TEAM_MCP_AUTH_MODE"), string(AuthenticationModeOIDC))),
 		ConnectorAPIKey:               os.Getenv("TEAM_MCP_CONNECTOR_API_KEY"),
+		ConnectorRole:                 Role(firstNonEmpty(os.Getenv("TEAM_MCP_CONNECTOR_ROLE"), string(RoleReader))),
 		ListenAddress:                 firstNonEmpty(listenAddress, os.Getenv("TEAM_MCP_LISTEN_ADDR"), "127.0.0.1:17801"),
 		PublicURL:                     strings.TrimSpace(os.Getenv("TEAM_MCP_PUBLIC_URL")),
 		OIDCIssuer:                    strings.TrimSpace(os.Getenv("TEAM_MCP_OIDC_ISSUER")),
@@ -134,6 +136,9 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 	case AuthenticationModeConnectorAPIKey:
 		if len(cfg.ConnectorAPIKey) < 32 || strings.TrimSpace(cfg.ConnectorAPIKey) != cfg.ConnectorAPIKey || placeholderValue(cfg.ConnectorAPIKey) {
 			return Config{}, fmt.Errorf("TEAM_MCP_CONNECTOR_API_KEY must contain at least 32 canonical bytes")
+		}
+		if cfg.ConnectorRole != RoleReader && cfg.ConnectorRole != RoleOperator && cfg.ConnectorRole != RoleAdmin {
+			return Config{}, fmt.Errorf("TEAM_MCP_CONNECTOR_ROLE must be reader, operator, or admin")
 		}
 		if cfg.UserAuthorizationEnabled {
 			return Config{}, fmt.Errorf("connector_api_key mode cannot enable per-user authorization")

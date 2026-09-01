@@ -46,7 +46,7 @@ sha256() {
   echo "format=wecom-mcp-team-gmzoop-test-v1"
   echo "source_commit=$(git -C "$repo_dir" rev-parse HEAD)"
   echo "platform=linux/amd64"
-  echo "authentication_mode=connector_api_key_reader_only"
+  echo "authentication_mode=connector_api_key_configured_role"
   echo "server_binary_sha256=$(sha256 "$stage/wecom-mcp-team")"
   echo "initializer_binary_sha256=$(sha256 "$stage/wecom-mcp-instance-init")"
 } > "$stage/DEPLOY-MANIFEST.txt"

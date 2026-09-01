@@ -13,7 +13,7 @@ flowchart TB
     GNAS --> WeCom[企业微信智能表格]
 ```
 
-- 默认部署使用 WorkBuddy 企业自定义连接器的 API Key；MCP 只接受 `Authorization: Bearer <connector-key>`，固定为 reader，不能读取或推断当前 WorkBuddy 成员身份。
+- 默认部署使用 WorkBuddy 企业自定义连接器的 API Key；MCP 只接受 `Authorization: Bearer <connector-key>`。`TEAM_MCP_CONNECTOR_ROLE` 显式配置为 `reader`、`operator` 或 `admin`，默认 `reader`；它仍不能读取或推断当前 WorkBuddy 成员身份。
 - 国脉爱特的 `GNAS_APP_ID` / `GNAS_APP_SECRET` 只存在于服务器 Secret 或受保护环境文件。
 - `reader`、`operator`、`admin` 角色逐层继承；`tools/list` 只展示已授权工具，`tools/call` 再次校验。
 - 现有固定租户、API 白名单、Schema、幂等、写后回读和初始化恢复门禁仍是最终业务边界。
@@ -22,9 +22,11 @@ flowchart TB
 
 ## WorkBuddy Connector API Key 测试模式
 
-当前 `deploy/gmzoop.env.example` 是最小可运行模式：在 WorkBuddy 企业后台创建自定义连接器，认证方式选择 **API Key**，Header Name 填 `Authorization`，Header Value 填 `Bearer <与服务器受保护环境相同的值>`，MCP Server URL 填 `https://mcp.jyiai.com/gmzoop/mcp`。该模式只暴露 reader 工具；不发布 OAuth metadata，且拒绝同时启用 `TEAM_MCP_USER_AUTHZ_ENABLED=true`。
+当前 `deploy/gmzoop.env.example` 是固定连接器模式：在 WorkBuddy 企业后台创建自定义连接器，认证方式选择 **API Key**，Header Name 填 `Authorization`，Header Value 填 `Bearer <与服务器受保护环境相同的值>`，MCP Server URL 填 `https://mcp.jyiai.com/gmzoop/mcp`。示例把 `TEAM_MCP_CONNECTOR_ROLE` 设为 `admin`，暴露当前二进制实现的全部 MCP 工具；不发布 OAuth metadata，且拒绝同时启用 `TEAM_MCP_USER_AUTHZ_ENABLED=true`。固定租户、Schema、幂等、写后回读和 API 白名单继续生效。
 
-这是连接器服务身份，不是用户登录或逐人授权。审计会记录为 `workbuddy-enterprise-connector`，不能把它写入 Zoop 的“需求提出主体”等业务字段。真实业务主体必须在后续企业微信授权绑定后取得。
+这是连接器服务身份，不是用户登录或逐人授权。审计会记录为 `workbuddy-enterprise-connector`，不能把它写入 Zoop 的“需求提出主体”等业务字段。真实业务主体由会话声明并从 Z-S09 核对；该结果用于业务归属，不构成逐用户访问授权。
+
+当前简化运行约定是不做验证码绑定：当 operator/admin 操作需要业务主体且会话中没有明确企业微信 userid 时，MCP 初始化指令要求 WorkBuddy 先询问姓名，再从 Z-S09 唯一匹配一条启用主体；同名或未命中时停止并继续询问，不能把连接器服务身份当成业务主体。
 
 ## OIDC / 用户授权候选边界
 

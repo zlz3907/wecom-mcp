@@ -169,6 +169,35 @@ func TestLoadConfigConnectorAPIKeyModeNeedsNoOIDC(t *testing.T) {
 	if cfg.AuthenticationMode != AuthenticationModeConnectorAPIKey || cfg.UserAuthorizationEnabled {
 		t.Fatalf("unexpected connector config: %#v", cfg)
 	}
+	if cfg.ConnectorRole != RoleReader {
+		t.Fatalf("default connector role=%q", cfg.ConnectorRole)
+	}
+}
+
+func TestLoadConfigConnectorAPIKeyAcceptsAdminRole(t *testing.T) {
+	t.Setenv("TEAM_MCP_AUTH_MODE", "connector_api_key")
+	t.Setenv("TEAM_MCP_CONNECTOR_API_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("TEAM_MCP_CONNECTOR_ROLE", "admin")
+	t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.jyiai.com/gmzoop")
+	t.Setenv("TEAM_MCP_AUDIT_HMAC_KEY", "abcdef0123456789abcdef0123456789")
+	cfg, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ConnectorRole != RoleAdmin {
+		t.Fatalf("connector role=%q", cfg.ConnectorRole)
+	}
+}
+
+func TestLoadConfigRejectsUnknownConnectorRole(t *testing.T) {
+	t.Setenv("TEAM_MCP_AUTH_MODE", "connector_api_key")
+	t.Setenv("TEAM_MCP_CONNECTOR_API_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("TEAM_MCP_CONNECTOR_ROLE", "owner")
+	t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.jyiai.com/gmzoop")
+	t.Setenv("TEAM_MCP_AUDIT_HMAC_KEY", "abcdef0123456789abcdef0123456789")
+	if _, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), ""); err == nil {
+		t.Fatal("unknown connector role must fail closed")
+	}
 }
 
 func TestLoadConfigRejectsPerUserAuthorizationWithConnectorAPIKey(t *testing.T) {
