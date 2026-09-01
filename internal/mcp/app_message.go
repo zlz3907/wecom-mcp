@@ -95,7 +95,7 @@ func (s *Server) sendApplicationMessage(ctx context.Context, runtime config.Conf
 }
 
 func validMessageRecipient(value string) bool {
-	if value == "" || value != strings.TrimSpace(value) || len(value) > 64 {
+	if value == "" || strings.EqualFold(value, "@all") || value != strings.TrimSpace(value) || len(value) > 64 {
 		return false
 	}
 	for _, char := range value {

@@ -79,6 +79,34 @@ func TestSendApplicationMessageRejectsInactiveRecipientBeforeReservation(t *test
 	}
 }
 
+func TestSendApplicationMessageRejectsBroadcastRecipient(t *testing.T) {
+	fake := &appMessageFake{}
+	runtime := config.Config{
+		WecomOperatorUserID: "operator",
+		StatePath:           filepath.Join(t.TempDir(), "state.json"),
+		APIWhitelist: map[string][]string{
+			appMessageCapabilityGroup: {"list_employees", "send_app_message"},
+		},
+	}
+	server := &Server{}
+	for _, recipient := range []string{"@all", "@ALL"} {
+		input, err := json.Marshal(map[string]string{
+			"recipient_userid": recipient,
+			"text":             "hello",
+			"idempotency_key":  "message-broadcast-rejected-" + recipient,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := server.sendApplicationMessage(context.Background(), runtime, fake, input); err == nil {
+			t.Fatalf("broadcast recipient accepted: %q", recipient)
+		}
+	}
+	if fake.payload != nil {
+		t.Fatalf("broadcast recipient reached message send: %#v", fake.payload)
+	}
+}
+
 func TestVerifiedMessageReceiptRejectsPartialOrMissingReceipt(t *testing.T) {
 	for _, response := range []map[string]any{
 		{"result": map[string]any{"errcode": float64(0), "msgid": ""}},
