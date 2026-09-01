@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -194,7 +193,8 @@ func (c *Client) UploadAppMedia(ctx context.Context, mediaType, filename string,
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	header := make(textproto.MIMEHeader)
-	header["Content-Disposition"] = []string{mime.FormatMediaType("form-data", map[string]string{"name": "media", "filename": filename})}
+	escapedFilename := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(filename)
+	header["Content-Disposition"] = []string{fmt.Sprintf(`form-data; name="media"; filename="%s"; filelength=%d`, escapedFilename, len(content))}
 	contentType := "application/octet-stream"
 	if mediaType == "image" {
 		contentType = http.DetectContentType(content)

@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,14 @@ func TestUploadAppMediaUsesManagedMultipartExecutor(t *testing.T) {
 			part, err := multipart.NewReader(request.Body, parameters["boundary"]).NextPart()
 			if err != nil || part.FormName() != "media" || part.FileName() != "probe.png" {
 				t.Fatalf("invalid upload part: part=%#v err=%v", part, err)
+			}
+			rawDisposition := part.Header.Get("Content-Disposition")
+			if !strings.HasPrefix(rawDisposition, `form-data; name="media"; filename="probe.png"; filelength=`) {
+				t.Fatalf("upload metadata order does not match the Enterprise WeCom media contract: %q", rawDisposition)
+			}
+			disposition, dispositionParameters, err := mime.ParseMediaType(rawDisposition)
+			if err != nil || disposition != "form-data" || dispositionParameters["filelength"] != strconv.Itoa(len(png)) {
+				t.Fatalf("invalid upload part metadata: disposition=%q parameters=%v err=%v", disposition, dispositionParameters, err)
 			}
 			got, _ := io.ReadAll(part)
 			if !bytes.Equal(got, png) {
