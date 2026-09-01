@@ -68,6 +68,10 @@ OIDC 访问令牌必须满足：
 | `wecom-mcp-operator` | operator | reader + 受控记录写入和进度重算 |
 | `wecom-mcp-admin` | admin | 全部工具，包括初始化、Schema 迁移和通用受管 API |
 
+`wecom_send_app_message` 属于 operator 能力。它只允许向一个当前员工目录中的启用 `userid` 发送
+文本消息，禁止 `@all`；`agentid` 由 GNAS 从受保护的自建应用凭据注入。调用必须提供稳定幂等键，
+仅在企业微信返回有效 `msgid` 后标记完成。
+
 角色和 access-token 类型 claim 支持点路径，例如 `realm_access.roles`。OIDC 提供方必须签发 JWT access token，并提供标准 discovery/JWKS；部署前必须按该 IdP 的真实 access-token claim 设置 discriminator。ID token、本地自签共享 Token、空 `sub` 均默认拒绝。
 
 ## 本地构建与测试

@@ -35,3 +35,10 @@
 所有 25 项通过 `wecom_api_call` 暴露。调用参数只允许 `operation` 与 `payload`；实例白名单决定某项是否启用。`get_sheet` 是旧 Go 草案留下的内部兼容别名，不是第二个企业微信 API。
 
 `create_smartsheet` 的成功回执必须保留企业微信原始 `docid` 与 `url`，不得以本地规则拼接访问链接。
+
+## 受管应用消息扩展
+
+`send_app_message` 不属于旧 MCP 的 25 项兼容矩阵，也不进入通用 `wecom_api_call`。它只通过独立的
+`wecom_send_app_message` 工具开放：调用方提供一个已启用成员的 `userid`、UTF-8 文本与幂等键；
+GNAS 从同一份加密自建应用凭据注入 `agentid`，MCP 不接受群发、租户、路由、凭据或调用方指定的
+应用身份。只有企业微信返回 `errcode=0`、无无效接收人且存在 `msgid` 时才完成幂等状态。

@@ -29,6 +29,7 @@ type Operation struct {
 // public name get_sheets; both call the same upstream endpoint.
 var Operations = map[string]Operation{
 	"list_employees":       {"GET", "/cgi-bin/user/list?department_id=1&fetch_child=1", "read"},
+	"send_app_message":     {"POST", "/cgi-bin/message/send", "write"},
 	"get_doc_base_info":    {"POST", "/cgi-bin/wedoc/get_doc_base_info", "read"},
 	"get_doc_share_url":    {"POST", "/cgi-bin/wedoc/doc_share", "read"},
 	"get_doc_auth":         {"POST", "/cgi-bin/wedoc/doc_get_auth", "read"},

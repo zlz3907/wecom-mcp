@@ -19,7 +19,7 @@ import (
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/wecom"
 )
 
-const serverVersion = "0.1.1"
+const serverVersion = "0.1.2"
 
 const serverInstructions = "Fixed-tenant Enterprise WeCom Smart Sheet service. Tool visibility and calls are restricted by the authenticated connector role. Before an operator or admin call that needs a human business actor, if the current Enterprise WeCom userid is not explicit in the conversation, ask the user for their name and resolve exactly one active Z-S09 subject. Never use workbuddy-enterprise-connector as a Zoop business actor."
 

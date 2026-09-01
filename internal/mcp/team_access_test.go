@@ -17,6 +17,7 @@ func TestEveryToolHasTeamAccessClassification(t *testing.T) {
 	for name, want := range map[string]ToolAccess{
 		"wecom_record_query":           ToolAccessReader,
 		"wecom_record_apply":           ToolAccessOperator,
+		"wecom_send_app_message":       ToolAccessOperator,
 		"wecom_registry_bootstrap":     ToolAccessAdmin,
 		"wecom_schema_migration_apply": ToolAccessAdmin,
 	} {

@@ -74,6 +74,7 @@ var tools = []tool{
 	{"wecom_field_codec_lab_registry_status", "读取当前字段编码验证表在 SMART_SHEETS_IDS 中的登记状态与线上登记表字段，不修改任何企业微信数据。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_field_codec_lab_register", "将已创建的字段编码验证表按固定 SMART_SHEETS_IDS 规范登记为 active；仅允许当前实例创建的实验表，登记后回读核验。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_api_call", "调用当前固定租户的旧 MCP 全量企业微信 API 契约。operation 必须在实例 API 白名单内；不会接受租户、地址或凭据路由字段。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"operation", "payload"}, "properties": map[string]any{"operation": map[string]any{"type": "string", "enum": legacyOperations()}, "payload": map[string]any{"type": "object"}}}},
+	{"wecom_send_app_message", "使用当前固定租户的企业微信自建应用向一个启用成员发送文本消息。调用方只能提供 recipient_userid、文本和幂等键；agentid、凭据、租户及路由均由服务器管理。禁止群发，企业微信成功回执后才完成幂等状态。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"recipient_userid", "text", "idempotency_key"}, "properties": map[string]any{"recipient_userid": map[string]any{"type": "string", "minLength": 1, "maxLength": 64}, "text": map[string]any{"type": "string", "minLength": 1, "maxLength": 2048}, "idempotency_key": map[string]any{"type": "string", "minLength": 16, "maxLength": 256}}}},
 	{"wecom_record_read", "从当前固定企业微信实例的指定 Zoop 表读取记录。调用方不能指定租户、文档或子表标识。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"target_role"}, "properties": map[string]any{"target_role": map[string]any{"type": "string", "enum": []string{"Z-S01", "Z-S02", "Z-S03", "Z-S04", "Z-S05", "Z-S06", "Z-S07", "Z-S08", "Z-S09"}}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 200}}}},
 	{"wecom_record_query", "固定租户的只读精确查询：支持 record_id、受控字段过滤、排序、offset 分页、字段投影和紧凑结果。调用方不能指定租户、文档或子表标识。", recordQueryToolSchema()},
 	{"wecom_record_apply", "向当前固定企业微信实例的 Zoop 表写入已由字段验证表证明的字段类型，并完成一次回读。新建 S01 自动将四个任务计数字段初始化为 0；S03 新增或更新回读成功后自动重算关联 S01 的当前、完成和阻塞任务数。字段、租户、文档和子表均不可由调用方指定；附件和系统自动字段仍会拒绝写入。关联字段对调用方只接受受控 {record_id} 对象数组，发送企业微信前编译为已验证的 record_id 字符串数组。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"target_role", "operation", "idempotency_key", "source_revision", "records"}, "properties": map[string]any{"target_role": map[string]any{"type": "string", "enum": []string{"Z-S01", "Z-S02", "Z-S03", "Z-S04", "Z-S05", "Z-S06", "Z-S07", "Z-S08", "Z-S09"}}, "operation": map[string]any{"type": "string", "enum": []string{"add_records", "update_records"}}, "idempotency_key": map[string]any{"type": "string", "minLength": 16, "maxLength": 256}, "source_revision": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "records": map[string]any{"type": "array", "minItems": 1, "maxItems": 50, "items": map[string]any{"type": "object"}}}}},
@@ -256,6 +257,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 	}
 	if name == "wecom_api_call" {
 		return s.genericAPICall(ctx, runtime, client, raw)
+	}
+	if name == "wecom_send_app_message" {
+		return s.sendApplicationMessage(ctx, runtime, client, raw)
 	}
 	schema, err := config.LoadSchema(runtime.SchemaMirrorPath)
 	if err != nil {

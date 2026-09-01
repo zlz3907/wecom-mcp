@@ -43,6 +43,7 @@ var teamToolAccess = map[string]ToolAccess{
 	"wecom_field_codec_lab_registry_status":       ToolAccessReader,
 	"wecom_field_codec_lab_register":              ToolAccessAdmin,
 	"wecom_api_call":                              ToolAccessAdmin,
+	"wecom_send_app_message":                      ToolAccessOperator,
 	"wecom_record_read":                           ToolAccessReader,
 	"wecom_record_query":                          ToolAccessReader,
 	"wecom_record_apply":                          ToolAccessOperator,
