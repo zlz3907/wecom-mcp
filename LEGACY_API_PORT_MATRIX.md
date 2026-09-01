@@ -42,3 +42,9 @@
 `wecom_send_app_message` 工具开放：调用方提供一个已启用成员的 `userid`、UTF-8 文本与幂等键；
 GNAS 从同一份加密自建应用凭据注入 `agentid`，MCP 不接受群发、租户、路由、凭据或调用方指定的
 应用身份。只有企业微信返回 `errcode=0`、无无效接收人且存在 `msgid` 时才完成幂等状态。
+
+图片和普通文件通过独立的 `wecom_send_app_media_message` 工具开放，不进入通用
+`wecom_api_call`。调用方提供一个启用成员 `userid`、`image|file`、安全文件名、规范 Base64、
+内容 SHA-256 与幂等键；MCP 通过 GNAS 受管 multipart 执行器调用 `/cgi-bin/media/upload`，取得
+有效 `media_id` 后再调用 `/cgi-bin/message/send`。上传或发送结果不确定时保留幂等占位，禁止
+盲目重试。该工具不接受 URL、部门、标签、群聊或全员目标。

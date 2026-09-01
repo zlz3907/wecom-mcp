@@ -49,6 +49,7 @@ var teamToolAccess = map[string]ToolAccess{
 	"wecom_identity_binding_confirm":              ToolAccessOperator,
 	"wecom_identity_binding_status":               ToolAccessReader,
 	"wecom_send_app_message":                      ToolAccessOperator,
+	"wecom_send_app_media_message":                ToolAccessOperator,
 	"wecom_record_read":                           ToolAccessReader,
 	"wecom_record_query":                          ToolAccessReader,
 	"wecom_record_apply":                          ToolAccessOperator,

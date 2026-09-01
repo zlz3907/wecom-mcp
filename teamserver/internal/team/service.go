@@ -19,7 +19,7 @@ import (
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/wecom"
 )
 
-const serverVersion = "0.1.4"
+const serverVersion = "0.1.5"
 
 const serverInstructions = "Fixed-tenant Enterprise WeCom Smart Sheet service. WorkBuddy Enterprise uses one organization credential, so it is never a human identity. Before every operator or admin tool call, use an active identity_binding_id that resolves to one verified Enterprise WeCom member and one unique Z-S09 personnel subject. The server separately supplies its configured Z-S09 AI execution subject; never substitute the human initiator for the AI executor or the connector credential for either subject. If no binding is available in the current conversation, ask the user for their exact Enterprise WeCom directory name, call wecom_identity_binding_start, ask for the 6-digit code delivered by the self-built application, and call wecom_identity_binding_confirm. Preserve the returned binding handle in subsequent tool arguments. Rebinding uses wecom_identity_binding_start with current_binding_id. Never use workbuddy-enterprise-connector, the shared API key, or an unverified name/userid as a Zoop business actor."
 
@@ -81,7 +81,7 @@ func (s *Service) Handler(verifier sdkauth.TokenVerifier) http.Handler {
 	}, &sdkmcp.StreamableHTTPOptions{
 		Stateless:                    true,
 		JSONResponse:                 true,
-		MaxRequestBodyBytes:          2 << 20,
+		MaxRequestBodyBytes:          30 << 20,
 		PropagateRequestCancellation: true,
 		CrossOriginProtection:        &http.CrossOriginProtection{},
 		Logger:                       s.logger,

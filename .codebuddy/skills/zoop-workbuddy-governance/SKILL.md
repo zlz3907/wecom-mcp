@@ -20,6 +20,7 @@ Read [references/actor-and-authorization.md](references/actor-and-authorization.
 
 - For project, requirement, task, decision, audit, schedule, session, Schema-contract, or subject routing, read [references/nine-table-routing.md](references/nine-table-routing.md).
 - For requirement lifecycle, planning, execution, verification, review, recovery, handoff, or Owner acceptance, read [references/governance-workflow.md](references/governance-workflow.md).
+- For an explicitly authorized Enterprise WeCom application message, read [references/app-messages.md](references/app-messages.md). Never infer notification authorization from a record write, task assignment, or the word "continue".
 - For a simple read-only status request, query only the required tables and paginate until the returned record set is complete. State the scope before making a whole-table claim.
 
 ## Common invariants
@@ -28,7 +29,7 @@ Read [references/actor-and-authorization.md](references/actor-and-authorization.
 - Search for an existing record by stable business key, project, source, and normalized title before creating one. Update the same record when it already exists.
 - Distinguish registration, confirmation, planning authorization, execution authorization, verification, review, and Owner acceptance. One stage never implies the next.
 - Use `wecom_record_apply` for record mutations and immediately read back the same record. Report `applied_readback_pending` or `applied_progress_sync_pending` as pending recovery, not success, and never replay the original mutation blindly.
-- Do not modify Schema, deploy software, change production configuration, send external messages, schedule recurring work, or approve a decision unless the user has authorized that action in the current scope.
+- Do not modify Schema, deploy software, change production configuration, send external messages, schedule recurring work, or approve a decision unless the user has authorized that action in the current scope. Application messages may target only one enabled member; never synthesize a broadcast, department, tag, or group target.
 - A Skill guides behavior but is not a security boundary. Preserve all MCP identity, capability, allowlist, idempotency, and readback checks.
 
 ## Finish with evidence

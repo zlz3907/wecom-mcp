@@ -72,6 +72,11 @@ OIDC 访问令牌必须满足：
 文本消息，禁止 `@all`；`agentid` 由 GNAS 从受保护的自建应用凭据注入。调用必须提供稳定幂等键，
 仅在企业微信返回有效 `msgid` 后标记完成。
 
+`wecom_send_app_media_message` 同样属于 operator 能力。它只允许向一个启用成员发送 JPG/PNG 图片
+或普通文件，调用方提供规范 Base64、内容 SHA-256、文件名和稳定幂等键。MCP 先通过 GNAS 受管
+multipart 执行器上传临时素材，再使用返回的 `media_id` 发送消息；不接受 URL、部门、标签、群聊
+或 `@all`，也不向调用方暴露凭据和 `agentid`。图片上限 10 MiB，普通文件上限 20 MiB。
+
 身份绑定工具为 `wecom_identity_binding_start`、`wecom_identity_binding_confirm`、
 `wecom_identity_binding_status`。服务器只持久化验证码 HMAC 摘要和绑定句柄的 SHA-256 查找键，
 不保存或返回验证码原文；状态文件以 0600 原子写入实例 data 目录。
