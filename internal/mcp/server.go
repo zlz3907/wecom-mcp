@@ -30,6 +30,7 @@ type Server struct {
 	previews            map[string]initializePreview
 	initializeCatalog   func() (zoopschema.Catalog, error)
 	initializeLocalUser func() (string, error)
+	identityCandidate   func(context.Context, config.Config, wecomRequester, string) (verifiedIdentity, error)
 }
 
 func New(configPath string) *Server { return &Server{store: config.NewStore(configPath)} }
@@ -74,6 +75,9 @@ var tools = []tool{
 	{"wecom_field_codec_lab_registry_status", "读取当前字段编码验证表在 SMART_SHEETS_IDS 中的登记状态与线上登记表字段，不修改任何企业微信数据。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_field_codec_lab_register", "将已创建的字段编码验证表按固定 SMART_SHEETS_IDS 规范登记为 active；仅允许当前实例创建的实验表，登记后回读核验。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_api_call", "调用当前固定租户的旧 MCP 全量企业微信 API 契约。operation 必须在实例 API 白名单内；不会接受租户、地址或凭据路由字段。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"operation", "payload"}, "properties": map[string]any{"operation": map[string]any{"type": "string", "enum": legacyOperations()}, "payload": map[string]any{"type": "object"}}}},
+	{"wecom_identity_binding_start", "按企业微信通讯录完整姓名唯一匹配启用员工，并向其企业微信发送一次性验证码。首次绑定不传 current_binding_id；换绑时传当前永久绑定句柄。不会返回验证码。", identityBindingStartToolSchema()},
+	{"wecom_identity_binding_confirm", "用企业微信收到的 6 位验证码确认或换绑身份。成功后返回永久 identity_binding_id；验证码一次性且最多输错 5 次，绑定本身不设过期。", identityBindingConfirmToolSchema()},
+	{"wecom_identity_binding_status", "使用 identity_binding_id 查询已验证企业微信 userid 与唯一 Z-S09 业务主体。不会读取或返回验证码。", identityBindingStatusToolSchema()},
 	{"wecom_send_app_message", "使用当前固定租户的企业微信自建应用向一个启用成员发送文本消息。调用方只能提供 recipient_userid、文本和幂等键；agentid、凭据、租户及路由均由服务器管理。禁止群发，企业微信成功回执后才完成幂等状态。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"recipient_userid", "text", "idempotency_key"}, "properties": map[string]any{"recipient_userid": map[string]any{"type": "string", "minLength": 1, "maxLength": 64}, "text": map[string]any{"type": "string", "minLength": 1, "maxLength": 2048}, "idempotency_key": map[string]any{"type": "string", "minLength": 16, "maxLength": 256}}}},
 	{"wecom_record_read", "从当前固定企业微信实例的指定 Zoop 表读取记录。调用方不能指定租户、文档或子表标识。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"target_role"}, "properties": map[string]any{"target_role": map[string]any{"type": "string", "enum": []string{"Z-S01", "Z-S02", "Z-S03", "Z-S04", "Z-S05", "Z-S06", "Z-S07", "Z-S08", "Z-S09"}}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 200}}}},
 	{"wecom_record_query", "固定租户的只读精确查询：支持 record_id、受控字段过滤、排序、offset 分页、字段投影和紧凑结果。调用方不能指定租户、文档或子表标识。", recordQueryToolSchema()},
@@ -177,7 +181,7 @@ func (s *Server) boundOperatorWrite(ctx context.Context, runtime config.Config, 
 		return nil, err
 	}
 	if output, ok := result.(map[string]any); ok {
-		return withOperatorAudit(output, runtime.WecomOperatorUserID), nil
+		return withOperatorAudit(output, businessActorUserID(ctx, runtime)), nil
 	}
 	return result, nil
 }
@@ -257,6 +261,15 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 	}
 	if name == "wecom_api_call" {
 		return s.genericAPICall(ctx, runtime, client, raw)
+	}
+	if name == "wecom_identity_binding_start" {
+		return s.startIdentityBinding(ctx, runtime, client, raw)
+	}
+	if name == "wecom_identity_binding_confirm" {
+		return s.confirmIdentityBinding(runtime, raw)
+	}
+	if name == "wecom_identity_binding_status" {
+		return s.identityBindingStatus(runtime, raw)
 	}
 	if name == "wecom_send_app_message" {
 		return s.sendApplicationMessage(ctx, runtime, client, raw)
@@ -674,11 +687,16 @@ func (s *Server) apply(ctx context.Context, runtime config.Config, schema config
 	if err != nil {
 		return nil, err
 	}
+	input, err = withVerifiedActorReference(ctx, input)
+	if err != nil {
+		return nil, err
+	}
 	prepared, err := compileRecords(schema, input)
 	if err != nil {
 		return nil, err
 	}
-	digest := requestDigest(input, prepared, runtime.WecomOperatorUserID)
+	businessActor := businessActorUserID(ctx, runtime)
+	digest := requestDigest(input, prepared, businessActor)
 	target, err := wecom.ResolveTarget(ctx, client, runtime.RegistryDocumentID, runtime.RegistryKey, input.TargetRole, runtime.Allows)
 	if err != nil {
 		return nil, err
@@ -701,7 +719,7 @@ func (s *Server) apply(ctx context.Context, runtime config.Config, schema config
 	}
 	// Reserve immediately before the external mutation. Earlier validation,
 	// target resolution, and the S03 pre-write snapshot remain safely retryable.
-	if err := s.reserveWithOperator(runtime.StatePath, input.IdempotencyKey, digest, runtime.WecomOperatorUserID); err != nil {
+	if err := s.reserveWithOperator(runtime.StatePath, input.IdempotencyKey, digest, businessActor); err != nil {
 		return nil, err
 	}
 	result, err := client.Request(ctx, input.Operation, map[string]any{"docid": target.DocumentID, "sheet_id": target.SheetID, "key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID", "records": prepared})
@@ -713,19 +731,19 @@ func (s *Server) apply(ctx context.Context, runtime config.Config, schema config
 	}
 	readback, readbackErr := client.Request(ctx, "get_records", map[string]any{"docid": target.DocumentID, "sheet_id": target.SheetID, "key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID", "limit": 200})
 	if readbackErr != nil || apiError(readback) != nil {
-		return withOperatorAudit(map[string]any{"state": "applied_readback_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false}, runtime.WecomOperatorUserID), nil
+		return withOperatorAudit(map[string]any{"state": "applied_readback_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false}, businessActor), nil
 	}
 	if !verifyReadback(input.Operation, prepared, result, readback) {
 		if referenceReadbackGap(input.Operation, prepared, result, readback) {
 			if input.TargetRole == "Z-S03" {
-				return withOperatorAudit(map[string]any{"state": "applied_progress_sync_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "progress_error": "主需求关联回读不完整，未执行需求进度同步", "write_result": writeSummary(result)}, runtime.WecomOperatorUserID), nil
+				return withOperatorAudit(map[string]any{"state": "applied_progress_sync_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "progress_error": "主需求关联回读不完整，未执行需求进度同步", "write_result": writeSummary(result)}, businessActor), nil
 			}
-			if err := s.completeStateWithOperator(runtime.StatePath, input.IdempotencyKey, digest, runtime.WecomOperatorUserID); err != nil {
-				return withOperatorAudit(map[string]any{"state": "applied_idempotency_completion_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "idempotency_error": err.Error(), "write_result": writeSummary(result)}, runtime.WecomOperatorUserID), nil
+			if err := s.completeStateWithOperator(runtime.StatePath, input.IdempotencyKey, digest, businessActor); err != nil {
+				return withOperatorAudit(map[string]any{"state": "applied_idempotency_completion_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "idempotency_error": err.Error(), "write_result": writeSummary(result)}, businessActor), nil
 			}
-			return withOperatorAudit(map[string]any{"state": "applied_reference_readback_inconclusive", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "write_result": writeSummary(result), "readback_record_count": len(recordsFrom(readback))}, runtime.WecomOperatorUserID), nil
+			return withOperatorAudit(map[string]any{"state": "applied_reference_readback_inconclusive", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "write_result": writeSummary(result), "readback_record_count": len(recordsFrom(readback))}, businessActor), nil
 		}
-		return withOperatorAudit(map[string]any{"state": "applied_readback_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false}, runtime.WecomOperatorUserID), nil
+		return withOperatorAudit(map[string]any{"state": "applied_readback_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false}, businessActor), nil
 	}
 	progressSync, progressErr := s.syncRequirementProgress(ctx, runtime, schema, client, target, input, result, taskReadbackBefore, readback)
 	if progressErr != nil {
@@ -738,12 +756,12 @@ func (s *Server) apply(ctx context.Context, runtime config.Config, schema config
 			"readback_verified": true,
 			"progress_error":    progressErr.Error(),
 			"write_result":      writeSummary(result),
-		}, runtime.WecomOperatorUserID), nil
+		}, businessActor), nil
 	}
-	if err := s.completeStateWithOperator(runtime.StatePath, input.IdempotencyKey, digest, runtime.WecomOperatorUserID); err != nil {
-		return withOperatorAudit(map[string]any{"state": "applied_idempotency_completion_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "idempotency_error": err.Error(), "write_result": writeSummary(result)}, runtime.WecomOperatorUserID), nil
+	if err := s.completeStateWithOperator(runtime.StatePath, input.IdempotencyKey, digest, businessActor); err != nil {
+		return withOperatorAudit(map[string]any{"state": "applied_idempotency_completion_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "idempotency_error": err.Error(), "write_result": writeSummary(result)}, businessActor), nil
 	}
-	response := map[string]any{"state": "applied", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "write_result": writeSummary(result), "readback_record_count": len(recordsFrom(readback)), "business_operator_userid": runtime.WecomOperatorUserID, "native_api_actor": "application"}
+	response := map[string]any{"state": "applied", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "write_result": writeSummary(result), "readback_record_count": len(recordsFrom(readback)), "business_operator_userid": businessActor, "native_api_actor": "application"}
 	if progressSync != nil {
 		response["requirement_progress_sync"] = progressSync
 	}

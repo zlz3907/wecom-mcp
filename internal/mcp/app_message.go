@@ -44,17 +44,18 @@ func (s *Server) sendApplicationMessage(ctx context.Context, runtime config.Conf
 		return nil, fmt.Errorf("recipient_userid 未在当前固定租户员工目录中唯一启用")
 	}
 
+	businessActor := businessActorUserID(ctx, runtime)
 	digestData, _ := json.Marshal(map[string]any{
 		"operation":                "send_app_message",
 		"recipient_userid":         input.RecipientUserID,
 		"text":                     input.Text,
 		"idempotency_key":          input.IdempotencyKey,
-		"business_operator_userid": runtime.WecomOperatorUserID,
+		"business_operator_userid": businessActor,
 		"native_api_actor":         "application",
 	})
 	digestSum := sha256.Sum256(digestData)
 	digest := hex.EncodeToString(digestSum[:])
-	if err := s.reserveWithOperator(runtime.StatePath, input.IdempotencyKey, digest, runtime.WecomOperatorUserID); err != nil {
+	if err := s.reserveWithOperator(runtime.StatePath, input.IdempotencyKey, digest, businessActor); err != nil {
 		return nil, err
 	}
 
@@ -73,7 +74,7 @@ func (s *Server) sendApplicationMessage(ctx context.Context, runtime config.Conf
 	if err != nil {
 		return nil, fmt.Errorf("企业微信消息发送未取得成功回执，保留幂等状态: %w", err)
 	}
-	if err := s.completeStateWithOperator(runtime.StatePath, input.IdempotencyKey, digest, runtime.WecomOperatorUserID); err != nil {
+	if err := s.completeStateWithOperator(runtime.StatePath, input.IdempotencyKey, digest, businessActor); err != nil {
 		return withOperatorAudit(map[string]any{
 			"state":             "sent_idempotency_completion_pending",
 			"idempotency_key":   input.IdempotencyKey,
@@ -82,7 +83,7 @@ func (s *Server) sendApplicationMessage(ctx context.Context, runtime config.Conf
 			"recipient_userid":  input.RecipientUserID,
 			"message_id":        receipt["message_id"],
 			"idempotency_error": err.Error(),
-		}, runtime.WecomOperatorUserID), nil
+		}, businessActor), nil
 	}
 	return withOperatorAudit(map[string]any{
 		"state":            "sent",
@@ -91,7 +92,7 @@ func (s *Server) sendApplicationMessage(ctx context.Context, runtime config.Conf
 		"receipt_verified": true,
 		"recipient_userid": input.RecipientUserID,
 		"message_id":       receipt["message_id"],
-	}, runtime.WecomOperatorUserID), nil
+	}, businessActor), nil
 }
 
 func validMessageRecipient(value string) bool {

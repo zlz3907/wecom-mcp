@@ -1,13 +1,11 @@
 # 企业微信主体绑定边界
 
-WorkBuddy 企业自定义连接器的 API Key 是统一连接器服务身份，不能标识某次 MCP 调用属于哪位成员。它只能保护 gmzoop 测试服务并限制为 reader，不能用于 Zoop 的业务主体归属或逐人 MCP 授权。
+WorkBuddy 企业自定义连接器的 API Key 是统一连接器服务身份，不能标识某次 MCP 调用属于哪位成员，也不能直接写入 Zoop 的业务主体字段。当前 gmzoop 采用企业微信自建应用消息验证码完成业务主体绑定，不依赖网页授权或 OIDC：
 
-企业微信自建应用网页授权可以在用户完成企业微信授权后返回企业内唯一 `userid`。因此第二阶段应采用“首次绑定、后续显式选用”的业务流程：
+1. 首次使用 operator/admin 工具时，WorkBuddy 询问用户的企业微信通讯录完整姓名。
+2. `wecom_identity_binding_start` 必须唯一匹配一个启用的通讯录成员，以及 Z-S09 中唯一绑定该 `userid` 的主体记录；任一不唯一都失败关闭。
+3. 自建应用向该 `userid` 单发 6 位验证码。服务端只保存 HMAC 摘要，不保存、记录或返回验证码原文。
+4. `wecom_identity_binding_confirm` 成功后启用永久绑定句柄。验证码一次性、最多输错 5 次；绑定不设过期。换绑必须持有当前句柄，新验证码确认前旧身份继续有效。
+5. 团队 HTTP 入口的 operator/admin 工具每次调用都验证句柄；记录新增时将已验证的 Z-S09 主体自动写入规定的发起/操作主体字段，不能由调用参数冒充。
 
-1. 用户在企业微信授权页面完成自建应用的网页授权；回调端仅兑换一次性 code 并验证 `userid`，不把 code、CorpSecret 或 access token 回传给 WorkBuddy。
-2. 服务端创建或回读 Z-S09 协作主体，将 `userid` 只以受保护的稳定绑定键关联；业务记录保存的是 Zoop 主体引用，不保存 token。
-3. WorkBuddy 会话显式选择已绑定主体后，需求创建、任务分配等业务工具才可使用该主体。Connector API Key 仍只代表连接器，不代表该主体。
-
-在没有 WorkBuddy 逐用户已验证请求身份的情况下，这一绑定只解决业务归属和审计提示，不得当作用户级访问授权。若要让 `mcp_user_authorizations` 按人强制执行，仍需 WorkBuddy MCP OAuth 2.1 加外部授权服务器，或由可信网关转发可验证的成员身份。
-
-部署前必须由企业微信管理员配置自建应用的网页授权可信域名和服务器可信 IP；实际 OAuth 回调、CorpID、AgentId、Secret 仅通过受保护服务器配置注入。
+这一机制用于业务归属和审计，不等于逐用户访问授权：共享 Connector API Key 仍决定连接器角色。若未来需要通过 `mcp_user_authorizations` 对每个成员分别授予工具权限，仍需 WorkBuddy MCP OAuth 2.1 或可信网关向上游传递可验证的稳定成员身份。

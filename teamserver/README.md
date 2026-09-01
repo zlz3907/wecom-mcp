@@ -8,7 +8,7 @@
 flowchart TB
     WorkBuddy[WorkBuddy 企业连接器] -->|HTTPS + Connector API Key| Proxy[Nginx mcp.jyiai.com/gmzoop]
     Proxy -->|保留 Authorization| TeamMCP[wecom-mcp-team /mcp]
-    TeamMCP -->|连接器服务身份与只读门禁| TeamMCP
+    TeamMCP -->|连接器角色与验证码主体绑定门禁| TeamMCP
     TeamMCP -->|服务器持有 GNAS 应用身份| GNAS[GNAS]
     GNAS --> WeCom[企业微信智能表格]
 ```
@@ -24,9 +24,9 @@ flowchart TB
 
 当前 `deploy/gmzoop.env.example` 是固定连接器模式：在 WorkBuddy 企业后台创建自定义连接器，认证方式选择 **API Key**，Header Name 填 `Authorization`，Header Value 填 `Bearer <与服务器受保护环境相同的值>`，MCP Server URL 填 `https://mcp.jyiai.com/gmzoop/mcp`。示例把 `TEAM_MCP_CONNECTOR_ROLE` 设为 `admin`，暴露当前二进制实现的全部 MCP 工具；不发布 OAuth metadata，且拒绝同时启用 `TEAM_MCP_USER_AUTHZ_ENABLED=true`。固定租户、Schema、幂等、写后回读和 API 白名单继续生效。
 
-这是连接器服务身份，不是用户登录或逐人授权。审计会记录为 `workbuddy-enterprise-connector`，不能把它写入 Zoop 的“需求提出主体”等业务字段。真实业务主体由会话声明并从 Z-S09 核对；该结果用于业务归属，不构成逐用户访问授权。
+这是连接器服务身份，不是用户登录或逐人授权。它不能写入 Zoop 的“需求提出主体”等业务字段。operator/admin 工具必须另外提供永久 `identity_binding_id`：首次使用时，WorkBuddy 询问企业微信通讯录完整姓名，`wecom_identity_binding_start` 唯一匹配启用成员与 Z-S09 主体，并由自建应用向该成员发送 6 位验证码；`wecom_identity_binding_confirm` 验证成功后生成绑定。验证码一次性、最多输错 5 次；绑定本身不设有效期，并支持持有原句柄时换绑。
 
-当前简化运行约定是不做验证码绑定：当 operator/admin 操作需要业务主体且会话中没有明确企业微信 userid 时，MCP 初始化指令要求 WorkBuddy 先询问姓名，再从 Z-S09 唯一匹配一条启用主体；同名或未命中时停止并继续询问，不能把连接器服务身份当成业务主体。
+绑定句柄只解决当前业务操作属于谁以及 Zoop 主体自动归属，不会把共享 Connector API Key 升格为逐用户访问授权。所有 operator/admin 工具在团队 HTTP 传输上都校验绑定；只读工具不要求绑定。`wecom_record_apply` 新建 Z-S01、Z-S02、Z-S04、Z-S05、Z-S06 记录时会自动注入对应的已验证 Z-S09 主体字段，显式提交不同主体会被拒绝。
 
 ## OIDC / 用户授权候选边界
 
@@ -71,6 +71,10 @@ OIDC 访问令牌必须满足：
 `wecom_send_app_message` 属于 operator 能力。它只允许向一个当前员工目录中的启用 `userid` 发送
 文本消息，禁止 `@all`；`agentid` 由 GNAS 从受保护的自建应用凭据注入。调用必须提供稳定幂等键，
 仅在企业微信返回有效 `msgid` 后标记完成。
+
+身份绑定工具为 `wecom_identity_binding_start`、`wecom_identity_binding_confirm`、
+`wecom_identity_binding_status`。服务器只持久化验证码 HMAC 摘要和绑定句柄的 SHA-256 查找键，
+不保存或返回验证码原文；状态文件以 0600 原子写入实例 data 目录。
 
 角色和 access-token 类型 claim 支持点路径，例如 `realm_access.roles`。OIDC 提供方必须签发 JWT access token，并提供标准 discovery/JWKS；部署前必须按该 IdP 的真实 access-token claim 设置 discriminator。ID token、本地自签共享 Token、空 `sub` 均默认拒绝。
 

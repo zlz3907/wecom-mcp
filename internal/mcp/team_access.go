@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/zhonglizhi/wecom-mcp-v2/internal/config"
 )
 
 // ToolAccess is the minimum team role required to discover and call a tool.
@@ -43,6 +45,9 @@ var teamToolAccess = map[string]ToolAccess{
 	"wecom_field_codec_lab_registry_status":       ToolAccessReader,
 	"wecom_field_codec_lab_register":              ToolAccessAdmin,
 	"wecom_api_call":                              ToolAccessAdmin,
+	"wecom_identity_binding_start":                ToolAccessOperator,
+	"wecom_identity_binding_confirm":              ToolAccessOperator,
+	"wecom_identity_binding_status":               ToolAccessReader,
 	"wecom_send_app_message":                      ToolAccessOperator,
 	"wecom_record_read":                           ToolAccessReader,
 	"wecom_record_query":                          ToolAccessReader,
@@ -62,10 +67,20 @@ func ToolDefinitions() ([]ToolDefinition, error) {
 		if !ok {
 			return nil, fmt.Errorf("工具 %s 缺少团队权限分类", item.Name)
 		}
+		inputSchema := item.InputSchema
+		description := item.Description
+		if requiresTeamIdentityBinding(item.Name, access) {
+			var err error
+			inputSchema, err = identityBoundToolSchema(item.InputSchema)
+			if err != nil {
+				return nil, fmt.Errorf("工具 %s 身份绑定参数注入失败", item.Name)
+			}
+			description += " 远程团队调用必须提供已完成企业微信验证码验证的 identity_binding_id；缺失时先调用 wecom_identity_binding_start 与 wecom_identity_binding_confirm。"
+		}
 		definitions = append(definitions, ToolDefinition{
 			Name:        item.Name,
-			Description: item.Description,
-			InputSchema: item.InputSchema,
+			Description: description,
+			InputSchema: inputSchema,
 			Access:      access,
 		})
 	}
@@ -75,5 +90,87 @@ func ToolDefinitions() ([]ToolDefinition, error) {
 // CallTool lets an additional MCP transport reuse the same fixed-tenant
 // business implementation as stdio without bypassing its validation.
 func (s *Server) CallTool(ctx context.Context, name string, arguments json.RawMessage) (any, error) {
-	return s.call(ctx, name, arguments)
+	access, classified := teamToolAccess[name]
+	if !classified {
+		return nil, fmt.Errorf("未知或未分类工具: %s", name)
+	}
+	if !requiresTeamIdentityBinding(name, access) {
+		return s.call(ctx, name, arguments)
+	}
+	runtime, err := s.store.Current()
+	if err != nil {
+		return nil, err
+	}
+	identity, cleaned, err := s.verifyAndStripTeamIdentityBinding(runtime, arguments)
+	if err != nil {
+		return nil, err
+	}
+	ctx = context.WithValue(ctx, verifiedIdentityContextKey{}, identity)
+	value, err := s.call(ctx, name, cleaned)
+	if err != nil {
+		return nil, err
+	}
+	if output, ok := value.(map[string]any); ok {
+		output["verified_actor_userid"] = identity.UserID
+		output["verified_actor_name"] = identity.DisplayName
+		output["verified_actor_subject_record_id"] = identity.SubjectRecordID
+		output["identity_binding_verified"] = true
+	}
+	return value, nil
+}
+
+func requiresTeamIdentityBinding(name string, access ToolAccess) bool {
+	if access == ToolAccessReader {
+		return false
+	}
+	return name != "wecom_identity_binding_start" && name != "wecom_identity_binding_confirm"
+}
+
+func identityBoundToolSchema(schema any) (any, error) {
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		return nil, err
+	}
+	var object map[string]any
+	if json.Unmarshal(encoded, &object) != nil || object["type"] != "object" {
+		return nil, fmt.Errorf("tool schema is not an object")
+	}
+	properties, ok := object["properties"].(map[string]any)
+	if !ok {
+		properties = map[string]any{}
+		object["properties"] = properties
+	}
+	properties[identityBindingArgument] = map[string]any{
+		"type": "string", "minLength": 32, "maxLength": 128,
+		"description": "企业微信验证码确认后得到的永久绑定句柄；不可使用团队 API Key、姓名或 userid 代替。",
+	}
+	required, _ := object["required"].([]any)
+	for _, item := range required {
+		if item == identityBindingArgument {
+			return object, nil
+		}
+	}
+	object["required"] = append(required, identityBindingArgument)
+	return object, nil
+}
+
+func (s *Server) verifyAndStripTeamIdentityBinding(runtime config.Config, arguments json.RawMessage) (verifiedIdentity, json.RawMessage, error) {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(arguments, &object) != nil || object == nil {
+		return verifiedIdentity{}, nil, fmt.Errorf("工具参数必须是对象")
+	}
+	var bindingID string
+	if json.Unmarshal(object[identityBindingArgument], &bindingID) != nil {
+		return verifiedIdentity{}, nil, fmt.Errorf("远程写入前必须先完成企业微信身份绑定")
+	}
+	identity, _, err := s.resolveIdentityBinding(runtime, bindingID)
+	if err != nil {
+		return verifiedIdentity{}, nil, err
+	}
+	delete(object, identityBindingArgument)
+	cleaned, err := json.Marshal(object)
+	if err != nil {
+		return verifiedIdentity{}, nil, fmt.Errorf("清理身份绑定参数失败")
+	}
+	return identity, cleaned, nil
 }
