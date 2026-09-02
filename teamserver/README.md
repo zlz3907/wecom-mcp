@@ -45,7 +45,7 @@ feature flag 开启时，MCP 从 `GNAS_BASE_URL` 推导同源的 Service JWT 与
 | 端点 | 认证 | 用途 |
 | --- | --- | --- |
 | `POST /mcp` | Connector API Key 或 OIDC Bearer Token | 官方 Streamable HTTP MCP；JSON 或客户端声明的标准响应 |
-| `GET /.well-known/oauth-protected-resource` | 无 | 仅 OIDC 模式提供 RFC 9728 OAuth 资源发现 |
+| `GET /.well-known/oauth-protected-resource` | 无 | OIDC 与 OAuth 2.1 模式提供 RFC 9728 OAuth 资源发现 |
 | `GET /healthz` | 无 | 进程存活检查，不访问 GNAS |
 | `GET /readyz` | 无 | 实例配置、Schema 和 GNAS 环境结构检查；不访问远端或返回租户信息 |
 
