@@ -4,6 +4,14 @@
 
 面向国脉爱特团队共享、服务器部署和 WorkBuddy 远程接入的 Streamable HTTP 版本位于 [teamserver/README.md](teamserver/README.md)。它使用独立 Go 模块和服务端 OIDC，不改变本地 stdio 安装方式。
 
+已经获得 gmzoop 使用权限的员工，不需要安装本地二进制或重复初始化实例。将下面一句话交给当前客户端中的 Agent，它会识别 WorkBuddy、Codex、TRAE、CodeBuddy 或其他远程 MCP 客户端，先完成无密钥配置，再引导用户到正确的安全位置填写 Key：
+
+```text
+请为当前客户端配置 gmzoop 远程 MCP，并严格执行：https://raw.githubusercontent.com/zlz3907/wecom-mcp/main/GMZOOP_REMOTE_SETUP_PROMPT.md
+```
+
+完整安全边界和分客户端指引见 [gmzoop 远程 MCP 单 Prompt 配置](GMZOOP_REMOTE_SETUP_PROMPT.md)。WorkBuddy 推荐由企业管理员一次性填写并发布 Connector Key，普通员工只完成个人企业微信身份绑定，不应接触共享 Key。
+
 安装后，Codex 或 TRAE 可以用自然语言查询 Zoop 的需求、任务等记录，也可以在明确指令下受控维护记录。它适合已经使用 Zoop 管理研发工作，希望直接在 AI 客户端里查看和更新企业微信智能表格的个人或团队。
 
 ## 非技术用户自动安装

@@ -111,6 +111,8 @@ systemd 模板把 `/home/product/services/mcp/wecom` 设为只读，仅允许当
 
 ## WorkBuddy 配置
 
+非技术用户和其他受支持客户端可直接使用仓库根目录的 [gmzoop 远程 MCP 单 Prompt 配置](../GMZOOP_REMOTE_SETUP_PROMPT.md)。该流程只配置已经部署的远程实例，不安装本地二进制，也不会再次初始化实例。
+
 优先在 WorkBuddy 的团队 MCP 管理界面添加远程 MCP：
 
 ```json
