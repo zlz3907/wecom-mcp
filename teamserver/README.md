@@ -30,6 +30,8 @@ flowchart TB
 
 ## OIDC / 用户授权候选边界
 
+新增的 `oauth21` 候选模式用于“用户只填 MCP URL”的登录体验：客户端从 RFC 9728 资源元数据发现 GNAS，浏览器完成企业微信登录；客户端不填写 API Key、员工 userid 或绑定记录 ID。gmzoop 作为机密资源服务器对每个 MCP 请求调用 GNAS introspection，不缓存授权结果，并只暴露该员工当前 `effective_tools`。授权撤销会在下一次请求立即生效。候选环境模板见 [`deploy/gmzoop.oauth21.env.example`](deploy/gmzoop.oauth21.env.example)。现有 `connector_api_key` 模式仍保留，未经生产审批不会自动切换。
+
 启用 `TEAM_MCP_AUTH_MODE=oidc` 后，可使用 `TEAM_MCP_USER_AUTHZ_ENABLED` 门禁和与 GNAS 存储实现解耦的 `AuthorizationResolver`。它从同一组 `GNAS_BASE_URL`、`GNAS_APP_ID`、`GNAS_APP_SECRET` 推导两个固定 GNAS 服务地址并取得短期 Service JWT，不再重复配置第二组应用凭据。`app_info` 仍是应用身份和服务路由授权的权威来源；逐用户 MCP 工具授权仍由 `mcp_user_authorizations` 经 `ResolveAuthorizationV1` 返回，二者不能互相替代。
 
 门禁开启后，MCP 必须取得唯一、大小写敏感的企业微信 `userid`，并以固定 `tenant + userid + resource` 查询授权。归一化决策包含 `active`、`effective_tools`、`effective_scopes`、`policy_version`；`tools=["*"]` 只展开为当前二进制公开的工具目录，且继续与静态 reader/operator/admin 角色取交集。`tools/list` 过滤发现列表，`tools/call` 在每次 HTTP 请求重新执行同一授权边界。

@@ -13,6 +13,7 @@ const (
 	RoleReader   Role = "reader"
 	RoleOperator Role = "operator"
 	RoleAdmin    Role = "admin"
+	RolePolicy   Role = "policy"
 )
 
 func roleRank(role Role) int {
@@ -21,7 +22,7 @@ func roleRank(role Role) int {
 		return 1
 	case RoleOperator:
 		return 2
-	case RoleAdmin:
+	case RoleAdmin, RolePolicy:
 		return 3
 	default:
 		return 0

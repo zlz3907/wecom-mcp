@@ -23,6 +23,8 @@ const serverVersion = "0.1.5"
 
 const serverInstructions = "Fixed-tenant Enterprise WeCom Smart Sheet service. WorkBuddy Enterprise uses one organization credential, so it is never a human identity. Before every operator or admin tool call, use an active identity_binding_id that resolves to one verified Enterprise WeCom member and one unique Z-S09 personnel subject. The server separately supplies its configured Z-S09 AI execution subject; never substitute the human initiator for the AI executor or the connector credential for either subject. If no binding is available in the current conversation, ask the user for their exact Enterprise WeCom directory name, call wecom_identity_binding_start, ask for the 6-digit code delivered by the self-built application, and call wecom_identity_binding_confirm. Preserve the returned binding handle in subsequent tool arguments. Rebinding uses wecom_identity_binding_start with current_binding_id. Never use workbuddy-enterprise-connector, the shared API key, or an unverified name/userid as a Zoop business actor."
 
+const oauth21ServerInstructions = "Fixed-tenant Enterprise WeCom MCP authenticated by GNAS OAuth 2.1. The browser login already resolves the current Enterprise WeCom employee and the server exposes only that employee's current authorized tools. Never ask the user for an API key, userid, identity_binding_id, verification code, tenant key, resource-server credential, or GNAS secret. Do not call identity-binding tools merely to authenticate this session. The configured Z-S09 AI execution subject remains separate from the verified human initiator; never substitute one for the other. If a tool is absent, treat it as not currently authorized and do not attempt to bypass the policy."
+
 type Service struct {
 	config                Config
 	legacy                *legacymcp.Server
@@ -33,6 +35,7 @@ type Service struct {
 	servers               map[string]*sdkmcp.Server
 	toolSlots             chan struct{}
 	authorizationResolver AuthorizationResolver
+	instructions          string
 }
 
 func NewService(cfg Config, logger *slog.Logger) (*Service, error) {
@@ -55,9 +58,13 @@ func newService(cfg Config, logger *slog.Logger, resolver AuthorizationResolver)
 		return nil, err
 	}
 	if cfg.UserAuthorizationEnabled {
-		if resolver == nil {
+		if resolver == nil && cfg.AuthenticationMode != AuthenticationModeOAuth21 {
 			return nil, fmt.Errorf("user authorization is enabled but the GNAS resolver adapter is not configured")
 		}
+	}
+	instructions := serverInstructions
+	if cfg.AuthenticationMode == AuthenticationModeOAuth21 {
+		instructions = oauth21ServerInstructions
 	}
 	return &Service{
 		config:                cfg,
@@ -68,6 +75,7 @@ func newService(cfg Config, logger *slog.Logger, resolver AuthorizationResolver)
 		servers:               make(map[string]*sdkmcp.Server),
 		toolSlots:             make(chan struct{}, cfg.MaxConcurrentTools),
 		authorizationResolver: resolver,
+		instructions:          instructions,
 	}, nil
 }
 
@@ -147,7 +155,7 @@ func (s *Service) serverForTools(role Role, authorized map[string]bool) *sdkmcp.
 		Name:    "guomai-aite-wecom-team-mcp",
 		Version: serverVersion,
 	}, &sdkmcp.ServerOptions{
-		Instructions: serverInstructions,
+		Instructions: s.instructions,
 		Logger:       s.logger,
 	})
 	for _, definition := range s.definitions {
@@ -239,6 +247,23 @@ func (s *Service) authorizationMiddleware(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		info := sdkauth.TokenInfoFromContext(r.Context())
+		if s.config.AuthenticationMode == AuthenticationModeOAuth21 {
+			decision, err := authorizationFromOAuth21TokenInfo(info, s.config, time.Now().UTC())
+			if err != nil {
+				s.auditor.Authorization(r.Context(), AuthorizationDecision{}, err)
+				http.Error(w, "user authorization denied", http.StatusForbidden)
+				return
+			}
+			tools, err := authorizedToolSet(decision, s.definitions, s.config.RequiredScopes)
+			s.auditor.Authorization(r.Context(), decision, err)
+			if err != nil {
+				http.Error(w, "user authorization denied", http.StatusForbidden)
+				return
+			}
+			value := requestAuthorization{decision: decision, tools: tools}
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestAuthorizationKey{}, value)))
+			return
+		}
 		userid, assertion, ok := authorizationIdentityFromTokenInfo(info)
 		if !ok {
 			s.auditor.Authorization(r.Context(), AuthorizationDecision{}, fmt.Errorf("mapped enterprise WeCom userid and principal assertion required"))
@@ -263,6 +288,33 @@ func (s *Service) authorizationMiddleware(next http.Handler) http.Handler {
 		value := requestAuthorization{decision: decision, tools: tools}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestAuthorizationKey{}, value)))
 	})
+}
+
+func authorizationFromOAuth21TokenInfo(info *sdkauth.TokenInfo, cfg Config, evaluatedAt time.Time) (AuthorizationDecision, error) {
+	if info == nil || info.Extra == nil || info.Expiration.IsZero() || !info.Expiration.After(evaluatedAt) {
+		return AuthorizationDecision{}, fmt.Errorf("active OAuth 2.1 token information is required")
+	}
+	userid, useridOK := info.Extra["wecom_userid"].(string)
+	mcpRole, roleOK := info.Extra["mcp_role"].(string)
+	rawTools, toolsOK := info.Extra["effective_tools"].([]string)
+	if !useridOK || !roleOK || !toolsOK || userid == "" || userid != strings.TrimSpace(userid) || mcpRole == "" || mcpRole != strings.TrimSpace(mcpRole) {
+		return AuthorizationDecision{}, fmt.Errorf("OAuth 2.1 employee policy claims are invalid")
+	}
+	decision := AuthorizationDecision{
+		SchemaVersion: resolveAuthorizationSchemaV1, Tenant: cfg.AuthorizationTenant, UserID: userid,
+		Resource: cfg.AuthorizationResource, Active: true, EffectiveScopes: append([]string(nil), info.Scopes...),
+		EffectiveTools: append([]string(nil), rawTools...), PolicyVersion: "oauth21-introspection", EvaluatedAt: evaluatedAt,
+	}
+	if decision.Tenant == "" || decision.Tenant != strings.TrimSpace(decision.Tenant) || decision.UserID == "" || decision.UserID != strings.TrimSpace(decision.UserID) || decision.Resource == "" || decision.Resource != strings.TrimSpace(decision.Resource) {
+		return AuthorizationDecision{}, fmt.Errorf("OAuth 2.1 authorization identity is invalid")
+	}
+	if err := validateStringSet("effective scopes", decision.EffectiveScopes, false); err != nil {
+		return AuthorizationDecision{}, err
+	}
+	if err := validateStringSet("effective tools", decision.EffectiveTools, true); err != nil {
+		return AuthorizationDecision{}, err
+	}
+	return decision, nil
 }
 
 func authorizationIdentityFromTokenInfo(info *sdkauth.TokenInfo) (string, string, bool) {

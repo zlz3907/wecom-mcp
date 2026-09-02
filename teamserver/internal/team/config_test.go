@@ -174,6 +174,26 @@ func TestLoadConfigConnectorAPIKeyModeNeedsNoOIDC(t *testing.T) {
 	}
 }
 
+func TestLoadConfigOAuth21NeedsOnlyServerManagedAuthentication(t *testing.T) {
+	t.Setenv("TEAM_MCP_AUTH_MODE", "oauth21")
+	t.Setenv("TEAM_MCP_PUBLIC_URL", "https://mcp.jyiai.com/gmzoop")
+	t.Setenv("TEAM_MCP_OIDC_ISSUER", "https://jyiai.com/gnas/oauth")
+	t.Setenv("TEAM_MCP_OIDC_AUDIENCE", "https://mcp.jyiai.com/gmzoop/mcp")
+	t.Setenv("TEAM_MCP_OAUTH21_INTROSPECTION_URL", "https://jyiai.com/gnas/oauth/introspect")
+	t.Setenv("TEAM_MCP_OAUTH21_CLIENT_ID", "gmzoop-resource")
+	t.Setenv("TEAM_MCP_OAUTH21_CLIENT_SECRET", "0123456789abcdef0123456789abcdef")
+	t.Setenv("TEAM_MCP_AUTHZ_TENANT", "gm")
+	t.Setenv("TEAM_MCP_REQUIRED_SCOPES", "zoop.read")
+	t.Setenv("TEAM_MCP_AUDIT_HMAC_KEY", "abcdef0123456789abcdef0123456789")
+	cfg, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.UserAuthorizationEnabled || cfg.AuthorizationResource != "gmzoop" || len(cfg.AdvertisedScopes) != 1 || cfg.AdvertisedScopes[0] != "zoop.read" {
+		t.Fatalf("cfg=%#v", cfg)
+	}
+}
+
 func TestLoadConfigConnectorAPIKeyAcceptsAdminRole(t *testing.T) {
 	t.Setenv("TEAM_MCP_AUTH_MODE", "connector_api_key")
 	t.Setenv("TEAM_MCP_CONNECTOR_API_KEY", "0123456789abcdef0123456789abcdef")
