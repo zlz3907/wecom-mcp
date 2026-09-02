@@ -16,7 +16,7 @@ Use `wecom_send_app_media_message` only for a file already available in the curr
 4. Call the tool with one verified `recipient_userid`, the original safe basename, Base64, SHA-256, stable idempotency key, and active identity binding.
 5. Treat only `state=sent` with a verified message receipt as sent. Report `sent_idempotency_completion_pending` exactly and do not replay an uncertain upload or send.
 
-Images are limited to 10 MiB and ordinary files to 20 MiB. Do not download a caller-provided URL, guess a local path, send a directory, or copy attachment bytes into Zoop records, logs, or chat output.
+Enterprise WeCom and MCP validation allow images up to 10 MiB and ordinary files up to 20 MiB. The current `gmzoop` deployment still has a smaller GNAS managed-executor request limit: until that runtime is explicitly upgraded and accepted, keep original media strictly below 8 MiB (recommended no more than 7.5 MiB to leave room for multipart overhead). Treat this deployed limit as runtime evidence, not the upstream API maximum. Do not download a caller-provided URL, guess a local path, send a directory, or copy attachment bytes into Zoop records, logs, or chat output.
 
 ## Prohibited targets
 
