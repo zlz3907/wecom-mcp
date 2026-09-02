@@ -33,6 +33,13 @@ func main() {
 			os.Exit(1)
 		}
 		verifier = authenticator.Verify
+	} else if cfg.AuthenticationMode == team.AuthenticationModeOAuth21 {
+		authenticator, authErr := team.NewOAuth21IntrospectionAuthenticator(cfg)
+		if authErr != nil {
+			logger.Error("OAuth 2.1 introspection initialization failed", "error", authErr)
+			os.Exit(1)
+		}
+		verifier = authenticator.Verify
 	} else {
 		authenticator, authErr := team.NewOIDCAuthenticator(context.Background(), cfg)
 		if authErr != nil {
@@ -42,7 +49,7 @@ func main() {
 		verifier = authenticator.Verify
 	}
 	var service *team.Service
-	if cfg.UserAuthorizationEnabled {
+	if cfg.UserAuthorizationEnabled && cfg.AuthenticationMode != team.AuthenticationModeOAuth21 {
 		resolver, resolverErr := team.NewGNASAuthorizationResolver(cfg)
 		if resolverErr != nil {
 			logger.Error("GNAS authorization adapter initialization failed", "error", resolverErr)

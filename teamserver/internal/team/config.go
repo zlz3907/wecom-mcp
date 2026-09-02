@@ -45,6 +45,9 @@ type Config struct {
 	AuthorizationTimeout          time.Duration
 	WeComUserIDClaim              string
 	PrincipalAssertionClaim       string
+	OAuth21IntrospectionURL       string
+	OAuth21ClientID               string
+	OAuth21ClientSecret           string
 }
 
 type AuthenticationMode string
@@ -52,6 +55,7 @@ type AuthenticationMode string
 const (
 	AuthenticationModeOIDC            AuthenticationMode = "oidc"
 	AuthenticationModeConnectorAPIKey AuthenticationMode = "connector_api_key"
+	AuthenticationModeOAuth21         AuthenticationMode = "oauth21"
 )
 
 func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
@@ -90,6 +94,9 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 		AuthorizationTimeout:          2 * time.Second,
 		WeComUserIDClaim:              strings.TrimSpace(os.Getenv("TEAM_MCP_WECOM_USERID_CLAIM")),
 		PrincipalAssertionClaim:       strings.TrimSpace(os.Getenv("TEAM_MCP_GNAS_PRINCIPAL_ASSERTION_CLAIM")),
+		OAuth21IntrospectionURL:       strings.TrimSpace(os.Getenv("TEAM_MCP_OAUTH21_INTROSPECTION_URL")),
+		OAuth21ClientID:               strings.TrimSpace(os.Getenv("TEAM_MCP_OAUTH21_CLIENT_ID")),
+		OAuth21ClientSecret:           os.Getenv("TEAM_MCP_OAUTH21_CLIENT_SECRET"),
 	}
 	if cfg.InstanceConfigPath == "" {
 		return Config{}, fmt.Errorf("--config is required")
@@ -143,13 +150,30 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 		if cfg.UserAuthorizationEnabled {
 			return Config{}, fmt.Errorf("connector_api_key mode cannot enable per-user authorization")
 		}
+	case AuthenticationModeOAuth21:
+		if err := validateHTTPSURL(cfg.OIDCIssuer, "TEAM_MCP_OIDC_ISSUER"); err != nil {
+			return Config{}, err
+		}
+		if cfg.OIDCAudience != cfg.PublicURL+"/mcp" {
+			return Config{}, fmt.Errorf("TEAM_MCP_OIDC_AUDIENCE must exactly match the MCP resource URL")
+		}
+		if err := validateHTTPSURL(cfg.OAuth21IntrospectionURL, "TEAM_MCP_OAUTH21_INTROSPECTION_URL"); err != nil {
+			return Config{}, err
+		}
+		if cfg.OAuth21ClientID == "" || cfg.OAuth21ClientID != strings.TrimSpace(cfg.OAuth21ClientID) || len(cfg.OAuth21ClientSecret) < 32 || cfg.OAuth21ClientSecret != strings.TrimSpace(cfg.OAuth21ClientSecret) || placeholderValue(cfg.OAuth21ClientSecret) {
+			return Config{}, fmt.Errorf("OAuth 2.1 resource server client credentials are invalid")
+		}
+		if cfg.AuthorizationTenant == "" || cfg.AuthorizationTenant != strings.TrimSpace(cfg.AuthorizationTenant) {
+			return Config{}, fmt.Errorf("TEAM_MCP_AUTHZ_TENANT is required and must be canonical")
+		}
+		cfg.UserAuthorizationEnabled = true
 	default:
-		return Config{}, fmt.Errorf("TEAM_MCP_AUTH_MODE must be oidc or connector_api_key")
+		return Config{}, fmt.Errorf("TEAM_MCP_AUTH_MODE must be oidc, oauth21, or connector_api_key")
 	}
 	if raw := strings.TrimSpace(os.Getenv("TEAM_MCP_USER_AUTHZ_ENABLED")); raw != "" && raw != "true" && raw != "false" {
 		return Config{}, fmt.Errorf("TEAM_MCP_USER_AUTHZ_ENABLED must be true or false")
 	}
-	if cfg.UserAuthorizationEnabled {
+	if cfg.UserAuthorizationEnabled && cfg.AuthenticationMode != AuthenticationModeOAuth21 {
 		if strings.TrimSpace(os.Getenv("TEAM_MCP_AUTHZ_CACHE_TTL")) != "" || strings.TrimSpace(os.Getenv("TEAM_MCP_AUTHZ_TIMEOUT")) != "" {
 			return Config{}, fmt.Errorf("authorization caching and configurable timeout are not supported")
 		}
@@ -186,7 +210,10 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 	}
 	cfg.MCPURL = cfg.PublicURL + "/mcp"
 	cfg.MetadataURL = protectedResourceMetadataURL(cfg.MCPURL)
-	cfg.AdvertisedScopes = append([]string{"openid", "profile"}, cfg.RequiredScopes...)
+	cfg.AdvertisedScopes = append([]string(nil), cfg.RequiredScopes...)
+	if cfg.AuthenticationMode == AuthenticationModeOIDC {
+		cfg.AdvertisedScopes = append(cfg.AdvertisedScopes, "openid", "profile")
+	}
 	slices.Sort(cfg.AdvertisedScopes)
 	cfg.AdvertisedScopes = slices.Compact(cfg.AdvertisedScopes)
 	return cfg, nil
