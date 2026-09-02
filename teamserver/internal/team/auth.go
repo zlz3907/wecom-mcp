@@ -2,6 +2,7 @@ package team
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +13,33 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 )
+
+type ConnectorAPIKeyAuthenticator struct {
+	key  []byte
+	role Role
+}
+
+func NewConnectorAPIKeyAuthenticator(cfg Config) (*ConnectorAPIKeyAuthenticator, error) {
+	if cfg.AuthenticationMode != AuthenticationModeConnectorAPIKey || len(cfg.ConnectorAPIKey) < 32 {
+		return nil, fmt.Errorf("connector API key authentication is not configured")
+	}
+	if cfg.ConnectorRole != RoleReader && cfg.ConnectorRole != RoleOperator && cfg.ConnectorRole != RoleAdmin {
+		return nil, fmt.Errorf("connector API key role is not configured")
+	}
+	return &ConnectorAPIKeyAuthenticator{key: []byte(cfg.ConnectorAPIKey), role: cfg.ConnectorRole}, nil
+}
+
+func (a *ConnectorAPIKeyAuthenticator) Verify(_ context.Context, rawToken string, _ *http.Request) (*sdkauth.TokenInfo, error) {
+	provided := []byte(rawToken)
+	if len(provided) != len(a.key) || subtle.ConstantTimeCompare(provided, a.key) != 1 {
+		return nil, fmt.Errorf("%w: connector API key rejected", sdkauth.ErrInvalidToken)
+	}
+	return &sdkauth.TokenInfo{
+		UserID:     "workbuddy-enterprise-connector",
+		Expiration: time.Now().Add(5 * time.Minute),
+		Extra:      map[string]any{"issuer": "workbuddy_connector_api_key", "role": string(a.role)},
+	}, nil
+}
 
 type oidcTokenVerifier interface {
 	Verify(context.Context, string) (*oidc.IDToken, error)

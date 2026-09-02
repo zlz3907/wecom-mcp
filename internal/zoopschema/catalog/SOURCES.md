@@ -17,3 +17,5 @@ go run ./cmd/generate-zoop-catalog \
 The generator translates source-only tenant sheet IDs into logical `{role, field_title, multiple}` references and removes every document, sheet, field and option ID from the output. Tests reject known source IDs and exact-title drift.
 
 The Owner-authorized read-only formula observation on 2026-08-27 established the Z-S01 `进度条` contract as `已完成任务数 / 当前任务总数`, formatted as `FIELD_TYPE_PROGRESS` with `decimal_places=-1`. The catalog stores only these logical field titles. Runtime creation resolves the current instance field IDs and never embeds observed tenant IDs.
+
+On 2026-08-31, the gm fixed tenant completed one dedicated Smart Sheet probe: the runtime create payload added both number dependencies and the Z-S01-equivalent `FIELD_TYPE_FORMULA` progress field, then read it back as a formula field. The probe document is retained in the tenant for audit; its document, sheet, and field identifiers are deliberately not recorded here. This closes the sole `Z-S01.进度条` creation-capability gap.

@@ -175,6 +175,26 @@ func TestConfigValidatesAndDigestsWeComOperatorUserID(t *testing.T) {
 	}
 }
 
+func TestConfigValidatesAndDigestsAIExecutionSubjectRecordID(t *testing.T) {
+	base := Config{Version: 1, InstanceName: "instance", TenantRoute: "route", RegistryDocumentID: "registry", RegistryKey: "key", SchemaMirrorPath: "/tmp/schema.json", StatePath: "/tmp/state.json", APIWhitelist: map[string][]string{"managed": {"get_records"}}}
+	base.AIExecutionSubjectRecordID = "subject-ai-one"
+	if err := base.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	changed := base
+	changed.AIExecutionSubjectRecordID = "subject-ai-two"
+	if base.Digest() == changed.Digest() {
+		t.Fatal("config digest omitted ai_execution_subject_record_id")
+	}
+	for _, invalid := range []string{"subject ai", "主体", strings.Repeat("a", 257)} {
+		candidate := base
+		candidate.AIExecutionSubjectRecordID = invalid
+		if candidate.Validate() == nil {
+			t.Fatalf("invalid AI execution subject record id accepted: %q", invalid)
+		}
+	}
+}
+
 func TestStoreReloadsChangedWhitelistWithoutRestart(t *testing.T) {
 	dir := t.TempDir()
 	schema := filepath.Join(dir, "schema.md")

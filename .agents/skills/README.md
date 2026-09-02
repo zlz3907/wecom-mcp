@@ -3,6 +3,7 @@
 本目录不复制治理核心或 Zoop 工作流。执行任务时按需加载以下权威技能：
 
 - 企业微信智能表格固定租户操作：`~/.codex/skills/wecom-mcp-v2/SKILL.md`
+- WorkBuddy gmzoop 九表治理：`.codebuddy/skills/zoop-workbuddy-governance/SKILL.md`
 - 独立验证：`../ai-constitution/.agents/skills/verify/SKILL.md`
 - 变更简化审查：`../ai-constitution/.agents/skills/simplify/SKILL.md`
 - 批量任务协调：`../ai-constitution/.agents/skills/batch/SKILL.md`

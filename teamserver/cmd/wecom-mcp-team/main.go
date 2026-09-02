@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/zhonglizhi/wecom-mcp-v2/teamserver/internal/team"
 )
 
@@ -24,10 +25,21 @@ func main() {
 		logger.Error("invalid team MCP configuration", "error", err)
 		os.Exit(2)
 	}
-	authenticator, err := team.NewOIDCAuthenticator(context.Background(), cfg)
-	if err != nil {
-		logger.Error("OIDC initialization failed", "error", err)
-		os.Exit(1)
+	var verifier func(context.Context, string, *http.Request) (*sdkauth.TokenInfo, error)
+	if cfg.AuthenticationMode == team.AuthenticationModeConnectorAPIKey {
+		authenticator, authErr := team.NewConnectorAPIKeyAuthenticator(cfg)
+		if authErr != nil {
+			logger.Error("connector API key authentication initialization failed", "error", authErr)
+			os.Exit(1)
+		}
+		verifier = authenticator.Verify
+	} else {
+		authenticator, authErr := team.NewOIDCAuthenticator(context.Background(), cfg)
+		if authErr != nil {
+			logger.Error("OIDC initialization failed", "error", authErr)
+			os.Exit(1)
+		}
+		verifier = authenticator.Verify
 	}
 	var service *team.Service
 	if cfg.UserAuthorizationEnabled {
@@ -47,7 +59,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddress,
-		Handler:           service.Handler(authenticator.Verify),
+		Handler:           service.Handler(verifier),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,

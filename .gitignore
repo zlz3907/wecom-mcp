@@ -1,4 +1,5 @@
 /bin/
 /config/*.local.json
 /state/
+.artifacts/
 .DS_Store

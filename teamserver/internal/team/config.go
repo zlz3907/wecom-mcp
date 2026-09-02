@@ -14,6 +14,9 @@ import (
 
 type Config struct {
 	InstanceConfigPath            string
+	AuthenticationMode            AuthenticationMode
+	ConnectorAPIKey               string
+	ConnectorRole                 Role
 	ListenAddress                 string
 	PublicURL                     string
 	MCPURL                        string
@@ -44,9 +47,24 @@ type Config struct {
 	PrincipalAssertionClaim       string
 }
 
+type AuthenticationMode string
+
+const (
+	AuthenticationModeOIDC            AuthenticationMode = "oidc"
+	AuthenticationModeConnectorAPIKey AuthenticationMode = "connector_api_key"
+)
+
 func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
+	gnasBaseURL := strings.TrimSpace(os.Getenv("GNAS_BASE_URL"))
+	authorizationServiceSecret := os.Getenv("TEAM_MCP_GNAS_SERVICE_APP_SECRET")
+	if authorizationServiceSecret == "" {
+		authorizationServiceSecret = os.Getenv("GNAS_APP_SECRET")
+	}
 	cfg := Config{
 		InstanceConfigPath:            instanceConfigPath,
+		AuthenticationMode:            AuthenticationMode(firstNonEmpty(os.Getenv("TEAM_MCP_AUTH_MODE"), string(AuthenticationModeOIDC))),
+		ConnectorAPIKey:               os.Getenv("TEAM_MCP_CONNECTOR_API_KEY"),
+		ConnectorRole:                 Role(firstNonEmpty(os.Getenv("TEAM_MCP_CONNECTOR_ROLE"), string(RoleReader))),
 		ListenAddress:                 firstNonEmpty(listenAddress, os.Getenv("TEAM_MCP_LISTEN_ADDR"), "127.0.0.1:17801"),
 		PublicURL:                     strings.TrimSpace(os.Getenv("TEAM_MCP_PUBLIC_URL")),
 		OIDCIssuer:                    strings.TrimSpace(os.Getenv("TEAM_MCP_OIDC_ISSUER")),
@@ -63,10 +81,10 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 		OIDCHTTPTimeout:               10 * time.Second,
 		ShutdownTimeout:               20 * time.Second,
 		UserAuthorizationEnabled:      strings.TrimSpace(os.Getenv("TEAM_MCP_USER_AUTHZ_ENABLED")) == "true",
-		AuthorizationEndpoint:         strings.TrimSpace(os.Getenv("TEAM_MCP_AUTHZ_RESOLVE_URL")),
-		AuthorizationTokenEndpoint:    strings.TrimSpace(os.Getenv("TEAM_MCP_GNAS_SERVICE_TOKEN_URL")),
-		AuthorizationServiceAppID:     strings.TrimSpace(os.Getenv("TEAM_MCP_GNAS_SERVICE_APP_ID")),
-		AuthorizationServiceAppSecret: os.Getenv("TEAM_MCP_GNAS_SERVICE_APP_SECRET"),
+		AuthorizationEndpoint:         firstNonEmpty(os.Getenv("TEAM_MCP_AUTHZ_RESOLVE_URL"), gnasServiceURL(gnasBaseURL, "/gnas/service/resolveAuthorizationV1")),
+		AuthorizationTokenEndpoint:    firstNonEmpty(os.Getenv("TEAM_MCP_GNAS_SERVICE_TOKEN_URL"), gnasServiceURL(gnasBaseURL, "/gnas/service/getJwtToken")),
+		AuthorizationServiceAppID:     firstNonEmpty(os.Getenv("TEAM_MCP_GNAS_SERVICE_APP_ID"), os.Getenv("GNAS_APP_ID")),
+		AuthorizationServiceAppSecret: authorizationServiceSecret,
 		AuthorizationTenant:           strings.TrimSpace(os.Getenv("TEAM_MCP_AUTHZ_TENANT")),
 		AuthorizationResource:         strings.TrimSpace(os.Getenv("TEAM_MCP_AUTHZ_RESOURCE")),
 		AuthorizationTimeout:          2 * time.Second,
@@ -84,16 +102,11 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.PublicURL = normalizedPublicURL
-	if err := validateHTTPSURL(cfg.OIDCIssuer, "TEAM_MCP_OIDC_ISSUER"); err != nil {
-		return Config{}, err
+	if cfg.AuthorizationResource == "" {
+		parsedPublicURL, _ := url.Parse(cfg.PublicURL)
+		cfg.AuthorizationResource = strings.TrimPrefix(parsedPublicURL.Path, "/")
 	}
-	if cfg.OIDCAudience == "" {
-		return Config{}, fmt.Errorf("TEAM_MCP_OIDC_AUDIENCE is required")
-	}
-	if cfg.AccessTokenClaim == "" || cfg.AccessTokenValue == "" {
-		return Config{}, fmt.Errorf("TEAM_MCP_ACCESS_TOKEN_CLAIM and TEAM_MCP_ACCESS_TOKEN_VALUE are required")
-	}
-	if len(cfg.AuditHMACKey) < 32 || strings.Contains(strings.ToUpper(string(cfg.AuditHMACKey)), "REPLACE") {
+	if len(cfg.AuditHMACKey) < 32 || placeholderValue(string(cfg.AuditHMACKey)) {
 		return Config{}, fmt.Errorf("TEAM_MCP_AUDIT_HMAC_KEY must contain at least 32 bytes")
 	}
 	if value := strings.TrimSpace(os.Getenv("TEAM_MCP_MAX_CONCURRENT_TOOLS")); value != "" {
@@ -103,11 +116,35 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 		}
 		cfg.MaxConcurrentTools = parsed
 	}
-	if cfg.RolesClaim == "" || cfg.ReaderRole == "" || cfg.OperatorRole == "" || cfg.AdminRole == "" {
-		return Config{}, fmt.Errorf("OIDC role claim and role values must not be empty")
-	}
-	if cfg.ReaderRole == cfg.OperatorRole || cfg.ReaderRole == cfg.AdminRole || cfg.OperatorRole == cfg.AdminRole {
-		return Config{}, fmt.Errorf("OIDC role values must be distinct")
+	switch cfg.AuthenticationMode {
+	case AuthenticationModeOIDC:
+		if err := validateHTTPSURL(cfg.OIDCIssuer, "TEAM_MCP_OIDC_ISSUER"); err != nil {
+			return Config{}, err
+		}
+		if cfg.OIDCAudience == "" {
+			return Config{}, fmt.Errorf("TEAM_MCP_OIDC_AUDIENCE is required")
+		}
+		if cfg.AccessTokenClaim == "" || cfg.AccessTokenValue == "" {
+			return Config{}, fmt.Errorf("TEAM_MCP_ACCESS_TOKEN_CLAIM and TEAM_MCP_ACCESS_TOKEN_VALUE are required")
+		}
+		if cfg.RolesClaim == "" || cfg.ReaderRole == "" || cfg.OperatorRole == "" || cfg.AdminRole == "" {
+			return Config{}, fmt.Errorf("OIDC role claim and role values must not be empty")
+		}
+		if cfg.ReaderRole == cfg.OperatorRole || cfg.ReaderRole == cfg.AdminRole || cfg.OperatorRole == cfg.AdminRole {
+			return Config{}, fmt.Errorf("OIDC role values must be distinct")
+		}
+	case AuthenticationModeConnectorAPIKey:
+		if len(cfg.ConnectorAPIKey) < 32 || strings.TrimSpace(cfg.ConnectorAPIKey) != cfg.ConnectorAPIKey || placeholderValue(cfg.ConnectorAPIKey) {
+			return Config{}, fmt.Errorf("TEAM_MCP_CONNECTOR_API_KEY must contain at least 32 canonical bytes")
+		}
+		if cfg.ConnectorRole != RoleReader && cfg.ConnectorRole != RoleOperator && cfg.ConnectorRole != RoleAdmin {
+			return Config{}, fmt.Errorf("TEAM_MCP_CONNECTOR_ROLE must be reader, operator, or admin")
+		}
+		if cfg.UserAuthorizationEnabled {
+			return Config{}, fmt.Errorf("connector_api_key mode cannot enable per-user authorization")
+		}
+	default:
+		return Config{}, fmt.Errorf("TEAM_MCP_AUTH_MODE must be oidc or connector_api_key")
 	}
 	if raw := strings.TrimSpace(os.Getenv("TEAM_MCP_USER_AUTHZ_ENABLED")); raw != "" && raw != "true" && raw != "false" {
 		return Config{}, fmt.Errorf("TEAM_MCP_USER_AUTHZ_ENABLED must be true or false")
@@ -153,6 +190,24 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 	slices.Sort(cfg.AdvertisedScopes)
 	cfg.AdvertisedScopes = slices.Compact(cfg.AdvertisedScopes)
 	return cfg, nil
+}
+
+func placeholderValue(value string) bool {
+	upper := strings.ToUpper(value)
+	return strings.Contains(upper, "REPLACE") || strings.Contains(upper, "PROTECTED_") || strings.Contains(upper, "OWNER_PROVIDED") || strings.Contains(upper, "PLACEHOLDER")
+}
+
+// gnasServiceURL derives only the two fixed GNAS service endpoints from the
+// same root used by the fixed-route WeCom transport. Returning an empty value
+// leaves the existing fail-closed required-value validation in charge.
+func gnasServiceURL(baseURL, endpointPath string) string {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return ""
+	}
+	parsed.Path = endpointPath
+	parsed.RawPath = ""
+	return parsed.String()
 }
 
 func firstNonEmpty(values ...string) string {

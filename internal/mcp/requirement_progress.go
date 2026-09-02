@@ -83,22 +83,23 @@ func (s *Server) reconcileRequirementProgress(ctx context.Context, runtime confi
 		}
 	}
 	if len(affected) == 0 {
-		return withOperatorAudit(map[string]any{"state": "up_to_date", "requirement_count": 0, "readback_verified": true}, runtime.WecomOperatorUserID), nil
+		return withOperatorAudit(map[string]any{"state": "up_to_date", "requirement_count": 0, "readback_verified": true}, businessActorUserID(ctx, runtime)), nil
 	}
-	digestData, _ := json.Marshal(map[string]any{"operation": "reconcile_requirement_progress", "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "business_operator_userid": runtime.WecomOperatorUserID, "native_api_actor": "application"})
+	businessActor := businessActorUserID(ctx, runtime)
+	digestData, _ := json.Marshal(map[string]any{"operation": "reconcile_requirement_progress", "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "business_operator_userid": businessActor, "native_api_actor": "application"})
 	digestSum := sha256.Sum256(digestData)
 	digest := hex.EncodeToString(digestSum[:])
-	if err := s.reserveWithOperator(runtime.StatePath, input.IdempotencyKey, digest, runtime.WecomOperatorUserID); err != nil {
+	if err := s.reserveWithOperator(runtime.StatePath, input.IdempotencyKey, digest, businessActor); err != nil {
 		return nil, err
 	}
 	result, err := applyRequirementProgress(ctx, runtime, schema, client, targets["Z-S03"], affected, tasks, requirementField.ID, statusField.ID)
 	if err != nil {
-		return withOperatorAudit(map[string]any{"state": "progress_reconcile_pending", "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "progress_error": err.Error()}, runtime.WecomOperatorUserID), nil
+		return withOperatorAudit(map[string]any{"state": "progress_reconcile_pending", "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "progress_error": err.Error()}, businessActor), nil
 	}
-	if err := s.completeStateWithOperator(runtime.StatePath, input.IdempotencyKey, digest, runtime.WecomOperatorUserID); err != nil {
-		return withOperatorAudit(map[string]any{"state": "reconciled_idempotency_completion_pending", "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "idempotency_error": err.Error(), "result": result}, runtime.WecomOperatorUserID), nil
+	if err := s.completeStateWithOperator(runtime.StatePath, input.IdempotencyKey, digest, businessActor); err != nil {
+		return withOperatorAudit(map[string]any{"state": "reconciled_idempotency_completion_pending", "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "idempotency_error": err.Error(), "result": result}, businessActor), nil
 	}
-	return withOperatorAudit(map[string]any{"state": "reconciled", "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "result": result}, runtime.WecomOperatorUserID), nil
+	return withOperatorAudit(map[string]any{"state": "reconciled", "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "result": result}, businessActor), nil
 }
 
 // withRequirementProgressDefaults makes a newly created requirement observable

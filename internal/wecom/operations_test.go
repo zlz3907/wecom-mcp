@@ -42,4 +42,7 @@ func TestLegacyMCPEnterpriseWeComOperationMatrix(t *testing.T) {
 	if got := Operations["get_sheet"]; got != expected["get_sheets"] {
 		t.Fatalf("compatibility alias differs: %#v", got)
 	}
+	if got := Operations["send_app_message"]; got != (Operation{"POST", "/cgi-bin/message/send", "write"}) {
+		t.Fatalf("managed application message operation differs: %#v", got)
+	}
 }

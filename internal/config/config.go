@@ -33,21 +33,22 @@ var supportedOperations = func() map[string]struct{} {
 }()
 
 type Config struct {
-	Version                  int                 `json:"version"`
-	InstanceName             string              `json:"instance_name"`
-	TenantRoute              string              `json:"tenant_route"`
-	SchemaAdminUser          string              `json:"schema_admin_user,omitempty"`
-	WecomOperatorUserID      string              `json:"wecom_operator_userid,omitempty"`
-	RegistryDocumentID       string              `json:"registry_document_id"`
-	RegistryKey              string              `json:"registry_key"`
-	SchemaMirrorPath         string              `json:"schema_mirror_path"`
-	StatePath                string              `json:"state_path"`
-	InitializationGeneration string              `json:"initialization_generation,omitempty"`
-	SchemaVersion            string              `json:"schema_version,omitempty"`
-	SchemaDigest             string              `json:"schema_digest,omitempty"`
-	RegistrySheetID          string              `json:"registry_sheet_id,omitempty"`
-	InitializedState         string              `json:"initialized_state,omitempty"`
-	APIWhitelist             map[string][]string `json:"api_whitelist"`
+	Version                    int                 `json:"version"`
+	InstanceName               string              `json:"instance_name"`
+	TenantRoute                string              `json:"tenant_route"`
+	SchemaAdminUser            string              `json:"schema_admin_user,omitempty"`
+	WecomOperatorUserID        string              `json:"wecom_operator_userid,omitempty"`
+	AIExecutionSubjectRecordID string              `json:"ai_execution_subject_record_id,omitempty"`
+	RegistryDocumentID         string              `json:"registry_document_id"`
+	RegistryKey                string              `json:"registry_key"`
+	SchemaMirrorPath           string              `json:"schema_mirror_path"`
+	StatePath                  string              `json:"state_path"`
+	InitializationGeneration   string              `json:"initialization_generation,omitempty"`
+	SchemaVersion              string              `json:"schema_version,omitempty"`
+	SchemaDigest               string              `json:"schema_digest,omitempty"`
+	RegistrySheetID            string              `json:"registry_sheet_id,omitempty"`
+	InitializedState           string              `json:"initialized_state,omitempty"`
+	APIWhitelist               map[string][]string `json:"api_whitelist"`
 }
 
 type InitializationCommit struct {
@@ -86,6 +87,9 @@ func (c Config) validate(requireRegistry bool) error {
 	}
 	if c.WecomOperatorUserID != "" && !wecomUserID.MatchString(c.WecomOperatorUserID) {
 		return fmt.Errorf("配置 wecom_operator_userid 非法")
+	}
+	if c.AIExecutionSubjectRecordID != "" && !identifier.MatchString(c.AIExecutionSubjectRecordID) {
+		return fmt.Errorf("配置 ai_execution_subject_record_id 非法")
 	}
 	if requireRegistry || c.RegistryDocumentID != "" {
 		if !identifier.MatchString(c.RegistryDocumentID) {
@@ -185,7 +189,7 @@ func (c Config) Digest() string {
 		groups = append(groups, name+":"+strings.Join(copyOperations, ","))
 	}
 	sort.Strings(groups)
-	sum := sha256.Sum256([]byte(strings.Join([]string{fmt.Sprintf("%d", c.Version), c.InstanceName, c.TenantRoute, c.SchemaAdminUser, c.WecomOperatorUserID, c.RegistryDocumentID, c.RegistryKey, c.SchemaMirrorPath, c.StatePath, c.InitializationGeneration, c.SchemaVersion, c.SchemaDigest, c.RegistrySheetID, c.InitializedState, strings.Join(groups, ";")}, "\x00")))
+	sum := sha256.Sum256([]byte(strings.Join([]string{fmt.Sprintf("%d", c.Version), c.InstanceName, c.TenantRoute, c.SchemaAdminUser, c.WecomOperatorUserID, c.AIExecutionSubjectRecordID, c.RegistryDocumentID, c.RegistryKey, c.SchemaMirrorPath, c.StatePath, c.InitializationGeneration, c.SchemaVersion, c.SchemaDigest, c.RegistrySheetID, c.InitializedState, strings.Join(groups, ";")}, "\x00")))
 	return hex.EncodeToString(sum[:])
 }
 

@@ -962,10 +962,30 @@ func reconcileInitializeBusiness(ctx context.Context, client wecomRequester, doc
 			}
 			result, err := client.Request(ctx, "add_sheet", map[string]any{"docid": documentID, "properties": map[string]any{"title": role.SheetTitle}})
 			createdSheetID := initializeCreatedSheetID(result)
-			if err != nil || apiError(result) != nil || createdSheetID == "" {
+			if err != nil || apiError(result) != nil {
 				journal.Phase, journal.LastErrorCode, journal.UpdatedAt = "recovery_required", "sheet_create_result_uncertain", time.Now().UTC().Format(time.RFC3339Nano)
 				_ = saveInstanceInitializeJournal(journalPath, *journal)
 				return nil, fmt.Errorf("新增 %s 子表结果不确定", role.Role)
+			}
+			// Some upstream/proxy variants acknowledge add_sheet without exposing
+			// sheet_id in the receipt. The requested title is unique per role, so a
+			// complete immediate readback is sufficient to recover its identity
+			// without issuing a second add_sheet request.
+			if createdSheetID == "" {
+				readback, readErr := client.Request(ctx, "get_sheet", map[string]any{"docid": documentID})
+				if readErr == nil && apiError(readback) == nil {
+					for _, sheet := range smartSheetIdentities(readback) {
+						if sheet.Name == role.SheetTitle {
+							createdSheetID = sheet.ID
+							break
+						}
+					}
+				}
+			}
+			if createdSheetID == "" {
+				journal.Phase, journal.LastErrorCode, journal.UpdatedAt = "recovery_required", "sheet_create_result_uncertain", time.Now().UTC().Format(time.RFC3339Nano)
+				_ = saveInstanceInitializeJournal(journalPath, *journal)
+				return nil, fmt.Errorf("新增 %s 子表未返回可回读的唯一 ID", role.Role)
 			}
 			journal.OwnedRoleSheetIDs[role.Role] = createdSheetID
 			journal.PendingSheetRole, journal.PendingSheetOp = "", ""

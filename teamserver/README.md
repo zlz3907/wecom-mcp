@@ -6,36 +6,44 @@
 
 ```mermaid
 flowchart TB
-    WorkBuddy[WorkBuddy 团队成员] -->|HTTPS + OAuth Bearer Token| Proxy[Nginx mcp.jyiai.com/gmzoop]
+    WorkBuddy[WorkBuddy 企业连接器] -->|HTTPS + Connector API Key| Proxy[Nginx mcp.jyiai.com/gmzoop]
     Proxy -->|保留 Authorization| TeamMCP[wecom-mcp-team /mcp]
-    TeamMCP -->|OIDC JWT 校验与角色授权| TeamMCP
+    TeamMCP -->|连接器角色与验证码主体绑定门禁| TeamMCP
     TeamMCP -->|服务器持有 GNAS 应用身份| GNAS[GNAS]
     GNAS --> WeCom[企业微信智能表格]
 ```
 
-- 团队成员身份来自组织 OIDC，MCP 不接受客户端自报的用户或角色。
+- 默认部署使用 WorkBuddy 企业自定义连接器的 API Key；MCP 只接受 `Authorization: Bearer <connector-key>`。`TEAM_MCP_CONNECTOR_ROLE` 显式配置为 `reader`、`operator` 或 `admin`，默认 `reader`；它仍不能读取或推断当前 WorkBuddy 成员身份。
 - 国脉爱特的 `GNAS_APP_ID` / `GNAS_APP_SECRET` 只存在于服务器 Secret 或受保护环境文件。
 - `reader`、`operator`、`admin` 角色逐层继承；`tools/list` 只展示已授权工具，`tools/call` 再次校验。
 - 现有固定租户、API 白名单、Schema、幂等、写后回读和初始化恢复门禁仍是最终业务边界。
 - 审计日志只记录请求 ID、角色、工具、结果、耗时和 HMAC 密钥化的主体假名，不记录 Token、Secret、业务参数或响应内容；审计密钥按 PII/Secret 管理。
 - 应用层默认最多同时执行 16 个业务工具调用，可通过受控配置调低或调高；公网速率限制仍由组织 API Gateway/WAF 提供。
 
-## 用户授权候选边界
+## WorkBuddy Connector API Key 测试模式
 
-当前候选分支提供默认关闭的 `TEAM_MCP_USER_AUTHZ_ENABLED` 门禁，以及与 GNAS 存储实现解耦的 `AuthorizationResolver` 适配接口。该候选不是已集成的生产合同：GNAS 最终接口 URL、服务鉴权和 OAuth userid claim 必须以 GNAS 项目经理交付的稳定合同为准。
+当前 `deploy/gmzoop.env.example` 是固定连接器模式：在 WorkBuddy 企业后台创建自定义连接器，认证方式选择 **API Key**，Header Name 填 `Authorization`，Header Value 填 `Bearer <与服务器受保护环境相同的值>`，MCP Server URL 填 `https://mcp.jyiai.com/gmzoop/mcp`。示例把 `TEAM_MCP_CONNECTOR_ROLE` 设为 `admin`，暴露当前二进制实现的全部 MCP 工具；不发布 OAuth metadata，且拒绝同时启用 `TEAM_MCP_USER_AUTHZ_ENABLED=true`。固定租户、Schema、幂等、写后回读和 API 白名单继续生效。
+
+这是连接器服务身份，不是用户登录或逐人授权。它不能写入 Zoop 的“需求提出主体”等业务字段。operator/admin 工具必须另外提供永久 `identity_binding_id`：首次使用时，WorkBuddy 询问企业微信通讯录完整姓名，`wecom_identity_binding_start` 唯一匹配启用成员与 Z-S09 中唯一启用的人员主体（同 `userid` 的 AI 执行主体不参与匹配），并由自建应用向该成员发送 6 位验证码；`wecom_identity_binding_confirm` 验证成功后生成绑定。验证码一次性、最多输错 5 次；绑定本身不设有效期，并支持持有原句柄时换绑。
+
+绑定句柄只解决当前业务操作由谁发起，不会把共享 Connector API Key 升格为逐用户访问授权。实例配置中的 `ai_execution_subject_record_id` 固定指向一个已登记且启用的 Z-S09 WorkBuddy AI 执行主体；缺失时团队 operator/admin 调用失败关闭。`wecom_record_apply` 新建记录时自动注入双主体：Z-S01/Z-S02 使用人员发起者，Z-S04/Z-S05 使用 AI 执行者，Z-S06 同时填写发起者与执行者；显式提交冲突主体会被拒绝。Z-S03 的责任与执行主体由治理流程按实际分工显式填写。
+
+## OIDC / 用户授权候选边界
+
+启用 `TEAM_MCP_AUTH_MODE=oidc` 后，可使用 `TEAM_MCP_USER_AUTHZ_ENABLED` 门禁和与 GNAS 存储实现解耦的 `AuthorizationResolver`。它从同一组 `GNAS_BASE_URL`、`GNAS_APP_ID`、`GNAS_APP_SECRET` 推导两个固定 GNAS 服务地址并取得短期 Service JWT，不再重复配置第二组应用凭据。`app_info` 仍是应用身份和服务路由授权的权威来源；逐用户 MCP 工具授权仍由 `mcp_user_authorizations` 经 `ResolveAuthorizationV1` 返回，二者不能互相替代。
 
 门禁开启后，MCP 必须取得唯一、大小写敏感的企业微信 `userid`，并以固定 `tenant + userid + resource` 查询授权。归一化决策包含 `active`、`effective_tools`、`effective_scopes`、`policy_version`；`tools=["*"]` 只展开为当前二进制公开的工具目录，且继续与静态 reader/operator/admin 角色取交集。`tools/list` 过滤发现列表，`tools/call` 在每次 HTTP 请求重新执行同一授权边界。
 
 以下情况全部失败关闭：userid 或 GNAS 签名 `principal_assertion` 缺失/歧义、active=false、scope 缺失、未知工具、响应结构漂移、GNAS 错误码不匹配、两秒超时、策略版本缺失。授权正向和拒绝结果均不缓存；每次 `tools/list`、`tools/call` 都实时获取短期 Service JWT 并调用 ResolveAuthorizationV1，撤权在下一请求生效。审计仅增加授权结果和 `policy_version`，不记录 userid、Token、Secret、身份断言或授权响应原文。
 
-feature flag 开启时必须同时提供同源的 GNAS Service JWT 与 resolver HTTPS URL、专用 caller app 凭据，以及已验证 OAuth Token 中的 userid 和 GNAS 签名 assertion claim；缺任一项即拒绝启动或拒绝请求。回滚边界是关闭 feature flag 并重启候选服务，恢复既有静态 OIDC 角色路径，不改实例配置、Schema、GNAS 数据或企业微信资产。候选合同与测试说明见 [`AUTHORIZATION-CANDIDATE.md`](AUTHORIZATION-CANDIDATE.md)。
+feature flag 开启时，MCP 从 `GNAS_BASE_URL` 推导同源的 Service JWT 与 resolver HTTPS URL，并复用 `GNAS_APP_ID` / `GNAS_APP_SECRET`；仍必须提供经核验的 GNAS tenant key、OAuth Token 中的企业微信 userid claim 与 GNAS 签名 assertion claim。缺任一项即拒绝启动或拒绝请求。回滚边界是关闭 feature flag 并重启候选服务，恢复既有静态 OIDC 角色路径，不改实例配置、Schema、GNAS 数据或企业微信资产。候选合同与测试说明见 [`AUTHORIZATION-CANDIDATE.md`](AUTHORIZATION-CANDIDATE.md)。
 
 ## HTTP 端点
 
 | 端点 | 认证 | 用途 |
 | --- | --- | --- |
-| `POST /mcp` | OIDC Bearer Token | 官方 Streamable HTTP MCP；JSON 或客户端声明的标准响应 |
-| `GET /.well-known/oauth-protected-resource` | 无 | RFC 9728 OAuth 资源发现，供 WorkBuddy 发起 OAuth |
+| `POST /mcp` | Connector API Key 或 OIDC Bearer Token | 官方 Streamable HTTP MCP；JSON 或客户端声明的标准响应 |
+| `GET /.well-known/oauth-protected-resource` | 无 | 仅 OIDC 模式提供 RFC 9728 OAuth 资源发现 |
 | `GET /healthz` | 无 | 进程存活检查，不访问 GNAS |
 | `GET /readyz` | 无 | 实例配置、Schema 和 GNAS 环境结构检查；不访问远端或返回租户信息 |
 
@@ -60,6 +68,19 @@ OIDC 访问令牌必须满足：
 | `wecom-mcp-operator` | operator | reader + 受控记录写入和进度重算 |
 | `wecom-mcp-admin` | admin | 全部工具，包括初始化、Schema 迁移和通用受管 API |
 
+`wecom_send_app_message` 属于 operator 能力。它只允许向一个当前员工目录中的启用 `userid` 发送
+文本消息，禁止 `@all`；`agentid` 由 GNAS 从受保护的自建应用凭据注入。调用必须提供稳定幂等键，
+仅在企业微信返回有效 `msgid` 后标记完成。
+
+`wecom_send_app_media_message` 同样属于 operator 能力。它只允许向一个启用成员发送 JPG/PNG 图片
+或普通文件，调用方提供规范 Base64、内容 SHA-256、文件名和稳定幂等键。MCP 先通过 GNAS 受管
+multipart 执行器上传临时素材，再使用返回的 `media_id` 发送消息；不接受 URL、部门、标签、群聊
+或 `@all`，也不向调用方暴露凭据和 `agentid`。图片上限 10 MiB，普通文件上限 20 MiB。
+
+身份绑定工具为 `wecom_identity_binding_start`、`wecom_identity_binding_confirm`、
+`wecom_identity_binding_status`。服务器只持久化验证码 HMAC 摘要和绑定句柄的 SHA-256 查找键，
+不保存或返回验证码原文；状态文件以 0600 原子写入实例 data 目录。
+
 角色和 access-token 类型 claim 支持点路径，例如 `realm_access.roles`。OIDC 提供方必须签发 JWT access token，并提供标准 discovery/JWKS；部署前必须按该 IdP 的真实 access-token claim 设置 discriminator。ID token、本地自签共享 Token、空 `sub` 均默认拒绝。
 
 ## 本地构建与测试
@@ -83,12 +104,14 @@ go build ./cmd/wecom-mcp-team
 3. 将 `deploy/gmzoop.env.example` 审阅后写为 `/etc/wecom-mcp/gmzoop.env`，属主 root:root、权限 0600；通过服务器 Secret 管理注入 GNAS 与审计密钥。Secret 不得进入项目目录、Git、镜像或日志。
 4. 将 `deploy/wecom-mcp@.service.example` 审阅后安装为 `/etc/systemd/system/wecom-mcp@.service`，只启用 `wecom-mcp@gmzoop.service`。日志使用 journald。
 5. 使用项目交付包中的独立 `nginx-mcp.jyiai.com-gmzoop.conf`；只暴露 `/gmzoop` 精确路由，保留 `Authorization` 和流式响应，并把 upstream `Host` 固定为 `127.0.0.1:7702` 以保留 SDK DNS-rebinding 防护。不得覆盖既有站点。
-6. OIDC 管理员创建 audience 和三个团队角色，并为 WorkBuddy 注册 OAuth 客户端。回调 URL 必须使用 WorkBuddy 当前界面/文档实际展示的值，不在部署脚本中猜测。
-7. 先验证 `/healthz`、`/readyz` 和未认证 `/mcp` 的 `401 + WWW-Authenticate`，再执行 OAuth 登录、`initialize`、`tools/list` 和一个只读工具调用。
+6. API Key 测试模式下，在服务器执行交付包的 `create-gmzoop-env.sh /etc/wecom-mcp/gmzoop.env`；脚本在服务器本地生成 Connector Key 与审计 Key，随后由 Secret 管理注入 GNAS App ID/Secret。不要把生成的 Key 写入 Git、压缩包或聊天。
+7. 先验证 `/healthz`、`/readyz` 和未认证 `/mcp` 的 `401`，再在 WorkBuddy 企业自定义连接器中配置 `Authorization: Bearer <Connector Key>`，执行 `initialize`、`tools/list` 和一个只读工具调用。
 
 systemd 模板把 `/home/product/services/mcp/wecom` 设为只读，仅允许当前实例写入 `instances/%i/data`；源码目录、共享 release、实例 config 和其他实例目录均不可写。
 
 ## WorkBuddy 配置
+
+非技术用户和其他受支持客户端可直接使用仓库根目录的 [gmzoop 远程 MCP 单 Prompt 配置](../GMZOOP_REMOTE_SETUP_PROMPT.md)。该流程只配置已经部署的远程实例，不安装本地二进制，也不会再次初始化实例。
 
 优先在 WorkBuddy 的团队 MCP 管理界面添加远程 MCP：
 
@@ -103,7 +126,13 @@ systemd 模板把 `/home/product/services/mcp/wecom` 设为只读，仅允许当
 }
 ```
 
-不要在配置中填写 GNAS Secret。WorkBuddy 首次连接收到 OAuth 资源发现挑战后，应跳转组织登录；登录后由 WorkBuddy 保存自己的 OAuth Token。腾讯云 MCP 市场模板可能显示 `transportType: "streamable-http"`；WorkBuddy 当前 HTTP 配置契约使用 `type: "http"`。不同 WorkBuddy 版本若使用 UI 而非 JSON，以该版本官方界面生成的配置为准，不直接覆盖内部文件。
+不要在配置中填写 GNAS Secret。当前 API Key 测试模式不走 OAuth：在企业自定义连接器中选择 API Key，将 Header Name 设为 `Authorization`、Header Value 设为 `Bearer <Connector Key>`。腾讯云 MCP 市场模板可能显示 `transportType: "streamable-http"`；WorkBuddy 当前 HTTP 配置契约使用 `type: "http"`。不同 WorkBuddy 版本若使用 UI 而非 JSON，以该版本官方界面生成的配置为准，不直接覆盖内部文件。
+
+## WorkBuddy Zoop Skill
+
+项目级治理 Skill 位于 [`.codebuddy/skills/zoop-workbuddy-governance`](../.codebuddy/skills/zoop-workbuddy-governance/SKILL.md)。WorkBuddy 支持从本地技能包导入，也会优先发现工作区 `.codebuddy/skills/` 下的项目 Skill。该 Skill 负责九表路由、状态机、人员发起者与 AI 执行者分离、去重、独立验证/Review、三次受控恢复与人工升级；MCP 继续负责不可绕过的身份、Schema、capability、幂等和回读门禁。
+
+安装后在同一 WorkBuddy 任务中启用 `zoop-workbuddy-governance` 与 gmzoop MCP。首次 operator/admin 操作先完成企业微信验证码绑定；不得把 Skill、连接器 API Key 或工具可见性当成用户授权。
 
 ## 验收层级
 
