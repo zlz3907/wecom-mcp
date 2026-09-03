@@ -8,6 +8,8 @@
 
 以下是 Agent 必须执行的完整规范。固定 MCP 名称为 `gmzoop`，固定 Streamable HTTP 地址为 `https://mcp.jyiai.com/gmzoop/mcp`。
 
+当前生产入口仍是 Connector API Key 模式，必须按下文现行步骤配置。只有当该入口的 RFC 9728 元数据已实际发布、并发现 GNAS OAuth 授权服务器时，才切换为“只填 URL → 浏览器企业微信登录”的用户流程；不得仅凭文档或客户端出现登录按钮推断 OAuth 已上线。
+
 ## 安全边界
 
 1. 只配置远程 MCP，不下载或安装本地 `wecom-mcp-v2` 二进制，不执行实例初始化、Registry/Schema 变更或企业微信业务写入。
@@ -60,6 +62,8 @@ codex mcp add gmzoop --url https://mcp.jyiai.com/gmzoop/mcp --bearer-token-env-v
 
 如该员工没有唯一启用的 Z-S09 人员主体，停止并提示联系 Zoop 管理员补齐人员主体，不得自动创建或猜测。
 
+OAuth 正式上线后，企业微信登录产生的稳定员工主体和服务端授权将替代手工 `identity_binding_id` 输入；不同电脑和不同 AI 客户端各自登录并取得各自的短期授权，不在 `AGENTS.md`、项目文件或全局配置中持久化人员绑定句柄。一个任务仍只能使用其所属企业、项目和 MCP 资源的授权，不能跨实例复用。
+
 ## 只读验收
 
 配置后按层级验收，不能互相替代：
@@ -82,4 +86,3 @@ identity_bound=yes|no|not_required
 key_location=admin_connector|protected_environment|client_secret_store|unavailable
 next_action=<仅一个具体动作，不含任何密钥>
 ```
-

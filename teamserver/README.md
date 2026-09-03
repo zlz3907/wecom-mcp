@@ -32,6 +32,8 @@ flowchart TB
 
 新增的 `oauth21` 候选模式用于“用户只填 MCP URL”的登录体验：客户端从 RFC 9728 资源元数据发现 GNAS，浏览器完成企业微信登录；客户端不填写 API Key、员工 userid 或绑定记录 ID。gmzoop 作为机密资源服务器对每个 MCP 请求调用 GNAS introspection，不缓存授权结果，并只暴露该员工当前 `effective_tools`。授权撤销会在下一次请求立即生效。候选环境模板见 [`deploy/gmzoop.oauth21.env.example`](deploy/gmzoop.oauth21.env.example)。现有 `connector_api_key` 模式仍保留，未经生产审批不会自动切换。
 
+客户端注册顺序固定为：组织预注册优先；GNAS 明确广告 CIMD 时使用 URL 形式的 `client_id` 元数据文档；仅对仍依赖旧协议且经过单独审批的客户端保留 DCR 兼容。CIMD 不等于任意公网 URL：GNAS 只抓取管理员精确白名单中的 HTTPS 元数据地址，并将 tenant、resource 和 scope 绑定在服务端。gmzoop 不接收客户端注册请求，也不保存客户端密钥。
+
 启用 `TEAM_MCP_AUTH_MODE=oidc` 后，可使用 `TEAM_MCP_USER_AUTHZ_ENABLED` 门禁和与 GNAS 存储实现解耦的 `AuthorizationResolver`。它从同一组 `GNAS_BASE_URL`、`GNAS_APP_ID`、`GNAS_APP_SECRET` 推导两个固定 GNAS 服务地址并取得短期 Service JWT，不再重复配置第二组应用凭据。`app_info` 仍是应用身份和服务路由授权的权威来源；逐用户 MCP 工具授权仍由 `mcp_user_authorizations` 经 `ResolveAuthorizationV1` 返回，二者不能互相替代。
 
 门禁开启后，MCP 必须取得唯一、大小写敏感的企业微信 `userid`，并以固定 `tenant + userid + resource` 查询授权。归一化决策包含 `active`、`effective_tools`、`effective_scopes`、`policy_version`；`tools=["*"]` 只展开为当前二进制公开的工具目录，且继续与静态 reader/operator/admin 角色取交集。`tools/list` 过滤发现列表，`tools/call` 在每次 HTTP 请求重新执行同一授权边界。
@@ -97,6 +99,24 @@ go test ./...
 go test -race ./...
 go vet ./...
 go build ./cmd/wecom-mcp-team
+go build ./cmd/oauth21-contract-check
+```
+
+隔离或灰度环境启用 OAuth 后，用只读合同检查器逐层验收。未提供 `-token-file` 时只检查 AS metadata、protected-resource metadata 和未认证 401 challenge；提供权限为 0600 的短期访问令牌文件时，再执行官方 MCP 客户端的 `initialize + tools/list`，不会调用业务工具或输出令牌：
+
+```sh
+./oauth21-contract-check \
+  -issuer https://jyiai.com/gnas/oauth \
+  -authorization-metadata https://jyiai.com/.well-known/oauth-authorization-server/gnas/oauth \
+  -resource-metadata https://mcp.jyiai.com/.well-known/oauth-protected-resource/gmzoop/mcp \
+  -mcp-url https://mcp.jyiai.com/gmzoop/mcp
+
+./oauth21-contract-check \
+  -issuer https://jyiai.com/gnas/oauth \
+  -authorization-metadata https://jyiai.com/.well-known/oauth-authorization-server/gnas/oauth \
+  -resource-metadata https://mcp.jyiai.com/.well-known/oauth-protected-resource/gmzoop/mcp \
+  -mcp-url https://mcp.jyiai.com/gmzoop/mcp \
+  -token-file /run/user/$(id -u)/gmzoop-oauth-token
 ```
 
 ## 服务器部署
