@@ -1,4 +1,4 @@
-# gmzoop WorkBuddy Connector API Key 测试安装
+# gmzoop 测试安装与 OAuth 隔离验收
 
 本包仅适用于 Linux amd64 测试机。它不包含 GNAS Secret、企业微信实例配置或 Schema 镜像；这些值不能从 example 推断或重建。
 
@@ -77,3 +77,11 @@ curl -fsS http://127.0.0.1:7702/readyz
 ```
 
 确认回环端点通过后，再复核已有 Nginx 代理配置：`sudo nginx -t`，然后从外部读取 `https://mcp.jyiai.com/gmzoop/healthz` 与 `/readyz`。先调用 `initialize` 和 `tools/list`，确认 `TEAM_MCP_CONNECTOR_ROLE=admin` 时当前二进制实现的全部工具均可发现；目录验收不得顺带执行真实写入。随后再按单项业务用例执行带幂等键、写后回读和审计核验的受控写入烟测。
+
+## 7. OAuth 候选必须另开隔离入口
+
+不要在现有 Connector API Key 服务上原地切换。OAuth 候选使用独立回环端口、独立 systemd 实例名和独立公网测试路径；先安装 `gmzoop.oauth21.env.example` 的受保护副本，再由 GNAS 管理员提供资源服务器 client id/secret、租户键及已审批的客户端预注册或 CIMD 精确白名单。DCR 保持关闭。
+
+候选启动后先运行不带 Token 的只读合同检查，确认 GNAS metadata、gmzoop protected-resource metadata 和 401 challenge 一致；再由测试员工完成一次企业微信扫码，把取得的短期访问令牌写入 0600 临时文件，仅追加 `-token-file` 验证 `initialize + tools/list`。检查器不调用业务工具、不输出令牌。验证结束立即删除临时令牌文件并撤销测试授权。
+
+只有以下结果全部独立通过，才可另行申请生产启用：PKCE S256、精确 redirect URI、本人身份映射、按员工 `effective_tools` 过滤、撤权下一请求生效、审计不含 userid/Token/Secret、旧 Connector 模式回归无变化。测试通过本身不授权切换生产入口。
