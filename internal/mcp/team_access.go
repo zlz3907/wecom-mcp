@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/config"
 )
@@ -62,15 +63,28 @@ var teamToolAccess = map[string]ToolAccess{
 // A missing access classification fails closed so a newly added privileged
 // tool cannot accidentally become available to remote team callers.
 func ToolDefinitions() ([]ToolDefinition, error) {
+	return toolDefinitions(false)
+}
+
+// OAuthToolDefinitions omits legacy login tools and binding-handle arguments.
+// Only a trusted transport may supply the authenticated employee separately.
+func OAuthToolDefinitions() ([]ToolDefinition, error) {
+	return toolDefinitions(true)
+}
+
+func toolDefinitions(oauth bool) ([]ToolDefinition, error) {
 	definitions := make([]ToolDefinition, 0, len(tools))
 	for _, item := range tools {
+		if oauth && strings.HasPrefix(item.Name, "wecom_identity_binding_") {
+			continue
+		}
 		access, ok := teamToolAccess[item.Name]
 		if !ok {
 			return nil, fmt.Errorf("工具 %s 缺少团队权限分类", item.Name)
 		}
 		inputSchema := item.InputSchema
 		description := item.Description
-		if requiresTeamIdentityBinding(item.Name, access) {
+		if !oauth && requiresTeamIdentityBinding(item.Name, access) {
 			var err error
 			inputSchema, err = identityBoundToolSchema(item.InputSchema)
 			if err != nil {
@@ -106,6 +120,51 @@ func (s *Server) CallTool(ctx context.Context, name string, arguments json.RawMe
 	if err != nil {
 		return nil, err
 	}
+	return s.callWithVerifiedIdentity(ctx, runtime, name, cleaned, identity)
+}
+
+// CallToolWithOAuthEmployee is a trusted transport entrypoint, never a JSON-RPC
+// argument. The transport must first verify the token's issuer, tenant, audience,
+// expiry and current tool policy. Personnel are resolved only in this instance.
+func (s *Server) CallToolWithOAuthEmployee(ctx context.Context, name string, arguments json.RawMessage, userid string) (any, error) {
+	access, ok := teamToolAccess[name]
+	if !ok || strings.HasPrefix(name, "wecom_identity_binding_") || !validMessageRecipient(userid) || userid != strings.TrimSpace(userid) {
+		return nil, fmt.Errorf("OAuth employee or tool is invalid")
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(arguments, &object) != nil || object == nil {
+		return nil, fmt.Errorf("工具参数必须是对象")
+	}
+	for _, key := range []string{identityBindingArgument, "userid", "wecom_userid", "tenant", "tenant_route", "subject_record_id", "verified_actor_userid", "verified_initiator_userid", "verified_execution_subject_record_id"} {
+		if _, exists := object[key]; exists {
+			return nil, fmt.Errorf("OAuth identity cannot be supplied in tool arguments")
+		}
+	}
+	if access == ToolAccessReader {
+		return s.call(ctx, name, arguments)
+	}
+	runtime, client, err := s.runtimeClient()
+	if err != nil {
+		return nil, err
+	}
+	identity, err := resolvePersonnelIdentity(ctx, runtime, client, verifiedIdentity{UserID: userid})
+	if err != nil {
+		return nil, err
+	}
+	ctx = context.WithValue(ctx, oauthInstanceDigestKey{}, runtime.Digest())
+	return s.callWithVerifiedIdentity(ctx, runtime, name, arguments, identity)
+}
+
+type oauthInstanceDigestKey struct{}
+
+func verifyOAuthInstanceSnapshot(ctx context.Context, runtime config.Config) error {
+	if expected, ok := ctx.Value(oauthInstanceDigestKey{}).(string); ok && expected != runtime.Digest() {
+		return fmt.Errorf("OAuth instance configuration changed during identity resolution")
+	}
+	return nil
+}
+
+func (s *Server) callWithVerifiedIdentity(ctx context.Context, runtime config.Config, name string, cleaned json.RawMessage, identity verifiedIdentity) (any, error) {
 	executionSubject, err := configuredAIExecutionSubject(runtime)
 	if err != nil {
 		return nil, err

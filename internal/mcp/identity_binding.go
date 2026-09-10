@@ -534,6 +534,13 @@ func resolveIdentityCandidate(ctx context.Context, runtime config.Config, client
 	if len(matches) != 1 {
 		return verifiedIdentity{}, fmt.Errorf("姓名未唯一匹配一个启用的企业微信员工，请提供企业微信通讯录中的完整姓名")
 	}
+	return resolvePersonnelIdentity(ctx, runtime, client, matches[0])
+}
+
+func resolvePersonnelIdentity(ctx context.Context, runtime config.Config, client wecomRequester, identity verifiedIdentity) (verifiedIdentity, error) {
+	if !validMessageRecipient(identity.UserID) {
+		return verifiedIdentity{}, fmt.Errorf("企业微信员工身份无效")
+	}
 	schema, err := config.LoadSchema(runtime.SchemaMirrorPath)
 	if err != nil {
 		return verifiedIdentity{}, err
@@ -567,7 +574,7 @@ func resolveIdentityCandidate(ctx context.Context, runtime config.Config, client
 	}
 	subjectRecordID, err := resolveUniquePersonnelSubjectRecordID(
 		recordsFrom(recordResponse),
-		matches[0].UserID,
+		identity.UserID,
 		memberField.ID,
 		typeField.ID,
 		statusField.ID,
@@ -575,8 +582,8 @@ func resolveIdentityCandidate(ctx context.Context, runtime config.Config, client
 	if err != nil {
 		return verifiedIdentity{}, err
 	}
-	matches[0].SubjectRecordID = subjectRecordID
-	return matches[0], nil
+	identity.SubjectRecordID = subjectRecordID
+	return identity, nil
 }
 
 func resolveUniquePersonnelSubjectRecordID(records []any, userid, memberFieldID, typeFieldID, statusFieldID string) (string, error) {

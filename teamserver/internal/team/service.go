@@ -54,8 +54,14 @@ func newService(cfg Config, logger *slog.Logger, resolver AuthorizationResolver)
 		return nil, fmt.Errorf("max concurrent tool calls must be positive")
 	}
 	definitions, err := legacymcp.ToolDefinitions()
+	if cfg.AuthenticationMode == AuthenticationModeOAuth21 {
+		definitions, err = legacymcp.OAuthToolDefinitions()
+	}
 	if err != nil {
 		return nil, err
+	}
+	if cfg.AuthenticationMode == AuthenticationModeOAuth21 && !cfg.UserAuthorizationEnabled {
+		return nil, fmt.Errorf("OAuth 2.1 requires employee authorization")
 	}
 	if cfg.UserAuthorizationEnabled {
 		if resolver == nil && cfg.AuthenticationMode != AuthenticationModeOAuth21 {
@@ -211,7 +217,18 @@ func (s *Service) callTool(ctx context.Context, request *sdkmcp.CallToolRequest,
 	if request != nil && request.Params != nil && len(request.Params.Arguments) > 0 {
 		arguments = request.Params.Arguments
 	}
-	value, err := s.legacy.CallTool(ctx, definition.Name, arguments)
+	var value any
+	var err error
+	if s.config.AuthenticationMode == AuthenticationModeOAuth21 {
+		authorization, ok := requestAuthorizationFromContext(ctx)
+		if !ok || !authorization.decision.Active || authorization.decision.Tenant != s.config.AuthorizationTenant || authorization.decision.Resource != s.config.AuthorizationResource || !authorization.tools[definition.Name] {
+			err = fmt.Errorf("OAuth employee authorization does not match this instance")
+		} else {
+			value, err = s.legacy.CallToolWithOAuthEmployee(ctx, definition.Name, arguments, authorization.decision.UserID)
+		}
+	} else {
+		value, err = s.legacy.CallTool(ctx, definition.Name, arguments)
+	}
 	s.auditor.ToolCall(ctx, definition.Name, role, started, err)
 	if err != nil {
 		return &sdkmcp.CallToolResult{

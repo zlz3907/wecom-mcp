@@ -193,6 +193,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 		if err != nil {
 			return nil, err
 		}
+		if err := verifyOAuthInstanceSnapshot(ctx, runtime); err != nil {
+			return nil, err
+		}
 		client, clientErr := wecom.NewFromEnvironment(runtime.TenantRoute)
 		if name == "wecom_instance_initialize" {
 			return s.instanceInitializeFacade(ctx, runtime, client, clientErr, raw)
@@ -207,6 +210,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 		if err != nil {
 			return nil, err
 		}
+		if err := verifyOAuthInstanceSnapshot(ctx, runtime); err != nil {
+			return nil, err
+		}
 		if runtime.RegistryDocumentID != "" {
 			return s.bootstrapRegistry(ctx, runtime, nil, raw)
 		}
@@ -218,6 +224,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 	}
 	runtime, client, err := s.runtimeClient()
 	if err != nil {
+		return nil, err
+	}
+	if err := verifyOAuthInstanceSnapshot(ctx, runtime); err != nil {
 		return nil, err
 	}
 	if name == "wecom_schema_sync" {
