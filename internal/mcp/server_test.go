@@ -146,6 +146,10 @@ func TestRecordApplyBindsConfiguredOperatorWithoutCallerActor(t *testing.T) {
 		if recordProperties["record_id"] == nil || values["minProperties"] != 1 || values["additionalProperties"] == nil {
 			t.Fatalf("record apply schema is incomplete: %#v", item.InputSchema)
 		}
+		fieldValue := values["additionalProperties"].(map[string]any)
+		if fieldValue["anyOf"] == nil || fieldValue["oneOf"] != nil {
+			t.Fatalf("dynamic field values must use a coercion-safe anyOf union: %#v", fieldValue)
+		}
 		return
 	}
 	t.Fatal("wecom_record_apply tool not found")
