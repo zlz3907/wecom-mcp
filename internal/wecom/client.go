@@ -144,14 +144,16 @@ func (c *Client) Request(ctx context.Context, operation string, payload any) (ma
 	}
 	if c.managedExecutor || operation == "send_app_message" {
 		var encoded []byte
+		var contentType string
 		if definition.Method != http.MethodGet {
+			contentType = "application/json"
 			var err error
 			encoded, err = json.Marshal(payload)
 			if err != nil {
 				return nil, fmt.Errorf("企业微信请求编码失败")
 			}
 		}
-		return c.managedRequest(ctx, definition, definition.Path, "application/json", encoded)
+		return c.managedRequest(ctx, definition, definition.Path, contentType, encoded)
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		token, err := c.jwt(ctx, attempt == 1)

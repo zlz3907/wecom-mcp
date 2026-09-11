@@ -22,10 +22,13 @@ func TestManagedExecutorTransportPreservesFixedOperation(t *testing.T) {
 				}
 				body, _ := io.ReadAll(r.Body)
 				if definition.Method == http.MethodGet {
-					if len(body) != 0 {
-						t.Error("upstream GET carried body")
+					if len(body) != 0 || r.Header.Get("Content-Type") != "" {
+						t.Error("upstream GET carried body or Content-Type rejected by GNAS executor")
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = w.Write([]byte(`{"code":40001}`))
+						return
 					}
-				} else if string(body) != `{"docid":"fixture"}` {
+				} else if string(body) != `{"docid":"fixture"}` || r.Header.Get("Content-Type") != "application/json" {
 					t.Errorf("body changed: %s", body)
 				}
 				calls++
