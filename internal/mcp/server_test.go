@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -147,8 +148,12 @@ func TestRecordApplyBindsConfiguredOperatorWithoutCallerActor(t *testing.T) {
 			t.Fatalf("record apply schema is incomplete: %#v", item.InputSchema)
 		}
 		fieldValue := values["additionalProperties"].(map[string]any)
-		if fieldValue["anyOf"] == nil || fieldValue["oneOf"] != nil {
-			t.Fatalf("dynamic field values must use a coercion-safe anyOf union: %#v", fieldValue)
+		if fieldValue["anyOf"] != nil || fieldValue["oneOf"] != nil {
+			t.Fatalf("dynamic field values must not use coercible primitive branches: %#v", fieldValue)
+		}
+		gotTypes, ok := fieldValue["type"].([]string)
+		if !ok || !reflect.DeepEqual(gotTypes, []string{"string", "number", "boolean", "array"}) {
+			t.Fatalf("dynamic field values have incomplete JSON types: %#v", fieldValue)
 		}
 		return
 	}

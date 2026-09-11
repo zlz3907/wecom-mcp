@@ -36,6 +36,7 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 			for i := 1; i <= 9; i++ {
 				schema += fmt.Sprintf("## Z-S0%d｜表\n| 测试 | field | FIELD_TYPE_TEXT |\n", i)
 				if i == 6 {
+					schema += "| 自动规划授权 | checkbox | FIELD_TYPE_CHECKBOX |\n"
 					schema += "| 发起主体 | initiator | FIELD_TYPE_REFERENCE |\n| 执行主体 | executor | FIELD_TYPE_REFERENCE |\n"
 				}
 				if i == 9 {
@@ -152,6 +153,9 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 						if !reflect.DeepEqual(values["field"], []any{map[string]any{"type": "text", "text": "fixture-value"}}) {
 							return nil, fmt.Errorf("unexpected business value: %v", values["field"])
 						}
+						if checked, ok := values["checkbox"].(bool); !ok || checked {
+							return nil, fmt.Errorf("checkbox false changed type or value: %T", values["checkbox"])
+						}
 						for field, actor := range map[string]string{"initiator": "human-subject", "executor": "ai-subject"} {
 							if !reflect.DeepEqual(values[field], []any{actor}) {
 								return nil, fmt.Errorf("wrong actor field %s: %v", field, values[field])
@@ -194,7 +198,7 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer session.Close()
-			args := map[string]any{"target_role": "Z-S06", "operation": "add_records", "idempotency_key": "fixture-table-write-key", "source_revision": "fixture-v1", "records": []any{map[string]any{"values": map[string]any{"测试": "fixture-value"}}}}
+			args := map[string]any{"target_role": "Z-S06", "operation": "add_records", "idempotency_key": "fixture-table-write-key", "source_revision": "fixture-v1", "records": []any{map[string]any{"values": map[string]any{"测试": "fixture-value", "自动规划授权": false}}}}
 			if scenario == "forged identity" {
 				args["userid"] = "employee-two"
 			}

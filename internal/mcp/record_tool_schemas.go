@@ -34,17 +34,13 @@ func recordApplyToolSchema() map[string]any {
 	}
 	fieldValue := map[string]any{
 		"description": "字段标题对应的值。TEXT/PHONE/EMAIL/BARCODE/DATE_TIME 与 SINGLE_SELECT 使用字符串；CHECKBOX 使用布尔；数字类使用数字；REFERENCE 使用 {record_id} 数组；其他复杂字段仅接受已验证的单元格对象数组。",
-		// Some MCP clients validate tool arguments with primitive type coercion.
-		// A oneOf union can then make false match both boolean and number and be
-		// rejected as ambiguous. The runtime still validates the value against
-		// the concrete field type from the fixed local Schema mirror, so anyOf
-		// preserves the published alternatives without weakening write checks.
-		"anyOf": []any{
-			map[string]any{"type": "string"},
-			map[string]any{"type": "number"},
-			map[string]any{"type": "boolean"},
-			map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"anyOf": []any{referenceObject, cellObject}}},
-		},
+		// Keep primitive alternatives in one JSON Schema type declaration. Some
+		// MCP clients enable coercion while walking oneOf/anyOf branches and can
+		// mutate false into numeric zero before sending the tool call. The
+		// concrete field codec below remains the authoritative write validator.
+		"type":     []string{"string", "number", "boolean", "array"},
+		"minItems": 1,
+		"items":    map[string]any{"anyOf": []any{referenceObject, cellObject}},
 	}
 	record := map[string]any{
 		"type":                 "object",
