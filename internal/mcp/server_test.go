@@ -138,6 +138,14 @@ func TestRecordApplyBindsConfiguredOperatorWithoutCallerActor(t *testing.T) {
 		if strings.Contains(string(encoded), "actor") || strings.Contains(string(encoded), "operator_userid") {
 			t.Fatalf("caller-controllable actor leaked into tool schema: %s", encoded)
 		}
+		properties := item.InputSchema.(map[string]any)["properties"].(map[string]any)
+		records := properties["records"].(map[string]any)
+		record := records["items"].(map[string]any)
+		recordProperties := record["properties"].(map[string]any)
+		values := recordProperties["values"].(map[string]any)
+		if recordProperties["record_id"] == nil || values["minProperties"] != 1 || values["additionalProperties"] == nil {
+			t.Fatalf("record apply schema is incomplete: %#v", item.InputSchema)
+		}
 		return
 	}
 	t.Fatal("wecom_record_apply tool not found")

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -35,6 +36,52 @@ func TestEveryToolHasTeamAccessClassification(t *testing.T) {
 			t.Fatalf("%s access=%q, want %q", name, got, want)
 		}
 	}
+}
+
+func TestReaderAndOperatorToolSchemasHaveNoNestedBareObjects(t *testing.T) {
+	definitions, err := ToolDefinitions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, definition := range definitions {
+		if definition.Access == ToolAccessAdmin {
+			continue
+		}
+		if err := rejectNestedBareObject(definition.InputSchema, definition.Name, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func rejectNestedBareObject(value any, path string, root bool) error {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if object["type"] == "object" {
+		_, hasProperties := object["properties"]
+		_, hasAdditionalProperties := object["additionalProperties"]
+		_, hasOneOf := object["oneOf"]
+		_, hasAnyOf := object["anyOf"]
+		if !root && !hasProperties && !hasAdditionalProperties && !hasOneOf && !hasAnyOf {
+			return fmt.Errorf("%s publishes a nested object without a contract", path)
+		}
+	}
+	for key, child := range object {
+		switch typed := child.(type) {
+		case map[string]any:
+			if err := rejectNestedBareObject(typed, path+"."+key, false); err != nil {
+				return err
+			}
+		case []any:
+			for index, item := range typed {
+				if err := rejectNestedBareObject(item, fmt.Sprintf("%s.%s[%d]", path, key, index), false); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func TestTeamSchemasRequireIdentityExceptBindingBootstrap(t *testing.T) {

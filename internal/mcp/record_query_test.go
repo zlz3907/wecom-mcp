@@ -26,6 +26,10 @@ func TestNormalizeQuerySortUsesSchemaTitleAndRejectsUnknownField(t *testing.T) {
 	if _, err := normalizeQuerySort(queryTestFields(), []map[string]any{{"field_id": "not-a-field"}}); err == nil {
 		t.Fatal("unknown sort field must be rejected")
 	}
+	titleRules, err := normalizeQuerySort(queryTestFields(), []map[string]any{{"field_title": "任务编号"}})
+	if err != nil || titleRules[0]["field_title"] != "任务编号" {
+		t.Fatalf("title sort was not resolved: %#v err=%v", titleRules, err)
+	}
 }
 
 func TestFilterSpecIsNormalizedAgainstSchema(t *testing.T) {
@@ -43,6 +47,35 @@ func TestFilterSpecIsNormalizedAgainstSchema(t *testing.T) {
 	if condition["field_type"] != "FIELD_TYPE_TEXT" {
 		t.Fatalf("field type was not filled from schema: %#v", condition)
 	}
+	byTitle, err := validateAndNormalizeFilter(queryTestFields(), map[string]any{
+		"conjunction": "CONJUNCTION_AND",
+		"conditions": []any{map[string]any{
+			"field_title": "任务编号", "operator": "OPERATOR_IS",
+			"string_value": map[string]any{"value": []any{"TASK-EXAMPLE-001"}},
+		}},
+	})
+	if err != nil || byTitle["conditions"].([]any)[0].(map[string]any)["field_id"] != "field_task_id" {
+		t.Fatalf("title filter was not resolved: %#v err=%v", byTitle, err)
+	}
+	if _, err := validateAndNormalizeFilter(queryTestFields(), map[string]any{
+		"conjunction": "CONJUNCTION_AND",
+		"conditions": []any{map[string]any{
+			"field_title": "任务编号", "field_id": "field_task_id", "operator": "OPERATOR_IS",
+			"string_value": map[string]any{"value": []any{"TASK-EXAMPLE-001"}},
+		}},
+	}); err == nil {
+		t.Fatal("filter must reject simultaneous field_title and field_id")
+	}
+	if _, err := validateAndNormalizeFilter(queryTestFields(), map[string]any{
+		"conjunction": "CONJUNCTION_AND",
+		"conditions": []any{map[string]any{
+			"field_title": "任务编号", "operator": "OPERATOR_IS",
+			"string_value": map[string]any{"value": []any{"TASK-EXAMPLE-001"}},
+			"bool_value":   map[string]any{"value": true},
+		}},
+	}); err == nil {
+		t.Fatal("filter must reject more than one value object")
+	}
 	if _, err := validateAndNormalizeFilter(queryTestFields(), map[string]any{
 		"conjunction": "CONJUNCTION_AND",
 		"conditions": []any{map[string]any{
@@ -51,6 +84,34 @@ func TestFilterSpecIsNormalizedAgainstSchema(t *testing.T) {
 		}},
 	}); err == nil {
 		t.Fatal("filter field type mismatch must be rejected")
+	}
+}
+
+func TestResolveQueryProjectionSupportsTitles(t *testing.T) {
+	got, err := resolveQueryProjection(queryTestFields(), nil, []string{"任务状态", "任务编号"})
+	if err != nil || len(got) != 2 || got[0] != "fGyxtt" || got[1] != "field_task_id" {
+		t.Fatalf("title projection=%#v err=%v", got, err)
+	}
+	if _, err := resolveQueryProjection(queryTestFields(), []string{"field_task_id"}, []string{"任务编号"}); err == nil {
+		t.Fatal("projection must reject IDs and titles together")
+	}
+}
+
+func TestRecordQueryToolSchemaPublishesNestedContract(t *testing.T) {
+	properties := recordQueryToolSchema()["properties"].(map[string]any)
+	filter := properties["filter_spec"].(map[string]any)
+	filterProperties := filter["properties"].(map[string]any)
+	conditions := filterProperties["conditions"].(map[string]any)
+	condition := conditions["items"].(map[string]any)
+	conditionProperties := condition["properties"].(map[string]any)
+	for _, key := range []string{"field_title", "field_id", "operator", "string_value", "number_value", "bool_value", "date_time_value", "user_value"} {
+		if conditionProperties[key] == nil {
+			t.Fatalf("filter schema omitted %s", key)
+		}
+	}
+	operator := conditionProperties["operator"].(map[string]any)
+	if len(operator["enum"].([]string)) != len(validFilterOperators) {
+		t.Fatalf("operator schema drift: %#v", operator)
 	}
 }
 
