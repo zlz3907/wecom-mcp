@@ -16,12 +16,13 @@ import (
 )
 
 const (
-	subjectMigrationID      = "zoop_subject_v1"
-	subjectLinksMigrationID = "zoop_subject_links_v1"
-	subjectRole             = "Z-S09"
-	subjectSheetTitle       = "Z-S09｜协作主体"
-	schemaMigrationGroup    = "schema_migration"
-	schemaAdminPermission   = "apply_approved_schema_migration_as_admin"
+	subjectMigrationID        = "zoop_subject_v1"
+	subjectLinksMigrationID   = "zoop_subject_links_v1"
+	schemaRegistryMigrationID = "zoop_schema_registry_v1"
+	subjectRole               = "Z-S09"
+	subjectSheetTitle         = "Z-S09｜协作主体"
+	schemaMigrationGroup      = "schema_migration"
+	schemaAdminPermission     = "apply_approved_schema_migration_as_admin"
 )
 
 var currentSchemaAdminUser = func() (string, error) {
@@ -53,7 +54,7 @@ type schemaMigrationPlan struct {
 }
 
 func schemaMigrationTools() []tool {
-	migrationIDs := []string{subjectMigrationID, subjectLinksMigrationID}
+	migrationIDs := []string{subjectMigrationID, subjectLinksMigrationID, schemaRegistryMigrationID}
 	return []tool{
 		{"wecom_schema_migration_preview", "只读生成当前固定 Zoop 文档的管理员 Schema 增量迁移预览。仅支持内置迁移目录，不接受文档、子表或字段 ID。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"migration_id"}, "properties": map[string]any{"migration_id": map[string]any{"type": "string", "enum": migrationIDs}}}},
 		{"wecom_schema_migration_apply", "执行已预览的内置 Zoop Schema 增量迁移。必须同时通过本机管理员身份、显式管理员授权和未过期预览校验；仅允许新增或配置本迁移刚创建的结构，完成后回读。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"migration_id", "preview_id", "admin_authorization"}, "properties": map[string]any{"migration_id": map[string]any{"type": "string", "enum": migrationIDs}, "preview_id": map[string]any{"type": "string", "minLength": 64, "maxLength": 64}, "admin_authorization": map[string]any{"const": schemaAdminPermission}}}},
@@ -73,6 +74,13 @@ func (s *Server) previewSchemaMigration(ctx context.Context, runtime config.Conf
 			return nil, err
 		}
 		return publicSubjectLinksMigrationPlan(plan), nil
+	}
+	if input.MigrationID == schemaRegistryMigrationID {
+		plan, err := buildSchemaRegistryMigrationPlan(ctx, runtime, client)
+		if err != nil {
+			return nil, err
+		}
+		return publicSchemaRegistryMigrationPlan(plan), nil
 	}
 	plan, err := buildSchemaMigrationPlan(ctx, runtime, client, input.MigrationID)
 	if err != nil {
@@ -98,6 +106,9 @@ func (s *Server) applySchemaMigration(ctx context.Context, runtime config.Config
 	}
 	if input.MigrationID == subjectLinksMigrationID {
 		return s.applySubjectLinksMigration(ctx, runtime, client, input.PreviewID)
+	}
+	if input.MigrationID == schemaRegistryMigrationID {
+		return s.applySchemaRegistryMigration(ctx, runtime, client, input.PreviewID)
 	}
 	plan, err := buildSchemaMigrationPlan(ctx, runtime, client, input.MigrationID)
 	if err != nil {

@@ -209,7 +209,7 @@ func targetsFromSheetList(documentID string, roles []string, targetList []any) (
 // ReadFields returns the raw field definitions for a previously resolved
 // target. Callers may use it for a read-only probe or an explicit
 // Owner-authorized local mirror sync; this helper never persists the result.
-func ReadFields(ctx context.Context, client *Client, target Target, allowed func(string) bool) ([]map[string]any, error) {
+func ReadFields(ctx context.Context, client Requester, target Target, allowed func(string) bool) ([]map[string]any, error) {
 	if !allowed("get_fields") {
 		return nil, fmt.Errorf("实例白名单未允许 get_fields")
 	}
