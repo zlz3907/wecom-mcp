@@ -1,13 +1,23 @@
 package mcp
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/config"
+	"github.com/zhonglizhi/wecom-mcp-v2/internal/wecom"
 )
+
+type schemaRegistryReadFailClient struct{}
+
+func (schemaRegistryReadFailClient) Request(context.Context, string, any) (map[string]any, error) {
+	return nil, errors.New("lookup attempted")
+}
 
 func TestSchemaRegistryMigrationCatalogIsStableAndTextOnly(t *testing.T) {
 	fields := schemaRegistryMigrationFields()
@@ -158,4 +168,231 @@ func TestSchemaRegistryUpdateSchemaHasCASAndNoCallerFieldDefinitions(t *testing.
 	if properties["owner_authorization"].(map[string]any)["const"] != schemaRegistryAuthorization {
 		t.Fatal("owner authorization constant drifted")
 	}
+}
+
+func TestSchemaRegistryReadSchemaIsConvenientAndReadOnly(t *testing.T) {
+	schema := schemaRegistryReadToolSchema()
+	if required, ok := schema["required"]; ok && len(required.([]string)) != 0 {
+		t.Fatalf("read tool unexpectedly requires arguments: %#v", required)
+	}
+	properties := schema["properties"].(map[string]any)
+	if properties["generation"].(map[string]any)["default"] != "active" {
+		t.Fatal("read tool must default to active generation")
+	}
+	if properties["entry_type"].(map[string]any)["default"] != "field" {
+		t.Fatal("read tool must default to field entries")
+	}
+	if properties["limit"].(map[string]any)["default"] != 200 || properties["compact"].(map[string]any)["default"] != true {
+		t.Fatal("read tool must request a convenient compact active-generation page by default")
+	}
+	if properties["max_bytes"].(map[string]any)["default"] != defaultQueryBytes {
+		t.Fatal("read tool must protect WorkBuddy from oversized responses")
+	}
+	if access := teamToolAccess["wecom_schema_registry_read"]; access != ToolAccessReader {
+		t.Fatalf("registry read access=%s, want reader", access)
+	}
+}
+
+func TestSchemaRegistryReadAcceptsOmittedArguments(t *testing.T) {
+	server := New(filepath.Join(t.TempDir(), "unused-config.json"))
+	runtime := config.Config{
+		RegistryDocumentID: "registry", RegistryKey: "registry-key",
+		APIWhitelist: map[string][]string{"schema_registry": {"get_sheet", "get_fields", "get_records"}},
+	}
+	_, err := server.readSchemaRegistry(context.Background(), runtime, schemaRegistryReadFailClient{}, json.RawMessage(nil))
+	if err == nil || err.Error() != "lookup attempted" {
+		t.Fatalf("omitted arguments did not reach the read path: %v", err)
+	}
+}
+
+func TestSchemaRegistryStatusExplainsActiveGenerationAndRecordCounts(t *testing.T) {
+	table, runtime, generation := schemaRegistryTestTable(t)
+	result := schemaRegistryStatusResult(runtime, table)
+	if result["state"] != "active" || result["registry_sheet_id"] != "registry-sheet" {
+		t.Fatalf("unexpected status identity: %#v", result)
+	}
+	if result["active_generation"] != generation || result["schema_digest"] != generation {
+		t.Fatalf("active generation metadata missing: %#v", result)
+	}
+	if result["source_revision"] != "probe-revision" || result["captured_at"] != "2026-09-14T08:01:11Z" {
+		t.Fatalf("source metadata missing: %#v", result)
+	}
+	if result["active_table_count"] != 2 || result["active_field_count"] != 2 {
+		t.Fatalf("active counts are incomplete: %#v", result)
+	}
+	breakdown := result["record_count_breakdown"].(map[string]int)
+	if breakdown["total"] != 4 || breakdown["active_pointer"] != 1 || breakdown["manifest_records"] != 1 || breakdown["field_records"] != 2 {
+		t.Fatalf("unexpected record breakdown: %#v", breakdown)
+	}
+	if len(result["registry_fields"].([]map[string]any)) != 28 {
+		t.Fatalf("registry schema was not returned: %#v", result["registry_fields"])
+	}
+	tables := result["tables"].([]map[string]any)
+	if len(tables) != 2 || tables[0]["target_role"] != "Z-S01" || tables[1]["target_role"] != "Z-S02" {
+		t.Fatalf("unexpected table summaries: %#v", tables)
+	}
+}
+
+func TestSchemaRegistryReadFiltersAndSortsFriendlyEntries(t *testing.T) {
+	table, _, generation := schemaRegistryTestTable(t)
+	entries := schemaRegistryFilteredEntries(table, generation, schemaRegistryReadInput{EntryType: "field"})
+	if len(entries) != 2 || entries[0].TargetRole != "Z-S01" || entries[1].TargetRole != "Z-S02" {
+		t.Fatalf("unexpected complete read order: %#v", entries)
+	}
+	entries = schemaRegistryFilteredEntries(table, generation, schemaRegistryReadInput{EntryType: "field", TargetRole: "Z-S02"})
+	if len(entries) != 1 || entries[0].TableID != "sheet-2" || entries[0].FieldID != "field-2" {
+		t.Fatalf("role filter did not return friendly identifiers: %#v", entries)
+	}
+	entries = schemaRegistryFilteredEntries(table, generation, schemaRegistryReadInput{EntryType: "field", Query: "NUMBER"})
+	if len(entries) != 1 || entries[0].FieldName != "数量" || entries[0].WriteCodec != "number" {
+		t.Fatalf("query filter did not match type/codec: %#v", entries)
+	}
+	entries = schemaRegistryFilteredEntries(table, generation, schemaRegistryReadInput{EntryType: "manifest"})
+	if len(entries) != 1 || entries[0].SourceRevision != "probe-revision" || entries[0].FieldCount != "2" {
+		t.Fatalf("manifest read is incomplete: %#v", entries)
+	}
+	entries = schemaRegistryFilteredEntries(table, generation, schemaRegistryReadInput{EntryType: "all"})
+	if len(entries) != 3 {
+		t.Fatalf("all must include manifest + fields but exclude mutable active pointer: %#v", entries)
+	}
+}
+
+func TestSchemaRegistryGenerationReadStateRejectsMissingAndIncompleteSnapshots(t *testing.T) {
+	table, _, generation := schemaRegistryTestTable(t)
+	state, metadata := schemaRegistryGenerationReadState(table, strings.Repeat("f", 64))
+	if state != "generation_not_found" || len(metadata) != 0 {
+		t.Fatalf("missing generation was treated as readable: state=%s metadata=%#v", state, metadata)
+	}
+	manifestKey := "manifest:" + generation
+	manifest := table.ByKey[manifestKey]
+	delete(table.ByKey, manifestKey)
+	state, _ = schemaRegistryGenerationReadState(table, generation)
+	if state != "generation_not_found" {
+		t.Fatalf("generation without manifest state=%s", state)
+	}
+	table.ByKey[manifestKey] = manifest
+	for key, record := range table.ByKey {
+		if schemaRegistryEntry(table, record).EntryType == "field" {
+			delete(table.ByKey, key)
+			break
+		}
+	}
+	state, metadata = schemaRegistryGenerationReadState(table, generation)
+	if state != "generation_incomplete" || len(metadata) != 0 {
+		t.Fatalf("incomplete generation was treated as readable: state=%s metadata=%#v", state, metadata)
+	}
+}
+
+func TestCompactSchemaRegistryEntryIsUsefulAndBounded(t *testing.T) {
+	entry := schemaRegistryEntryView{
+		EntryKey: strings.Repeat("k", 64), EntryType: "field", Generation: strings.Repeat("a", 64),
+		TargetRole: "Z-S01", TableName: "Z-S01｜需求", TableID: "sheet-1", FieldName: "标题", FieldID: "field-1",
+		FieldType: "FIELD_TYPE_TEXT", RawFieldProperties: strings.Repeat("x", 5000), WriteCodec: "text_cell_array",
+	}
+	compact := compactSchemaRegistryEntry(entry)
+	if compact["raw_field_properties"] != nil || compact["field_id"] != "field-1" {
+		t.Fatalf("compact registry entry is not useful and bounded: %#v", compact)
+	}
+}
+
+func TestSchemaRegistryPageStopsBeforeMaxBytesAndCanResume(t *testing.T) {
+	compact := true
+	pageInput := schemaRegistryReadInput{EntryType: "field", Limit: 20, Compact: &compact, MaxBytes: 1024}
+	generation := strings.Repeat("a", 64)
+	result := map[string]any{
+		"entries": []any{}, "returned_count": 0, "has_more": true, "response_truncated": false,
+		"next_page": schemaRegistryNextPage(pageInput, generation, 7),
+	}
+	page := []any{}
+	accepted := true
+	for index := 0; index < 20 && accepted; index++ {
+		page, accepted = appendSchemaRegistryPage(result, page, map[string]any{
+			"field_id": strconv.Itoa(index), "field_name": strings.Repeat("字段", 30),
+		}, 7, 27, 1024)
+	}
+	if accepted || len(page) == 0 || len(mustMarshal(result)) > 1024 {
+		t.Fatalf("page did not stop safely: accepted=%t bytes=%d result=%#v", accepted, len(mustMarshal(result)), result)
+	}
+	if result["response_truncated"] != true || result["next_offset"] != 7+len(page) {
+		t.Fatalf("page cannot be resumed: %#v", result)
+	}
+	firstCount := len(page)
+	next := result["next_offset"].(int)
+	nextPage := result["next_page"].(map[string]any)
+	if nextPage["generation"] != generation || nextPage["offset"] != next {
+		t.Fatalf("next page is not bound to the concrete generation: %#v", nextPage)
+	}
+	second := map[string]any{
+		"entries": []any{}, "returned_count": 0, "has_more": true, "response_truncated": false,
+		"next_page": schemaRegistryNextPage(pageInput, generation, next),
+	}
+	secondPage := []any{}
+	secondAccepted := true
+	for index := firstCount; index < 20 && secondAccepted; index++ {
+		secondPage, secondAccepted = appendSchemaRegistryPage(second, secondPage, map[string]any{
+			"field_id": strconv.Itoa(index), "field_name": strings.Repeat("字段", 30),
+		}, next, 27, 1024)
+	}
+	if len(secondPage) == 0 || secondPage[0].(map[string]any)["field_id"] != strconv.Itoa(firstCount) {
+		t.Fatalf("next_offset repeated or skipped an entry: first=%d next=%d second=%#v", firstCount, next, secondPage)
+	}
+}
+
+func TestSchemaRegistryBaseMetadataHonorsMaxBytes(t *testing.T) {
+	result := map[string]any{"source_revision": strings.Repeat("x", 1100), "entries": []any{}}
+	if err := validateSchemaRegistryResultSize(result, 1024); err == nil || !strings.Contains(err.Error(), "基础元数据") {
+		t.Fatalf("oversized empty response was not rejected accurately: %v", err)
+	}
+}
+
+func schemaRegistryTestTable(t *testing.T) (schemaRegistryTable, config.Config, string) {
+	t.Helper()
+	runtime := config.Config{InstanceName: "instance", RegistryKey: "registry"}
+	fieldIDs := map[string]string{}
+	registryFields := make([]map[string]any, 0, len(schemaRegistryMigrationFields()))
+	for index, field := range schemaRegistryMigrationFields() {
+		id := "registry-field-" + strconv.Itoa(index)
+		fieldIDs[field.Title] = id
+		registryFields = append(registryFields, map[string]any{
+			"field_title": field.Title, "field_id": id, "field_type": "FIELD_TYPE_TEXT", "is_primary": index == 0,
+		})
+	}
+	snapshot := schemaRegistrySnapshot{
+		CapturedAt: "2026-09-14T08:01:11Z",
+		FieldCount: 2,
+		Entries: []map[string]string{
+			{
+				"条目类型": "field", "实例名称": "instance", "Registry Key": "registry", "表角色": "Z-S01",
+				"表名": "Z-S01｜需求", "表 ID": "sheet-1", "字段名": "标题", "字段 ID": "field-1",
+				"字段类型": "FIELD_TYPE_TEXT", "是否允许新增": "是", "是否允许更新": "是", "写入编码器": "text_cell_array", "Codec 验证状态": "已验证",
+			},
+			{
+				"条目类型": "field", "实例名称": "instance", "Registry Key": "registry", "表角色": "Z-S02",
+				"表名": "Z-S02｜项目", "表 ID": "sheet-2", "字段名": "数量", "字段 ID": "field-2",
+				"字段类型": "FIELD_TYPE_NUMBER", "是否允许新增": "是", "是否允许更新": "是", "写入编码器": "number", "Codec 验证状态": "已验证",
+			},
+		},
+	}
+	var err error
+	snapshot.Generation, err = schemaRegistryEntriesDigest(snapshot.Entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := schemaRegistryGenerationRecords(snapshot, runtime, "probe-revision", fieldIDs)
+	byKey := map[string]map[string]any{}
+	records := []any{}
+	for key, values := range expected {
+		record := map[string]any{"record_id": "record-" + key, "values": values}
+		byKey[key] = record
+		records = append(records, record)
+	}
+	pointerValues := schemaRegistryPointerValues(snapshot, runtime, "probe-revision", fieldIDs)
+	pointer := map[string]any{"record_id": "record-active", "values": pointerValues}
+	byKey[schemaRegistryActiveKey] = pointer
+	records = append(records, pointer)
+	return schemaRegistryTable{
+		Target: wecom.Target{SheetID: "registry-sheet", Role: schemaRegistryRole},
+		Fields: registryFields, FieldIDs: fieldIDs, Records: records, ByKey: byKey,
+		ActiveGeneration: snapshot.Generation, ActiveRecordID: "record-active", ActiveComplete: true, ActiveFieldCount: 2,
+	}, runtime, snapshot.Generation
 }

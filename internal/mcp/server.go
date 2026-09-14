@@ -68,6 +68,7 @@ var tools = []tool{
 	{"wecom_schema_probe", "只读回查当前固定租户的九张 Zoop 表线上字段，并与本地机器 Schema 镜像比较。不会写入企业微信或更新本地镜像。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_schema_sync", "仅在 Owner 明确授权后，从当前固定企业微信实例只读回查九张 Zoop 表字段，并覆盖本地机器可读 Schema 镜像。不会修改企业微信数据或结构。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"owner_authorization"}, "properties": map[string]any{"owner_authorization": map[string]any{"const": "online_to_local_schema_dictionary"}}}},
 	{"wecom_schema_registry_status", "只读核对 Z-S00 在线 Schema Registry 的表结构、active generation 与条目完整性；不修改企业微信或本地镜像。", schemaRegistryStatusToolSchema()},
+	{"wecom_schema_registry_read", "直接读取 Z-S00 当前或历史 Schema generation 的表与字段定义；默认返回 active generation 的紧凑字段页，支持筛选、分页和响应大小保护。只读，不修改企业微信或本地镜像。", schemaRegistryReadToolSchema()},
 	{"wecom_schema_registry_update", "从当前固定企业微信实例重新采集 Z-S01 至 Z-S09 的真实表与字段定义，写入 Z-S00 不可变 generation，完整回读后切换 @active 指针。调用方不能提交表名、表 ID、字段名、字段 ID 或字段类型。", schemaRegistryUpdateToolSchema()},
 	{"wecom_field_codec_lab_create", "创建或返回当前固定租户专用的企业微信字段编码验证表。创建后必须写入 SMART_SHEETS_IDS 并回读核验；登记失败即停止使用，不会创建第二张表。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_field_codec_lab_read", "仅在验证表已登记为 active 后，只读返回字段定义与填写样本原始值，用于固化经过人工填写验证的写入 codec。", map[string]any{"type": "object", "additionalProperties": false}},
@@ -240,6 +241,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 	}
 	if name == "wecom_schema_registry_status" {
 		return s.schemaRegistryStatus(ctx, runtime, client, raw)
+	}
+	if name == "wecom_schema_registry_read" {
+		return s.readSchemaRegistry(ctx, runtime, client, raw)
 	}
 	if name == "wecom_schema_registry_update" {
 		return s.boundOperatorWrite(ctx, runtime, client, schemaRegistryGroup, func() (any, error) {

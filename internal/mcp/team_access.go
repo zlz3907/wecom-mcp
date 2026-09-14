@@ -38,6 +38,7 @@ var teamToolAccess = map[string]ToolAccess{
 	"wecom_schema_probe":                          ToolAccessReader,
 	"wecom_schema_sync":                           ToolAccessAdmin,
 	"wecom_schema_registry_status":                ToolAccessReader,
+	"wecom_schema_registry_read":                  ToolAccessReader,
 	"wecom_schema_registry_update":                ToolAccessAdmin,
 	"wecom_field_codec_lab_create":                ToolAccessAdmin,
 	"wecom_field_codec_lab_read":                  ToolAccessReader,

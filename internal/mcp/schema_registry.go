@@ -37,6 +37,7 @@ type schemaRegistrySnapshot struct {
 
 type schemaRegistryTable struct {
 	Target           wecom.Target
+	Fields           []map[string]any
 	FieldIDs         map[string]string
 	Records          []any
 	ByKey            map[string]map[string]any
@@ -46,8 +47,89 @@ type schemaRegistryTable struct {
 	ActiveFieldCount int
 }
 
+type schemaRegistryReadInput struct {
+	Generation string `json:"generation"`
+	EntryType  string `json:"entry_type"`
+	TargetRole string `json:"target_role"`
+	Query      string `json:"query"`
+	Offset     int    `json:"offset"`
+	Limit      int    `json:"limit"`
+	Compact    *bool  `json:"compact"`
+	MaxBytes   int    `json:"max_bytes"`
+}
+
+type schemaRegistryEntryView struct {
+	EntryKey             string `json:"entry_key"`
+	EntryType            string `json:"entry_type"`
+	Generation           string `json:"generation"`
+	State                string `json:"state"`
+	InstanceName         string `json:"instance_name"`
+	RegistryKey          string `json:"registry_key"`
+	TargetRole           string `json:"target_role,omitempty"`
+	TableName            string `json:"table_name,omitempty"`
+	TableID              string `json:"table_id,omitempty"`
+	FieldName            string `json:"field_name,omitempty"`
+	FieldID              string `json:"field_id,omitempty"`
+	FieldType            string `json:"field_type,omitempty"`
+	IsPrimary            string `json:"is_primary,omitempty"`
+	IsMultiple           string `json:"is_multiple,omitempty"`
+	Options              string `json:"options,omitempty"`
+	ReferenceTargetTable string `json:"reference_target_table_id,omitempty"`
+	ReferenceTargetField string `json:"reference_target_field_id,omitempty"`
+	RawFieldProperties   string `json:"raw_field_properties,omitempty"`
+	IsSystemField        string `json:"is_system_field,omitempty"`
+	AllowAdd             string `json:"allow_add,omitempty"`
+	AllowUpdate          string `json:"allow_update,omitempty"`
+	WriteCodec           string `json:"write_codec,omitempty"`
+	CodecStatus          string `json:"codec_status,omitempty"`
+	SourceRevision       string `json:"source_revision,omitempty"`
+	CapturedAt           string `json:"captured_at,omitempty"`
+	SchemaDigest         string `json:"schema_digest,omitempty"`
+	TableCount           string `json:"table_count,omitempty"`
+	FieldCount           string `json:"field_count,omitempty"`
+}
+
 func schemaRegistryStatusToolSchema() map[string]any {
 	return map[string]any{"type": "object", "additionalProperties": false}
+}
+
+func schemaRegistryReadToolSchema() map[string]any {
+	roles := make([]string, 0, len(validRoles))
+	for role := range validRoles {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"generation": map[string]any{
+				"type": "string", "pattern": "^(active|[a-f0-9]{64})$", "default": "active",
+				"description": "默认读取当前 active generation；也可读取一个已知的不可变历史 generation。分页续读必须使用返回 next_page 中绑定的具体 generation。",
+			},
+			"entry_type": map[string]any{
+				"type": "string", "enum": []string{"field", "manifest", "all"}, "default": "field",
+			},
+			"target_role": map[string]any{
+				"type": "string", "enum": roles,
+				"description": "可选；省略时读取所有九张业务表。",
+			},
+			"query": map[string]any{
+				"type": "string", "maxLength": 128,
+				"description": "可选；在表角色、表名/ID、字段名/ID、字段类型和编码器中做不区分大小写的包含匹配。",
+			},
+			"offset": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000, "default": 0},
+			"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 500, "default": 200},
+			"compact": map[string]any{
+				"type": "boolean", "default": true,
+				"description": "默认省略每条记录中重复的来源信息和较大的原始字段属性；设为 false 可读取完整条目。",
+			},
+			"max_bytes": map[string]any{
+				"type": "integer", "minimum": 1024, "maximum": maxQueryBytes, "default": defaultQueryBytes,
+				"description": "响应大小上限；达到上限时返回 next_offset，避免客户端静默截断。",
+			},
+		},
+	}
 }
 
 func schemaRegistryUpdateToolSchema() map[string]any {
@@ -81,24 +163,219 @@ func (s *Server) schemaRegistryStatus(ctx context.Context, runtime config.Config
 	if err != nil {
 		return nil, err
 	}
+	return schemaRegistryStatusResult(runtime, table), nil
+}
+
+func schemaRegistryStatusResult(runtime config.Config, table schemaRegistryTable) map[string]any {
 	state := "initialized_empty"
 	if table.ActiveGeneration != "" && table.ActiveComplete {
 		state = "active"
 	} else if table.ActiveGeneration != "" {
 		state = "active_generation_incomplete"
 	}
-	return map[string]any{
+	metadata := schemaRegistryGenerationMetadata(table, table.ActiveGeneration)
+	result := map[string]any{
 		"state":                      state,
 		"instance_name":              runtime.InstanceName,
 		"registry_key":               runtime.RegistryKey,
 		"sheet_title":                schemaRegistrySheetTitle,
+		"registry_sheet_id":          table.Target.SheetID,
+		"registry_field_count":       len(table.Fields),
+		"registry_fields":            schemaRegistryFieldDefinitions(table.Fields),
+		"registry_maintenance_mode":  "registry_tools_only",
+		"data_source":                "online_enterprise_wecom",
 		"active_generation":          emptyGeneration(table.ActiveGeneration),
 		"active_generation_complete": table.ActiveComplete,
+		"active_table_count":         len(schemaRegistryTableSummaries(table, table.ActiveGeneration)),
 		"active_field_count":         table.ActiveFieldCount,
 		"record_count":               len(table.Records),
+		"record_count_breakdown":     schemaRegistryRecordCountBreakdown(table),
+		"tables":                     schemaRegistryTableSummaries(table, table.ActiveGeneration),
 		"enterprise_wecom_updated":   false,
 		"local_mirror_updated":       false,
-	}, nil
+	}
+	for key, value := range metadata {
+		result[key] = value
+	}
+	return result
+}
+
+func (s *Server) readSchemaRegistry(ctx context.Context, runtime config.Config, client wecom.Requester, raw json.RawMessage) (any, error) {
+	var input schemaRegistryReadInput
+	if len(raw) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
+	if err := strictDecode(raw, &input, "generation", "entry_type", "target_role", "query", "offset", "limit", "compact", "max_bytes"); err != nil {
+		return nil, err
+	}
+	if input.Generation == "" {
+		input.Generation = "active"
+	}
+	if input.Generation != "active" && !initializeSHA256Digest.MatchString(input.Generation) {
+		return nil, fmt.Errorf("generation 必须是 active 或 64 位摘要")
+	}
+	if input.EntryType == "" {
+		input.EntryType = "field"
+	}
+	if input.EntryType != "field" && input.EntryType != "manifest" && input.EntryType != "all" {
+		return nil, fmt.Errorf("entry_type 必须是 field、manifest 或 all")
+	}
+	if input.TargetRole != "" {
+		if err := role(input.TargetRole); err != nil {
+			return nil, err
+		}
+	}
+	if len(input.Query) > 128 || input.Offset < 0 || input.Offset > 1000000 || input.Limit < 0 || input.Limit > 500 {
+		return nil, fmt.Errorf("Schema Registry 读取参数超出范围")
+	}
+	if input.Limit == 0 {
+		input.Limit = 200
+	}
+	if input.Compact == nil {
+		compact := true
+		input.Compact = &compact
+	}
+	if input.MaxBytes == 0 {
+		input.MaxBytes = defaultQueryBytes
+	}
+	if input.MaxBytes < 1024 || input.MaxBytes > maxQueryBytes {
+		return nil, fmt.Errorf("max_bytes 必须介于 1024 和 24000")
+	}
+
+	table, err := loadSchemaRegistryTable(ctx, runtime, client)
+	if err != nil {
+		return nil, err
+	}
+	generation := input.Generation
+	if generation == "active" {
+		generation = table.ActiveGeneration
+	}
+	if generation == "" {
+		return map[string]any{
+			"state": "initialized_empty", "active_generation": "none", "entries": []schemaRegistryEntryView{},
+			"returned_count": 0, "total_count": 0, "has_more": false,
+		}, nil
+	}
+	readState, metadata := schemaRegistryGenerationReadState(table, generation)
+	if readState != "ready" {
+		return map[string]any{
+			"state": readState, "generation": generation, "is_active_generation": generation == table.ActiveGeneration,
+			"generation_complete": false, "entries": []schemaRegistryEntryView{}, "returned_count": 0,
+			"total_count": 0, "has_more": false, "enterprise_wecom_updated": false, "local_mirror_updated": false,
+		}, nil
+	}
+	entries := schemaRegistryFilteredEntries(table, generation, input)
+	total := len(entries)
+	start := input.Offset
+	if start > total {
+		start = total
+	}
+	end := start + input.Limit
+	if end > total {
+		end = total
+	}
+	result := map[string]any{
+		"state":                    "ready",
+		"instance_name":            runtime.InstanceName,
+		"registry_key":             runtime.RegistryKey,
+		"registry_sheet_id":        table.Target.SheetID,
+		"generation":               generation,
+		"is_active_generation":     generation == table.ActiveGeneration,
+		"generation_complete":      schemaRegistryGenerationIsComplete(table, generation),
+		"source_revision":          metadata["source_revision"],
+		"schema_digest":            metadata["schema_digest"],
+		"offset":                   input.Offset,
+		"limit":                    input.Limit,
+		"total_count":              total,
+		"compact":                  *input.Compact,
+		"max_bytes":                input.MaxBytes,
+		"returned_count":           0,
+		"has_more":                 start < total,
+		"response_truncated":       false,
+		"entries":                  []any{},
+		"enterprise_wecom_updated": false,
+		"local_mirror_updated":     false,
+	}
+	if start < total {
+		result["next_offset"] = start
+		result["next_page"] = schemaRegistryNextPage(input, generation, start)
+	}
+	if err := validateSchemaRegistryResultSize(result, input.MaxBytes); err != nil {
+		return nil, err
+	}
+	page := make([]any, 0, end-start)
+	for _, entry := range entries[start:end] {
+		var value any = entry
+		if *input.Compact {
+			value = compactSchemaRegistryEntry(entry)
+		}
+		var accepted bool
+		page, accepted = appendSchemaRegistryPage(result, page, value, start, total, input.MaxBytes)
+		if !accepted {
+			if len(page) == 0 {
+				return nil, fmt.Errorf("单条 Schema Registry 条目超过 max_bytes；请使用 compact=true 或提高 max_bytes")
+			}
+			break
+		}
+	}
+	if result["has_more"] == true {
+		next := result["next_offset"].(int)
+		result["next_page"] = schemaRegistryNextPage(input, generation, next)
+	} else {
+		delete(result, "next_page")
+	}
+	return result, nil
+}
+
+func schemaRegistryNextPage(input schemaRegistryReadInput, generation string, offset int) map[string]any {
+	result := map[string]any{
+		"generation": generation, "entry_type": input.EntryType, "offset": offset, "limit": input.Limit,
+		"compact": *input.Compact, "max_bytes": input.MaxBytes,
+	}
+	if input.TargetRole != "" {
+		result["target_role"] = input.TargetRole
+	}
+	if input.Query != "" {
+		result["query"] = input.Query
+	}
+	return result
+}
+
+func validateSchemaRegistryResultSize(result map[string]any, maxBytes int) error {
+	if len(mustMarshal(result)) > maxBytes {
+		return fmt.Errorf("Schema Registry 响应基础元数据超过 max_bytes；请提高 max_bytes")
+	}
+	return nil
+}
+
+func appendSchemaRegistryPage(result map[string]any, page []any, value any, start, total, maxBytes int) ([]any, bool) {
+	candidate := append(page, value)
+	result["entries"] = candidate
+	result["returned_count"] = len(candidate)
+	result["has_more"] = start+len(candidate) < total
+	if result["has_more"].(bool) {
+		next := start + len(candidate)
+		result["next_offset"] = next
+		if nextPage, ok := result["next_page"].(map[string]any); ok {
+			nextPage["offset"] = next
+		}
+	} else {
+		delete(result, "next_offset")
+		delete(result, "next_page")
+	}
+	if len(mustMarshal(result)) <= maxBytes {
+		return candidate, true
+	}
+	result["entries"] = page
+	result["returned_count"] = len(page)
+	result["has_more"] = true
+	next := start + len(page)
+	result["next_offset"] = next
+	if nextPage, ok := result["next_page"].(map[string]any); ok {
+		nextPage["offset"] = next
+	}
+	result["response_truncated"] = true
+	return page, false
 }
 
 func (s *Server) updateSchemaRegistry(ctx context.Context, runtime config.Config, client wecom.Requester, raw json.RawMessage) (any, error) {
@@ -345,6 +622,222 @@ func emptyGeneration(value string) string {
 	return value
 }
 
+func schemaRegistryFieldDefinitions(fields []map[string]any) []map[string]any {
+	result := make([]map[string]any, 0, len(fields))
+	for _, field := range fields {
+		definition := map[string]any{
+			"field_title":      field["field_title"],
+			"field_id":         field["field_id"],
+			"field_type":       field["field_type"],
+			"is_primary":       nil,
+			"is_multiple":      false,
+			"maintenance_tool": "wecom_schema_registry_update",
+		}
+		for _, key := range []string{"is_primary", "is_primary_field", "primary"} {
+			if primary, ok := field[key].(bool); ok {
+				definition["is_primary"] = primary
+				break
+			}
+		}
+		result = append(result, definition)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		left, _ := result[i]["field_title"].(string)
+		right, _ := result[j]["field_title"].(string)
+		return left < right
+	})
+	return result
+}
+
+func schemaRegistryEntry(table schemaRegistryTable, record map[string]any) schemaRegistryEntryView {
+	values, _ := record["values"].(map[string]any)
+	text := func(title string) string { return initializeTextCell(values[table.FieldIDs[title]]) }
+	return schemaRegistryEntryView{
+		EntryKey:             text("Schema 条目键"),
+		EntryType:            text("条目类型"),
+		Generation:           text("Schema 版本"),
+		State:                text("生效状态"),
+		InstanceName:         text("实例名称"),
+		RegistryKey:          text("Registry Key"),
+		TargetRole:           text("表角色"),
+		TableName:            text("表名"),
+		TableID:              text("表 ID"),
+		FieldName:            text("字段名"),
+		FieldID:              text("字段 ID"),
+		FieldType:            text("字段类型"),
+		IsPrimary:            text("是否主字段"),
+		IsMultiple:           text("是否多值"),
+		Options:              text("选项定义"),
+		ReferenceTargetTable: text("关联目标表 ID"),
+		ReferenceTargetField: text("关联目标字段 ID"),
+		RawFieldProperties:   text("原始字段属性"),
+		IsSystemField:        text("是否系统字段"),
+		AllowAdd:             text("是否允许新增"),
+		AllowUpdate:          text("是否允许更新"),
+		WriteCodec:           text("写入编码器"),
+		CodecStatus:          text("Codec 验证状态"),
+		SourceRevision:       text("来源修订"),
+		CapturedAt:           text("捕获时间"),
+		SchemaDigest:         text("Schema Digest"),
+		TableCount:           text("表总数"),
+		FieldCount:           text("字段总数"),
+	}
+}
+
+func compactSchemaRegistryEntry(entry schemaRegistryEntryView) map[string]any {
+	result := map[string]any{
+		"entry_type":  entry.EntryType,
+		"target_role": entry.TargetRole, "table_name": entry.TableName, "table_id": entry.TableID,
+		"field_name": entry.FieldName, "field_id": entry.FieldID, "field_type": entry.FieldType,
+		"is_primary": entry.IsPrimary, "is_multiple": entry.IsMultiple,
+		"reference_target_table_id": entry.ReferenceTargetTable, "reference_target_field_id": entry.ReferenceTargetField,
+		"is_system_field": entry.IsSystemField, "allow_add": entry.AllowAdd, "allow_update": entry.AllowUpdate,
+		"write_codec": entry.WriteCodec, "codec_status": entry.CodecStatus,
+	}
+	if entry.EntryType != "field" {
+		result["entry_key"] = entry.EntryKey
+		result["state"] = entry.State
+		result["source_revision"] = entry.SourceRevision
+		result["captured_at"] = entry.CapturedAt
+		result["schema_digest"] = entry.SchemaDigest
+		result["table_count"] = entry.TableCount
+		result["field_count"] = entry.FieldCount
+	}
+	for key, value := range result {
+		if value == "" {
+			delete(result, key)
+		}
+	}
+	return result
+}
+
+func schemaRegistryGenerationMetadata(table schemaRegistryTable, generation string) map[string]any {
+	result := map[string]any{
+		"source_revision": "", "captured_at": "", "schema_digest": emptyGeneration(generation),
+	}
+	if generation == "" {
+		return result
+	}
+	record := table.ByKey["manifest:"+generation]
+	if record == nil && generation == table.ActiveGeneration {
+		record = table.ByKey[schemaRegistryActiveKey]
+	}
+	if record == nil {
+		return result
+	}
+	entry := schemaRegistryEntry(table, record)
+	result["source_revision"] = entry.SourceRevision
+	result["captured_at"] = entry.CapturedAt
+	result["schema_digest"] = entry.SchemaDigest
+	return result
+}
+
+func schemaRegistryGenerationReadState(table schemaRegistryTable, generation string) (string, map[string]any) {
+	manifest := table.ByKey["manifest:"+generation]
+	if manifest == nil {
+		return "generation_not_found", map[string]any{}
+	}
+	entry := schemaRegistryEntry(table, manifest)
+	if entry.EntryType != "manifest" || entry.Generation != generation || entry.SchemaDigest != generation ||
+		!schemaRegistryGenerationIsComplete(table, generation) {
+		return "generation_incomplete", map[string]any{}
+	}
+	return "ready", map[string]any{
+		"source_revision": entry.SourceRevision, "captured_at": entry.CapturedAt, "schema_digest": entry.SchemaDigest,
+	}
+}
+
+func schemaRegistryGenerationIsComplete(table schemaRegistryTable, generation string) bool {
+	complete, _ := schemaRegistryGenerationComplete(table.ByKey, table.FieldIDs, generation)
+	return complete
+}
+
+func schemaRegistryTableSummaries(table schemaRegistryTable, generation string) []map[string]any {
+	byRole := map[string]map[string]any{}
+	for _, record := range table.ByKey {
+		entry := schemaRegistryEntry(table, record)
+		if entry.EntryType != "field" || entry.Generation != generation {
+			continue
+		}
+		summary := byRole[entry.TargetRole]
+		if summary == nil {
+			summary = map[string]any{
+				"target_role": entry.TargetRole, "table_name": entry.TableName, "table_id": entry.TableID, "field_count": 0,
+			}
+			byRole[entry.TargetRole] = summary
+		}
+		summary["field_count"] = summary["field_count"].(int) + 1
+	}
+	roles := make([]string, 0, len(byRole))
+	for role := range byRole {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	result := make([]map[string]any, 0, len(roles))
+	for _, role := range roles {
+		result = append(result, byRole[role])
+	}
+	return result
+}
+
+func schemaRegistryRecordCountBreakdown(table schemaRegistryTable) map[string]int {
+	result := map[string]int{
+		"active_pointer": 0, "manifest_records": 0, "field_records": 0,
+		"active_generation_field_records": 0, "other_records": 0,
+	}
+	for _, record := range table.ByKey {
+		entry := schemaRegistryEntry(table, record)
+		switch entry.EntryType {
+		case "active_pointer":
+			result["active_pointer"]++
+		case "manifest":
+			result["manifest_records"]++
+		case "field":
+			result["field_records"]++
+			if entry.Generation == table.ActiveGeneration {
+				result["active_generation_field_records"]++
+			}
+		default:
+			result["other_records"]++
+		}
+	}
+	result["total"] = len(table.Records)
+	return result
+}
+
+func schemaRegistryFilteredEntries(table schemaRegistryTable, generation string, input schemaRegistryReadInput) []schemaRegistryEntryView {
+	query := strings.ToLower(strings.TrimSpace(input.Query))
+	result := []schemaRegistryEntryView{}
+	for _, record := range table.ByKey {
+		entry := schemaRegistryEntry(table, record)
+		if entry.EntryType == "active_pointer" {
+			continue
+		}
+		if entry.Generation != generation || (input.EntryType != "all" && entry.EntryType != input.EntryType) {
+			continue
+		}
+		if input.TargetRole != "" && entry.TargetRole != input.TargetRole {
+			continue
+		}
+		if query != "" {
+			haystack := strings.ToLower(strings.Join([]string{
+				entry.TargetRole, entry.TableName, entry.TableID, entry.FieldName, entry.FieldID, entry.FieldType,
+				entry.WriteCodec, entry.CodecStatus,
+			}, "\x00"))
+			if !strings.Contains(haystack, query) {
+				continue
+			}
+		}
+		result = append(result, entry)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		left := result[i].EntryType + "\x00" + result[i].TargetRole + "\x00" + result[i].FieldID + "\x00" + result[i].EntryKey
+		right := result[j].EntryType + "\x00" + result[j].TargetRole + "\x00" + result[j].FieldID + "\x00" + result[j].EntryKey
+		return left < right
+	})
+	return result
+}
+
 func loadSchemaRegistryTable(ctx context.Context, runtime config.Config, client wecom.Requester) (schemaRegistryTable, error) {
 	anchor, err := wecom.ResolveTarget(ctx, client, runtime.RegistryDocumentID, runtime.RegistryKey, "Z-S01", runtime.Allows)
 	if err != nil {
@@ -415,7 +908,7 @@ func loadSchemaRegistryTable(ctx context.Context, runtime config.Config, client 
 	}
 	activeComplete, activeFieldCount := schemaRegistryGenerationComplete(byKey, fieldIDs, activeGeneration)
 	return schemaRegistryTable{
-		Target: target, FieldIDs: fieldIDs, Records: records, ByKey: byKey,
+		Target: target, Fields: fields, FieldIDs: fieldIDs, Records: records, ByKey: byKey,
 		ActiveGeneration: activeGeneration, ActiveRecordID: activeRecordID,
 		ActiveComplete: activeComplete, ActiveFieldCount: activeFieldCount,
 	}, nil
