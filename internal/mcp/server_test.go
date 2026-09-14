@@ -172,6 +172,165 @@ func TestVerifyReadbackRequiresExactRecordAndValues(t *testing.T) {
 	}
 }
 
+func TestAddRecordResultReturnsRealCreatedRecordID(t *testing.T) {
+	prepared := []map[string]any{{"values": map[string]any{"field-1": "value"}}}
+	writeResult := map[string]any{"result": map[string]any{
+		"errcode": float64(0),
+		"errmsg":  "ok",
+		"records": []any{map[string]any{"record_id": "created-by-wecom"}},
+	}}
+	receipts, err := writeRecordResults("add_records", prepared, writeResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRecordResult(t, receipts, 0, "created-by-wecom")
+}
+
+func TestBatchAddRecordResultsKeepInputOrderAndCountOnlyTargets(t *testing.T) {
+	prepared := []map[string]any{
+		{"values": map[string]any{"field-1": "first"}},
+		{"values": map[string]any{"field-1": "second"}},
+	}
+	writeResult := map[string]any{"result": map[string]any{
+		"errcode": float64(0),
+		"errmsg":  "ok",
+		"records": []any{
+			map[string]any{"record_id": "created-1"},
+			map[string]any{"record_id": "created-2"},
+		},
+	}}
+	receipts, err := writeRecordResults("add_records", prepared, writeResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRecordResult(t, receipts, 0, "created-1")
+	assertRecordResult(t, receipts, 1, "created-2")
+	readback := map[string]any{"result": map[string]any{"records": []any{
+		map[string]any{"record_id": "older-unrelated-record"},
+		map[string]any{"record_id": "created-1"},
+		map[string]any{"record_id": "created-2"},
+	}}}
+	if count := readbackTargetCount("add_records", prepared, writeResult, readback); count != 2 {
+		t.Fatalf("readback target count=%d, want 2", count)
+	}
+}
+
+func TestSingleAndBatchUpdateRecordResultsUseRequestedIDs(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		prepared       []map[string]any
+		upstreamRecord []any
+	}{
+		{name: "single response without per-record receipts", prepared: []map[string]any{{"record_id": "updated-1", "values": map[string]any{"field": "one"}}}},
+		{name: "batch response with matching per-record receipts", prepared: []map[string]any{{"record_id": "updated-1", "values": map[string]any{"field": "one"}}, {"record_id": "updated-2", "values": map[string]any{"field": "two"}}}, upstreamRecord: []any{map[string]any{"record_id": "updated-1"}, map[string]any{"record_id": "updated-2"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			writeResult := map[string]any{"result": map[string]any{"errcode": float64(0), "errmsg": "ok", "records": test.upstreamRecord}}
+			receipts, err := writeRecordResults("update_records", test.prepared, writeResult)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for index, expected := range test.prepared {
+				assertRecordResult(t, receipts, index, expected["record_id"].(string))
+			}
+		})
+	}
+}
+
+func TestPartialRecordFailureIsNotReportedAsSuccessfulWrite(t *testing.T) {
+	writeResult := map[string]any{"result": map[string]any{
+		"errcode": float64(0),
+		"errmsg":  "ok",
+		"records": []any{
+			map[string]any{"record_id": "created-1", "errcode": float64(0), "errmsg": "ok"},
+			map[string]any{"errcode": float64(40001), "errmsg": "invalid record"},
+		},
+	}}
+	if err := apiError(writeResult); err == nil {
+		t.Fatal("partial record failure must fail closed")
+	}
+}
+
+func TestAddRecordResultsFailClosedOnMissingOrMismatchedIDs(t *testing.T) {
+	prepared := []map[string]any{{"values": map[string]any{"field": "one"}}, {"values": map[string]any{"field": "two"}}}
+	for _, test := range []struct {
+		name    string
+		records []any
+	}{
+		{name: "missing record id", records: []any{map[string]any{"record_id": "created-1"}, map[string]any{}}},
+		{name: "too few ids", records: []any{map[string]any{"record_id": "created-1"}}},
+		{name: "too many ids", records: []any{map[string]any{"record_id": "created-1"}, map[string]any{"record_id": "created-2"}, map[string]any{"record_id": "unexpected-3"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			writeResult := map[string]any{"result": map[string]any{"errcode": float64(0), "errmsg": "ok", "records": test.records}}
+			if receipts, err := writeRecordResults("add_records", prepared, writeResult); err == nil || receipts != nil {
+				t.Fatalf("ambiguous add receipt must fail closed: receipts=%#v err=%v", receipts, err)
+			}
+		})
+	}
+}
+
+func TestUpdateRecordResultsRejectMismatchedNativeIDs(t *testing.T) {
+	prepared := []map[string]any{{"record_id": "updated-1", "values": map[string]any{"field": "one"}}, {"record_id": "updated-2", "values": map[string]any{"field": "two"}}}
+	for _, records := range [][]any{
+		{map[string]any{"record_id": "updated-1"}},
+		{map[string]any{"record_id": "updated-2"}, map[string]any{"record_id": "updated-1"}},
+	} {
+		writeResult := map[string]any{"result": map[string]any{"errcode": float64(0), "errmsg": "ok", "records": records}}
+		if receipts, err := writeRecordResults("update_records", prepared, writeResult); err == nil || receipts != nil {
+			t.Fatalf("ambiguous update receipt must fail closed: receipts=%#v err=%v", receipts, err)
+		}
+	}
+}
+
+func TestReadbackTimeoutPreservesRecoveryReceiptAndBlocksBlindReplay(t *testing.T) {
+	input := applyInput{TargetRole: "Z-S01", Operation: "add_records", IdempotencyKey: "timeout-123456789", SourceRevision: "revision"}
+	prepared := []map[string]any{{"values": map[string]any{"field": "value"}}}
+	writeResult := map[string]any{"result": map[string]any{"errcode": float64(0), "errmsg": "ok", "records": []any{map[string]any{"record_id": "created-before-timeout"}}}}
+	receipts, err := writeRecordResults(input.Operation, prepared, writeResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := pendingRecordApplyResponse(input, "digest", writeResult, receipts, 0, "operator")
+	if response["state"] != "applied_readback_pending" || response["readback_verified"] != false || response["readback_record_count"] != 0 || response["request_digest"] != "digest" {
+		t.Fatalf("timeout response lost recovery state: %#v", response)
+	}
+	assertRecordResult(t, response["record_results"].([]map[string]any), 0, "created-before-timeout")
+	server := &Server{}
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := server.reserveWithOperator(statePath, input.IdempotencyKey, "digest", "operator"); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.reserveWithOperator(statePath, input.IdempotencyKey, "digest", "operator"); err == nil {
+		t.Fatal("a timed-out pending write must not be blindly replayed")
+	}
+}
+
+func TestCompletedRecordApplyResponseKeepsLegacyFields(t *testing.T) {
+	input := applyInput{TargetRole: "Z-S01", Operation: "add_records", IdempotencyKey: "idempotency-key", SourceRevision: "revision"}
+	writeResult := map[string]any{"result": map[string]any{"errcode": float64(0), "errmsg": "ok"}}
+	receipts := []map[string]any{{"input_index": 0, "record_id": "created-1", "errcode": int64(0), "errmsg": "ok"}}
+	response := completedRecordApplyResponse(input, "digest", writeResult, receipts, 1, "operator")
+	legacyExpected := map[string]any{
+		"state": "applied", "target_role": "Z-S01", "idempotency_key": "idempotency-key", "source_revision": "revision", "request_digest": "digest", "readback_verified": true, "readback_record_count": 1,
+	}
+	for key, expected := range legacyExpected {
+		if response[key] != expected {
+			t.Fatalf("legacy field %s=%#v, want %#v", key, response[key], expected)
+		}
+	}
+	if response["write_result"].(map[string]any)["errmsg"] != "ok" || !reflect.DeepEqual(response["record_results"], receipts) {
+		t.Fatalf("write receipt fields were not preserved: %#v", response)
+	}
+}
+
+func assertRecordResult(t *testing.T, receipts []map[string]any, index int, recordID string) {
+	t.Helper()
+	if len(receipts) <= index || receipts[index]["input_index"] != index || receipts[index]["record_id"] != recordID || receipts[index]["errcode"] != int64(0) || receipts[index]["errmsg"] != "ok" {
+		t.Fatalf("record_results[%d]=%#v, want successful receipt for %s", index, receipts, recordID)
+	}
+}
+
 func TestCreateDocumentKeepsUpstreamDocIDAndURL(t *testing.T) {
 	response := map[string]any{"result": map[string]any{
 		"errcode": 0,
