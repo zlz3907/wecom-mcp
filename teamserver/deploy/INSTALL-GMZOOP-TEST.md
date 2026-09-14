@@ -80,7 +80,7 @@ curl -fsS http://127.0.0.1:7702/readyz
 
 ## 7. OAuth 候选必须另开隔离入口
 
-不要在现有 Connector API Key 服务上原地切换。OAuth 候选使用独立回环端口、独立 systemd 实例名和独立公网测试路径；先安装 `gmzoop.oauth21.env.example` 的受保护副本，再由 GNAS 管理员提供资源服务器 client id/secret、租户键及已审批的客户端预注册或 CIMD 精确白名单。DCR 保持关闭。
+不要在现有 Connector API Key 服务上原地切换。安装包已包含 `gmzoop.oauth21.env.example` 和只读的 `oauth21-contract-check`；OAuth 候选使用独立回环端口、独立 systemd 实例名和独立公网测试路径。先安装该 env 示例的受保护副本，再由 GNAS 管理员提供资源服务器 client id/secret、租户键及已审批的客户端预注册或 CIMD 精确白名单。DCR 保持关闭。
 
 候选启动后先运行不带 Token 的只读合同检查，确认 GNAS metadata、gmzoop protected-resource metadata 和 401 challenge 一致；再由测试员工完成一次企业微信扫码，把取得的短期访问令牌写入 0600 临时文件，仅追加 `-token-file` 验证 `initialize + tools/list`。检查器不调用业务工具、不输出令牌。验证结束立即删除临时令牌文件并撤销测试授权。
 

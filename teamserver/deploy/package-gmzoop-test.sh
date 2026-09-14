@@ -26,11 +26,14 @@ mkdir -p "$stage"
 (
   cd "$repo_dir/teamserver"
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$stage/wecom-mcp-team" ./cmd/wecom-mcp-team
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$stage/wecom-mcp-instance-init" ./cmd/wecom-mcp-instance-init
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$stage/wecom-mcp-instance-init" ./cmd/wecom-mcp-instance-init
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$stage/oauth21-contract-check" ./cmd/oauth21-contract-check
 )
 chmod 0755 "$stage/wecom-mcp-team"
 chmod 0755 "$stage/wecom-mcp-instance-init"
+chmod 0755 "$stage/oauth21-contract-check"
 cp "$repo_dir/teamserver/deploy/gmzoop.env.example" "$stage/gmzoop.env.example"
+cp "$repo_dir/teamserver/deploy/gmzoop.oauth21.env.example" "$stage/gmzoop.oauth21.env.example"
 cp "$repo_dir/teamserver/deploy/create-gmzoop-env.sh" "$stage/create-gmzoop-env.sh"
 cp "$repo_dir/teamserver/deploy/INSTALL-GMZOOP-TEST.md" "$stage/INSTALL-GMZOOP-TEST.md"
 cp "$repo_dir/teamserver/deploy/wecom-mcp@.service.example" "$stage/wecom-mcp@.service"
@@ -47,12 +50,14 @@ sha256() {
   echo "source_commit=$(git -C "$repo_dir" rev-parse HEAD)"
   echo "platform=linux/amd64"
   echo "authentication_mode=connector_api_key_configured_role"
+  echo "oauth21_isolated_candidate_assets=true"
   echo "server_binary_sha256=$(sha256 "$stage/wecom-mcp-team")"
   echo "initializer_binary_sha256=$(sha256 "$stage/wecom-mcp-instance-init")"
+  echo "oauth21_contract_checker_sha256=$(sha256 "$stage/oauth21-contract-check")"
 } > "$stage/DEPLOY-MANIFEST.txt"
 (
   cd "$stage"
-  for file in DEPLOY-MANIFEST.txt INSTALL-GMZOOP-TEST.md LICENSE WECHAT-SUBJECT-BINDING.md create-gmzoop-env.sh gmzoop.env.example nginx-mcp.jyiai.com-gmzoop.conf wecom-mcp-instance-init wecom-mcp-team wecom-mcp@.service; do
+  for file in DEPLOY-MANIFEST.txt INSTALL-GMZOOP-TEST.md LICENSE WECHAT-SUBJECT-BINDING.md create-gmzoop-env.sh gmzoop.env.example gmzoop.oauth21.env.example nginx-mcp.jyiai.com-gmzoop.conf oauth21-contract-check wecom-mcp-instance-init wecom-mcp-team wecom-mcp@.service; do
     printf '%s  %s\n' "$(sha256 "$file")" "$file"
   done > SHA256SUMS
 )
