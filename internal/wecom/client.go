@@ -71,6 +71,7 @@ var Operations = map[string]Operation{
 
 type Client struct {
 	baseURL, appID, appSecret, route string
+	managedExecutor                  bool
 	httpClient                       *http.Client
 	mu                               sync.Mutex
 	token                            string
@@ -86,7 +87,11 @@ func NewFromEnvironment(route string) (*Client, error) {
 	if appID == "" || appSecret == "" {
 		return nil, fmt.Errorf("GNAS 服务凭据未配置")
 	}
-	return &Client{baseURL: strings.TrimSuffix(baseURL, "/"), appID: appID, appSecret: appSecret, route: route, httpClient: &http.Client{Timeout: requestTimeout}}, nil
+	transport := os.Getenv("GNAS_WECOM_TRANSPORT")
+	if transport != "" && transport != "legacy_proxy" && transport != "managed_executor" {
+		return nil, fmt.Errorf("GNAS_WECOM_TRANSPORT must be legacy_proxy or managed_executor")
+	}
+	return &Client{baseURL: strings.TrimSuffix(baseURL, "/"), appID: appID, appSecret: appSecret, route: route, managedExecutor: transport == "managed_executor", httpClient: &http.Client{Timeout: requestTimeout}}, nil
 }
 
 func (c *Client) jwt(ctx context.Context, force bool) (string, error) {
@@ -137,12 +142,18 @@ func (c *Client) Request(ctx context.Context, operation string, payload any) (ma
 	if operation == "upload_app_media" {
 		return nil, fmt.Errorf("上传企业微信临时素材必须使用受管媒体上传接口")
 	}
-	if operation == "send_app_message" {
-		encoded, err := json.Marshal(payload)
-		if err != nil {
-			return nil, fmt.Errorf("企业微信请求编码失败")
+	if c.managedExecutor || operation == "send_app_message" {
+		var encoded []byte
+		var contentType string
+		if definition.Method != http.MethodGet {
+			contentType = "application/json"
+			var err error
+			encoded, err = json.Marshal(payload)
+			if err != nil {
+				return nil, fmt.Errorf("企业微信请求编码失败")
+			}
 		}
-		return c.managedRequest(ctx, definition, definition.Path, "application/json", encoded)
+		return c.managedRequest(ctx, definition, definition.Path, contentType, encoded)
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		token, err := c.jwt(ctx, attempt == 1)
@@ -226,7 +237,9 @@ func (c *Client) managedRequest(ctx context.Context, definition Operation, upstr
 		if err != nil {
 			return nil, err
 		}
-		req, err := http.NewRequestWithContext(ctx, definition.Method, c.baseURL+"/gnas/service/wecomExecute", bytes.NewReader(body))
+		// The internal executor is POST-only; the upstream method is separately
+		// validated by GNAS. GET operations carry an empty body.
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/gnas/service/wecomExecute", bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("构造企业微信受管请求失败")
 		}
@@ -245,6 +258,10 @@ func (c *Client) managedRequest(ctx context.Context, definition Operation, upstr
 		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
 			resp.Body.Close()
 			continue
+		}
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			resp.Body.Close()
+			return nil, fmt.Errorf("企业微信受管执行失败: HTTP %d", resp.StatusCode)
 		}
 		defer resp.Body.Close()
 		var upstream map[string]any

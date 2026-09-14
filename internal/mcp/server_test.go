@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -137,6 +138,22 @@ func TestRecordApplyBindsConfiguredOperatorWithoutCallerActor(t *testing.T) {
 		encoded, _ := json.Marshal(item.InputSchema)
 		if strings.Contains(string(encoded), "actor") || strings.Contains(string(encoded), "operator_userid") {
 			t.Fatalf("caller-controllable actor leaked into tool schema: %s", encoded)
+		}
+		properties := item.InputSchema.(map[string]any)["properties"].(map[string]any)
+		records := properties["records"].(map[string]any)
+		record := records["items"].(map[string]any)
+		recordProperties := record["properties"].(map[string]any)
+		values := recordProperties["values"].(map[string]any)
+		if recordProperties["record_id"] == nil || values["minProperties"] != 1 || values["additionalProperties"] == nil {
+			t.Fatalf("record apply schema is incomplete: %#v", item.InputSchema)
+		}
+		fieldValue := values["additionalProperties"].(map[string]any)
+		if fieldValue["anyOf"] != nil || fieldValue["oneOf"] != nil {
+			t.Fatalf("dynamic field values must not use coercible primitive branches: %#v", fieldValue)
+		}
+		gotTypes, ok := fieldValue["type"].([]string)
+		if !ok || !reflect.DeepEqual(gotTypes, []string{"string", "number", "boolean", "array"}) {
+			t.Fatalf("dynamic field values have incomplete JSON types: %#v", fieldValue)
 		}
 		return
 	}

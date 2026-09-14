@@ -26,6 +26,7 @@ type Server struct {
 	store               *config.Store
 	stateMu             sync.Mutex
 	progressMu          sync.Mutex
+	schemaRegistryMu    sync.Mutex
 	previewMu           sync.Mutex
 	previews            map[string]initializePreview
 	initializeCatalog   func() (zoopschema.Catalog, error)
@@ -63,9 +64,12 @@ var tools = []tool{
 	{"wecom_instance_initialize_status", "只读观察当前固定租户的 Registry、九张 Zoop 表、本地 Schema 与初始化 journal，返回可审计 dry-run 和短期 preview_id；不修改线上或本地状态。恢复 ID 仅可绑定已有 uncertain sentinel，不是任意导入入口。", instanceInitializeStatusToolSchema()},
 	{"wecom_instance_initialize_apply", "校验短期 dry-run 与固定 Owner 授权，按 durable journal 幂等协调 Registry、Zoop 九表、唯一 active row、Schema generation、配置备份与 Z-S01 只读 smoke；不清理导入文档的既有内容，创建结果不确定时失败关闭。", instanceInitializeApplyToolSchema()},
 	{"wecom_registry_bootstrap", "仅在当前固定租户实例缺少 registry_document_id 时，显式创建 SMART_SHEETS_IDS、建立标准文本字段、回读核验并原子写回本地配置。创建前写入本地哨兵；状态不确定时失败关闭且不会重复创建。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"owner_authorization"}, "properties": map[string]any{"owner_authorization": map[string]any{"const": "create_and_persist_default_registry"}}}},
-	{"wecom_schema_status", "读取当前本地 Schema 镜像状态。不会读取或修改企业微信线上字段。", map[string]any{"type": "object", "additionalProperties": false}},
+	{"wecom_schema_status", "读取当前本地 Schema 镜像状态。可按 target_role 返回字段标题、真实 field_id、类型、选项与关联元数据；不会读取或修改企业微信线上字段。", schemaStatusToolSchema()},
 	{"wecom_schema_probe", "只读回查当前固定租户的九张 Zoop 表线上字段，并与本地机器 Schema 镜像比较。不会写入企业微信或更新本地镜像。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_schema_sync", "仅在 Owner 明确授权后，从当前固定企业微信实例只读回查九张 Zoop 表字段，并覆盖本地机器可读 Schema 镜像。不会修改企业微信数据或结构。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"owner_authorization"}, "properties": map[string]any{"owner_authorization": map[string]any{"const": "online_to_local_schema_dictionary"}}}},
+	{"wecom_schema_registry_status", "只读核对 Z-S00 在线 Schema Registry 的表结构、active generation 与条目完整性；不修改企业微信或本地镜像。", schemaRegistryStatusToolSchema()},
+	{"wecom_schema_registry_read", "直接读取 Z-S00 当前或历史 Schema generation 的表与字段定义；默认返回 active generation 的紧凑字段页，支持筛选、分页和响应大小保护。只读，不修改企业微信或本地镜像。", schemaRegistryReadToolSchema()},
+	{"wecom_schema_registry_update", "从当前固定企业微信实例重新采集 Z-S01 至 Z-S09 的真实表与字段定义，写入 Z-S00 不可变 generation，完整回读后切换 @active 指针。调用方不能提交表名、表 ID、字段名、字段 ID 或字段类型。", schemaRegistryUpdateToolSchema()},
 	{"wecom_field_codec_lab_create", "创建或返回当前固定租户专用的企业微信字段编码验证表。创建后必须写入 SMART_SHEETS_IDS 并回读核验；登记失败即停止使用，不会创建第二张表。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_field_codec_lab_read", "仅在验证表已登记为 active 后，只读返回字段定义与填写样本原始值，用于固化经过人工填写验证的写入 codec。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_field_codec_lab_reference_debug", "对已登记验证表的关联字段执行带与不带 key_type 的只读对照，用于核对企业微信关联值返回形态。", map[string]any{"type": "object", "additionalProperties": false}},
@@ -82,7 +86,7 @@ var tools = []tool{
 	{"wecom_send_app_media_message", "使用当前固定租户的企业微信自建应用向一个启用成员发送 JPG、PNG 图片或普通文件。媒体内容使用规范 Base64 与 SHA-256 校验；只允许单个 recipient_userid，禁止部门、标签、群聊或全员发送。上传临时素材和发送消息由服务器受管完成。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"recipient_userid", "media_type", "filename", "content_base64", "content_sha256", "idempotency_key"}, "properties": map[string]any{"recipient_userid": map[string]any{"type": "string", "minLength": 1, "maxLength": 64}, "media_type": map[string]any{"type": "string", "enum": []string{"image", "file"}}, "filename": map[string]any{"type": "string", "minLength": 1, "maxLength": 255}, "content_base64": map[string]any{"type": "string", "minLength": 8, "maxLength": maxAppMediaBase64Chars}, "content_sha256": map[string]any{"type": "string", "pattern": "^[0-9a-f]{64}$"}, "idempotency_key": map[string]any{"type": "string", "minLength": 16, "maxLength": 256}}}},
 	{"wecom_record_read", "从当前固定企业微信实例的指定 Zoop 表读取记录。调用方不能指定租户、文档或子表标识。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"target_role"}, "properties": map[string]any{"target_role": map[string]any{"type": "string", "enum": []string{"Z-S01", "Z-S02", "Z-S03", "Z-S04", "Z-S05", "Z-S06", "Z-S07", "Z-S08", "Z-S09"}}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 200}}}},
 	{"wecom_record_query", "固定租户的只读精确查询：支持 record_id、受控字段过滤、排序、offset 分页、字段投影和紧凑结果。调用方不能指定租户、文档或子表标识。", recordQueryToolSchema()},
-	{"wecom_record_apply", "向当前固定企业微信实例的 Zoop 表写入已由字段验证表证明的字段类型，并完成一次回读。新建 S01 自动将四个任务计数字段初始化为 0；S03 新增或更新回读成功后自动重算关联 S01 的当前、完成和阻塞任务数。字段、租户、文档和子表均不可由调用方指定；附件和系统自动字段仍会拒绝写入。关联字段对调用方只接受受控 {record_id} 对象数组，发送企业微信前编译为已验证的 record_id 字符串数组。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"target_role", "operation", "idempotency_key", "source_revision", "records"}, "properties": map[string]any{"target_role": map[string]any{"type": "string", "enum": []string{"Z-S01", "Z-S02", "Z-S03", "Z-S04", "Z-S05", "Z-S06", "Z-S07", "Z-S08", "Z-S09"}}, "operation": map[string]any{"type": "string", "enum": []string{"add_records", "update_records"}}, "idempotency_key": map[string]any{"type": "string", "minLength": 16, "maxLength": 256}, "source_revision": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "records": map[string]any{"type": "array", "minItems": 1, "maxItems": 50, "items": map[string]any{"type": "object"}}}}},
+	{"wecom_record_apply", "向当前固定企业微信实例的 Zoop 表写入已验证字段类型并完成一次回读。records[].values 使用字段标题；add_records 禁止 record_id，update_records 必须提供真实 record_id。idempotency_key 与 source_revision 都不是业务字段，不能用于记录查询。新建 S01 自动初始化四个任务计数字段；S03 写后自动重算关联 S01 进度。租户、文档和子表不可由调用方指定；附件和系统自动字段拒绝写入。", recordApplyToolSchema()},
 	{"wecom_requirement_progress_reconcile", "只读取完整 S01/S03 快照并重算所有需求的当前、完成和阻塞任务数；不改计划任务基线，不重复写任务。用于 applied_progress_sync_pending 或巡检发现计数漂移后的受控恢复。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"idempotency_key", "source_revision"}, "properties": map[string]any{"idempotency_key": map[string]any{"type": "string", "minLength": 16, "maxLength": 256}, "source_revision": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}}}},
 }
 
@@ -193,6 +197,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 		if err != nil {
 			return nil, err
 		}
+		if err := verifyOAuthInstanceSnapshot(ctx, runtime); err != nil {
+			return nil, err
+		}
 		client, clientErr := wecom.NewFromEnvironment(runtime.TenantRoute)
 		if name == "wecom_instance_initialize" {
 			return s.instanceInitializeFacade(ctx, runtime, client, clientErr, raw)
@@ -205,6 +212,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 	if name == "wecom_registry_bootstrap" {
 		runtime, err := s.store.BootstrapCandidate()
 		if err != nil {
+			return nil, err
+		}
+		if err := verifyOAuthInstanceSnapshot(ctx, runtime); err != nil {
 			return nil, err
 		}
 		if runtime.RegistryDocumentID != "" {
@@ -220,11 +230,25 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 	if err != nil {
 		return nil, err
 	}
+	if err := verifyOAuthInstanceSnapshot(ctx, runtime); err != nil {
+		return nil, err
+	}
 	if name == "wecom_schema_sync" {
 		return s.syncSchema(ctx, runtime, client, raw)
 	}
 	if name == "wecom_schema_probe" {
 		return s.probeSchema(ctx, runtime, client, raw)
+	}
+	if name == "wecom_schema_registry_status" {
+		return s.schemaRegistryStatus(ctx, runtime, client, raw)
+	}
+	if name == "wecom_schema_registry_read" {
+		return s.readSchemaRegistry(ctx, runtime, client, raw)
+	}
+	if name == "wecom_schema_registry_update" {
+		return s.boundOperatorWrite(ctx, runtime, client, schemaRegistryGroup, func() (any, error) {
+			return s.updateSchemaRegistry(ctx, runtime, client, raw)
+		})
 	}
 	if name == "wecom_schema_migration_preview" {
 		return s.previewSchemaMigration(ctx, runtime, client, raw)
@@ -284,15 +308,32 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 	}
 	switch name {
 	case "wecom_schema_status":
-		if err := empty(raw); err != nil {
+		var input struct {
+			TargetRole string `json:"target_role"`
+		}
+		if err := strictDecode(raw, &input, "target_role"); err != nil {
 			return nil, err
+		}
+		if input.TargetRole != "" {
+			if err := role(input.TargetRole); err != nil {
+				return nil, err
+			}
 		}
 		roles := make([]map[string]any, 0, len(schema.Roles))
 		for roleName, fields := range schema.Roles {
 			roles = append(roles, map[string]any{"target_role": roleName, "field_count": len(fields)})
 		}
 		sort.Slice(roles, func(i, j int) bool { return roles[i]["target_role"].(string) < roles[j]["target_role"].(string) })
-		return map[string]any{"instance_name": runtime.InstanceName, "registry_key": runtime.RegistryKey, "schema_digest": schema.Digest, "config_digest": runtime.Digest(), "roles": roles, "schema_is_local_read_only_mirror": true}, nil
+		result := map[string]any{"instance_name": runtime.InstanceName, "registry_key": runtime.RegistryKey, "schema_digest": schema.Digest, "config_digest": runtime.Digest(), "roles": roles, "schema_is_local_read_only_mirror": true}
+		if input.TargetRole != "" {
+			fields := make([]config.Field, 0, len(schema.Roles[input.TargetRole]))
+			for _, field := range schema.Roles[input.TargetRole] {
+				fields = append(fields, field)
+			}
+			sort.Slice(fields, func(i, j int) bool { return fields[i].Title < fields[j].Title })
+			result["selected_role"] = map[string]any{"target_role": input.TargetRole, "field_count": len(fields), "fields": fields}
+		}
+		return result, nil
 	case "wecom_record_read":
 		if !runtime.Allows("get_records") {
 			return nil, fmt.Errorf("实例白名单未允许 get_records")
@@ -378,7 +419,7 @@ func (s *Server) syncSchema(ctx context.Context, runtime config.Config, client *
 	return result, nil
 }
 
-func readOnlineSchemaFields(ctx context.Context, runtime config.Config, client *wecom.Client) (map[string][]config.Field, error) {
+func readOnlineSchemaFields(ctx context.Context, runtime config.Config, client wecom.Requester) (map[string][]config.Field, error) {
 	fieldsByRole := map[string][]config.Field{}
 	roles := make([]string, 0, len(validRoles))
 	for value := range validRoles {
@@ -952,6 +993,29 @@ func (s *Server) completeStateWithOperator(path, key, digest, operator string) e
 	state.Entries[key] = stateEntry{Digest: digest, Status: "completed", BusinessOperatorUserID: operator}
 	if err := saveState(path, state); err != nil {
 		return fmt.Errorf("保存幂等完成状态失败")
+	}
+	return nil
+}
+
+func (s *Server) releaseStateWithOperator(path, key, digest, operator string) error {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	release, err := acquireStateFileLock(path)
+	if err != nil {
+		return fmt.Errorf("获取幂等状态锁失败")
+	}
+	defer release()
+	state, err := loadState(path)
+	if err != nil {
+		return err
+	}
+	entry, found := state.Entries[key]
+	if !found || entry.Digest != digest || entry.Status != "pending" || entry.BusinessOperatorUserID != operator {
+		return fmt.Errorf("幂等状态与明确失败的消息不一致")
+	}
+	delete(state.Entries, key)
+	if err := saveState(path, state); err != nil {
+		return fmt.Errorf("释放幂等状态失败")
 	}
 	return nil
 }

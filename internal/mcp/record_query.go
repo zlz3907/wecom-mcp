@@ -19,39 +19,85 @@ const (
 )
 
 func recordQueryToolSchema() map[string]any {
+	conditionProperties := map[string]any{
+		"field_title": map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "本地 Schema 镜像中的字段标题。与 field_id 二选一；推荐使用标题，服务器会解析并校验真实 field_id。"},
+		"field_id":    map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "本地 Schema 镜像中的真实字段 ID。与 field_title 二选一。"},
+		"field_type":  map[string]any{"type": "string", "pattern": "^FIELD_TYPE_[A-Z0-9_]+$", "description": "可选校验值；提供时必须与本地 Schema 镜像一致。"},
+		"operator": map[string]any{"type": "string", "enum": []string{
+			"OPERATOR_IS", "OPERATOR_IS_NOT", "OPERATOR_CONTAINS", "OPERATOR_DOES_NOT_CONTAIN",
+			"OPERATOR_IS_GREATER", "OPERATOR_IS_GREATER_OR_EQUAL", "OPERATOR_IS_LESS", "OPERATOR_IS_LESS_OR_EQUAL",
+			"OPERATOR_IS_EMPTY", "OPERATOR_IS_NOT_EMPTY",
+		}},
+		"string_value":    map[string]any{"type": "object", "additionalProperties": false, "required": []string{"value"}, "properties": map[string]any{"value": map[string]any{"type": "array", "minItems": 1, "maxItems": 20, "items": map[string]any{"type": "string", "minLength": 1}}}},
+		"number_value":    map[string]any{"type": "object", "additionalProperties": false, "required": []string{"value"}, "properties": map[string]any{"value": map[string]any{"type": "number"}}},
+		"bool_value":      map[string]any{"type": "object", "additionalProperties": false, "required": []string{"value"}, "properties": map[string]any{"value": map[string]any{"type": "boolean"}}},
+		"date_time_value": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"type"}, "properties": map[string]any{"type": map[string]any{"type": "string", "pattern": "^DATE_TIME_TYPE_"}}},
+		"user_value":      map[string]any{"type": "object", "additionalProperties": false, "required": []string{"value"}, "properties": map[string]any{"value": map[string]any{"type": "array", "minItems": 1, "maxItems": 20, "items": map[string]any{"type": "string", "minLength": 1}}}},
+	}
+	filterSpec := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"conjunction", "conditions"},
+		"properties": map[string]any{
+			"conjunction": map[string]any{"type": "string", "enum": []string{"CONJUNCTION_AND", "CONJUNCTION_OR"}},
+			"conditions": map[string]any{"type": "array", "minItems": 1, "maxItems": 20, "items": map[string]any{
+				"type": "object", "additionalProperties": false, "required": []string{"operator"}, "properties": conditionProperties,
+				"oneOf": []any{
+					map[string]any{"required": []string{"field_title"}, "not": map[string]any{"required": []string{"field_id"}}},
+					map[string]any{"required": []string{"field_id"}, "not": map[string]any{"required": []string{"field_title"}}},
+				},
+				"description": "必须提供 field_title 或 field_id 之一。IS/比较/包含操作符必须携带一个与字段类型对应的 *_value；IS_EMPTY/IS_NOT_EMPTY 不携带值。",
+			}},
+		},
+	}
+	sortItem := map[string]any{
+		"type": "object", "additionalProperties": false,
+		"properties": map[string]any{
+			"field_title": map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "与 field_id 二选一；推荐使用本地 Schema 字段标题。"},
+			"field_id":    map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "与 field_title 二选一。"},
+			"desc":        map[string]any{"type": "boolean", "default": false},
+		},
+		"oneOf": []any{
+			map[string]any{"required": []string{"field_title"}, "not": map[string]any{"required": []string{"field_id"}}},
+			map[string]any{"required": []string{"field_id"}, "not": map[string]any{"required": []string{"field_title"}}},
+		},
+		"description": "必须提供 field_title 或 field_id 之一。",
+	}
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"required":             []string{"target_role"},
 		"properties": map[string]any{
-			"target_role": map[string]any{"type": "string", "enum": []string{"Z-S01", "Z-S02", "Z-S03", "Z-S04", "Z-S05", "Z-S06", "Z-S07", "Z-S08", "Z-S09"}},
-			"record_ids":  map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}},
-			"filter_spec": map[string]any{"type": "object"},
-			"sort":        map[string]any{"type": "array", "maxItems": 10, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"field_id"}, "properties": map[string]any{"field_id": map[string]any{"type": "string"}, "desc": map[string]any{"type": "boolean"}}}},
-			"offset":      map[string]any{"type": "integer", "minimum": 0, "maximum": 10000000},
-			"limit":       map[string]any{"type": "integer", "minimum": 1, "maximum": maxQueryLimit},
-			"field_ids":   map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}},
-			"compact":     map[string]any{"type": "boolean", "default": true},
-			"max_bytes":   map[string]any{"type": "integer", "minimum": 1024, "maximum": maxQueryBytes, "default": defaultQueryBytes},
+			"target_role":  map[string]any{"type": "string", "enum": []string{"Z-S01", "Z-S02", "Z-S03", "Z-S04", "Z-S05", "Z-S06", "Z-S07", "Z-S08", "Z-S09"}},
+			"record_ids":   map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}},
+			"filter_spec":  filterSpec,
+			"sort":         map[string]any{"type": "array", "maxItems": 10, "items": sortItem, "description": "不能与 filter_spec 同时使用。"},
+			"offset":       map[string]any{"type": "integer", "minimum": 0, "maximum": 10000000},
+			"limit":        map[string]any{"type": "integer", "minimum": 1, "maximum": maxQueryLimit},
+			"field_ids":    map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "description": "字段投影，与 field_titles 二选一。"},
+			"field_titles": map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "description": "按本地 Schema 字段标题投影，与 field_ids 二选一。"},
+			"compact":      map[string]any{"type": "boolean", "default": true},
+			"max_bytes":    map[string]any{"type": "integer", "minimum": 1024, "maximum": maxQueryBytes, "default": defaultQueryBytes},
 		},
 	}
 }
 
 type recordQueryInput struct {
-	TargetRole string           `json:"target_role"`
-	RecordIDs  []string         `json:"record_ids"`
-	FilterSpec map[string]any   `json:"filter_spec"`
-	Sort       []map[string]any `json:"sort"`
-	Offset     int              `json:"offset"`
-	Limit      int              `json:"limit"`
-	FieldIDs   []string         `json:"field_ids"`
-	Compact    *bool            `json:"compact"`
-	MaxBytes   int              `json:"max_bytes"`
+	TargetRole  string           `json:"target_role"`
+	RecordIDs   []string         `json:"record_ids"`
+	FilterSpec  map[string]any   `json:"filter_spec"`
+	Sort        []map[string]any `json:"sort"`
+	Offset      int              `json:"offset"`
+	Limit       int              `json:"limit"`
+	FieldIDs    []string         `json:"field_ids"`
+	FieldTitles []string         `json:"field_titles"`
+	Compact     *bool            `json:"compact"`
+	MaxBytes    int              `json:"max_bytes"`
 }
 
 func (s *Server) queryRecords(ctx context.Context, runtime config.Config, schema config.Schema, client *wecom.Client, raw json.RawMessage) (any, error) {
 	var input recordQueryInput
-	if err := strictDecode(raw, &input, "target_role", "record_ids", "filter_spec", "sort", "offset", "limit", "field_ids", "compact", "max_bytes"); err != nil {
+	if err := strictDecode(raw, &input, "target_role", "record_ids", "filter_spec", "sort", "offset", "limit", "field_ids", "field_titles", "compact", "max_bytes"); err != nil {
 		return nil, err
 	}
 	if err := role(input.TargetRole); err != nil {
@@ -87,7 +133,7 @@ func (s *Server) queryRecords(ctx context.Context, runtime config.Config, schema
 	if err := validateQueryIDs(input.RecordIDs, 100, "record_ids"); err != nil {
 		return nil, err
 	}
-	fieldIDs, err := validateQueryFieldIDs(fields, input.FieldIDs, "field_ids")
+	fieldIDs, err := resolveQueryProjection(fields, input.FieldIDs, input.FieldTitles)
 	if err != nil {
 		return nil, err
 	}
@@ -131,6 +177,27 @@ func (s *Server) queryRecords(ctx context.Context, runtime config.Config, schema
 		return nil, err
 	}
 	return compactQueryResult(response, input.TargetRole, input.Offset, input.MaxBytes, *input.Compact), nil
+}
+
+func resolveQueryProjection(fields map[string]config.Field, fieldIDs, fieldTitles []string) ([]string, error) {
+	if len(fieldIDs) > 0 && len(fieldTitles) > 0 {
+		return nil, fmt.Errorf("field_ids 与 field_titles 不能同时使用")
+	}
+	if len(fieldTitles) == 0 {
+		return validateQueryFieldIDs(fields, fieldIDs, "field_ids")
+	}
+	if err := validateQueryIDs(fieldTitles, 100, "field_titles"); err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(fieldTitles))
+	for _, title := range fieldTitles {
+		field, ok := fields[title]
+		if !ok {
+			return nil, fmt.Errorf("field_titles 包含未登记字段标题: %s", title)
+		}
+		result = append(result, field.ID)
+	}
+	return result, nil
 }
 
 func validateQueryIDs(values []string, max int, name string) error {
@@ -177,14 +244,11 @@ func normalizeQuerySort(fields map[string]config.Field, values []map[string]any)
 		if len(value) == 0 {
 			return nil, fmt.Errorf("sort 规则不能为空")
 		}
-		fieldID, ok := value["field_id"].(string)
-		if !ok || strings.TrimSpace(fieldID) == "" {
-			return nil, fmt.Errorf("sort.field_id 必须是已登记字段 ID")
+		field, err := resolveQueryField(fields, value, "sort")
+		if err != nil {
+			return nil, err
 		}
-		field, ok := fieldByID(fields, fieldID)
-		if !ok {
-			return nil, fmt.Errorf("sort.field_id 未登记: %s", fieldID)
-		}
+		fieldID := field.ID
 		if _, ok := seen[fieldID]; ok {
 			return nil, fmt.Errorf("sort 不得重复字段")
 		}
@@ -247,20 +311,17 @@ func validateAndNormalizeFilter(fields map[string]config.Field, raw map[string]a
 }
 
 func normalizeFilterCondition(fields map[string]config.Field, condition map[string]any) (map[string]any, error) {
-	allowed := map[string]bool{"field_id": true, "field_type": true, "operator": true, "string_value": true, "number_value": true, "bool_value": true, "date_time_value": true, "user_value": true}
+	allowed := map[string]bool{"field_title": true, "field_id": true, "field_type": true, "operator": true, "string_value": true, "number_value": true, "bool_value": true, "date_time_value": true, "user_value": true}
 	for key := range condition {
 		if !allowed[key] {
 			return nil, fmt.Errorf("过滤条件不支持字段: %s", key)
 		}
 	}
-	fieldID, ok := condition["field_id"].(string)
-	if !ok || strings.TrimSpace(fieldID) == "" {
-		return nil, fmt.Errorf("过滤条件必须提供已登记 field_id")
+	field, err := resolveQueryField(fields, condition, "过滤条件")
+	if err != nil {
+		return nil, err
 	}
-	field, ok := fieldByID(fields, fieldID)
-	if !ok {
-		return nil, fmt.Errorf("过滤条件 field_id 未登记: %s", fieldID)
-	}
+	fieldID := field.ID
 	if supplied, ok := condition["field_type"].(string); ok && supplied != field.Type {
 		return nil, fmt.Errorf("过滤条件 field_type 与 Schema 不匹配: %s", fieldID)
 	}
@@ -269,21 +330,45 @@ func normalizeFilterCondition(fields map[string]config.Field, condition map[stri
 		return nil, fmt.Errorf("过滤条件 operator 不受支持")
 	}
 	result := map[string]any{"field_id": fieldID, "field_type": field.Type, "operator": operator}
+	valueCount := 0
 	for _, key := range []string{"string_value", "number_value", "bool_value", "date_time_value", "user_value"} {
 		if value, exists := condition[key]; exists {
 			if err := validateFilterValue(key, value); err != nil {
 				return nil, err
 			}
 			result[key] = value
+			valueCount++
 		}
 	}
-	if !valueBearingOperator(operator) && len(result) != 3 {
+	if !valueBearingOperator(operator) && valueCount != 0 {
 		return nil, fmt.Errorf("操作符 %s 不应携带值", operator)
 	}
-	if valueBearingOperator(operator) && len(result) == 3 {
-		return nil, fmt.Errorf("操作符 %s 必须携带值", operator)
+	if valueBearingOperator(operator) && valueCount != 1 {
+		return nil, fmt.Errorf("操作符 %s 必须且只能携带一个值", operator)
 	}
 	return result, nil
+}
+
+func resolveQueryField(fields map[string]config.Field, value map[string]any, prefix string) (config.Field, error) {
+	title, hasTitle := value["field_title"].(string)
+	id, hasID := value["field_id"].(string)
+	hasTitle = hasTitle && strings.TrimSpace(title) != ""
+	hasID = hasID && strings.TrimSpace(id) != ""
+	if hasTitle == hasID {
+		return config.Field{}, fmt.Errorf("%s 必须且只能提供 field_title 或 field_id 之一", prefix)
+	}
+	if hasTitle {
+		field, ok := fields[title]
+		if !ok {
+			return config.Field{}, fmt.Errorf("%s field_title 未登记: %s", prefix, title)
+		}
+		return field, nil
+	}
+	field, ok := fieldByID(fields, id)
+	if !ok {
+		return config.Field{}, fmt.Errorf("%s field_id 未登记: %s", prefix, id)
+	}
+	return field, nil
 }
 
 var validFilterOperators = map[string]bool{

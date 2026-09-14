@@ -76,6 +76,19 @@ func TestSubjectMigrationCatalogHasStableExpectedContract(t *testing.T) {
 	}
 }
 
+func TestSchemaMigrationToolsExposeRegistryMigration(t *testing.T) {
+	definitions := schemaMigrationTools()
+	properties := definitions[0].InputSchema.(map[string]any)["properties"].(map[string]any)
+	values := properties["migration_id"].(map[string]any)["enum"].([]string)
+	found := false
+	for _, value := range values {
+		found = found || value == schemaRegistryMigrationID
+	}
+	if !found {
+		t.Fatal("schema registry migration missing from preview/apply contract")
+	}
+}
+
 func TestMigrationCompatibilityRejectsTypeOptionAndReferenceDrift(t *testing.T) {
 	selectWanted := subjectMigrationFields("project-sheet", "project-field")[2]
 	current := migrationFieldWire(selectWanted)

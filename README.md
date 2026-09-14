@@ -122,6 +122,20 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 
 示例配置展示完整的 `instance_initialize` 权限集合，但不会迁移已部署实例。现有实例若仅允许只读初始化操作，必须由管理员通过受保护配置包升级 capability group；普通调用者和初始化器本身都不能提升该权限。
 
+### Z-S00 在线 Schema Registry
+
+`zoop_schema_registry_v1` 是内置管理员迁移：只在当前受管 Zoop 文档新增 `Z-S00｜Schema Registry` 及固定文本字段，不修改 Z-S01 至 Z-S09，也不自动写入任何 Registry generation。它必须依次经过 `wecom_schema_migration_preview`、未过期 `preview_id`、固定本机 Schema 管理员和 `wecom_schema_migration_apply`；迁移完成后还需要单独调用更新工具生成首个快照。
+
+`wecom_schema_registry_status` 只读返回 Z-S00 自身表 ID、28 个字段定义、当前 `@active` 指针、来源修订、九表汇总、generation 完整性以及 Registry 记录构成。`wecom_schema_registry_read` 默认读取 active generation 的紧凑字段页，也可按历史 generation、表角色、条目类型和关键词筛选；达到响应大小上限时明确返回 `next_offset`，避免 WorkBuddy 静默截断。两件读取工具均不要求 Owner 权限。`wecom_schema_registry_update` 不接受调用方提供的文档、子表、字段或类型；它只从当前固定实例的 Z-S01 至 Z-S09 读取真实结构，写入带 manifest 的不可变 generation，完整回读后才以单条 `@active` 指针切换生效。输入必须包含 status 返回的 `expected_active_generation`（尚无 active 时为 `none`）、独立幂等键、来源修订和固定 Owner 授权 `refresh_online_schema_registry`。并发期望不一致、同键内容冲突、generation 缺行或回读不完整都会失败关闭，不会切换 active。
+
+Z-S00 保存表名、表 ID、字段名、字段 ID、字段类型、选项、关联目标、系统字段属性、写入编码器和 Codec 验证状态。所有 Registry 列自身均为文本，避免 Registry 再依赖复选框或单选字段编码。线上九张业务表仍是结构事实来源；Z-S00 是服务端生成且经回读验证的在线契约快照，不能手工编辑成另一份事实。现有本地 Schema 镜像和 `wecom_schema_sync` 在兼容周期内保留，不会因创建或刷新 Z-S00 被覆盖。
+
+部署实例必须单独配置专用 capability group，不能借用普通业务写权限：
+
+```json
+"schema_registry": ["list_employees", "get_sheet", "get_fields", "get_records", "add_records", "update_records"]
+```
+
 WorkBuddy 验收必须逐层报告，不能把安装成功等同于业务可用：
 
 ```ini
