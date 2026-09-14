@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/config"
@@ -116,5 +117,135 @@ func TestVerifiedMessageReceiptRejectsPartialOrMissingReceipt(t *testing.T) {
 		if _, err := verifiedMessageReceipt(response); err == nil {
 			t.Fatalf("invalid receipt accepted: %#v", response)
 		}
+	}
+}
+
+func TestSendApplicationMessageReleasesDefinitiveFailureForSafeRetry(t *testing.T) {
+	fake := &appMessageFake{
+		employees: []any{
+			map[string]any{"userid": "operator", "status": float64(1)},
+			map[string]any{"userid": "recipient", "status": float64(1)},
+		},
+		receipt: map[string]any{"result": map[string]any{"errcode": float64(41011), "errmsg": "missing agentid"}},
+	}
+	runtime := config.Config{
+		WecomOperatorUserID: "operator",
+		StatePath:           filepath.Join(t.TempDir(), "state.json"),
+		APIWhitelist: map[string][]string{
+			appMessageCapabilityGroup: {"list_employees", "send_app_message"},
+		},
+	}
+	server := &Server{}
+	raw := json.RawMessage(`{"recipient_userid":"recipient","text":"hello","idempotency_key":"message-key-definitive-0001"}`)
+	if _, err := server.sendApplicationMessage(context.Background(), runtime, fake, raw); err == nil || !strings.Contains(err.Error(), "幂等键已释放") {
+		t.Fatalf("definitive failure was not reported safely: %v", err)
+	}
+	state, err := loadState(runtime.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := state.Entries["message-key-definitive-0001"]; found {
+		t.Fatalf("definitive failure kept a pending reservation: %#v", state)
+	}
+	fake.receipt = nil
+	if result, err := server.sendApplicationMessage(context.Background(), runtime, fake, raw); err != nil || result.(map[string]any)["state"] != "sent" {
+		t.Fatalf("same-key safe retry failed: result=%#v err=%v", result, err)
+	}
+}
+
+func TestSendApplicationMessageKeepsPendingForInconclusiveReceipt(t *testing.T) {
+	fake := &appMessageFake{
+		employees: []any{
+			map[string]any{"userid": "operator", "status": float64(1)},
+			map[string]any{"userid": "recipient", "status": float64(1)},
+		},
+		receipt: map[string]any{},
+	}
+	runtime := config.Config{
+		WecomOperatorUserID: "operator",
+		StatePath:           filepath.Join(t.TempDir(), "state.json"),
+		APIWhitelist: map[string][]string{
+			appMessageCapabilityGroup: {"list_employees", "send_app_message"},
+		},
+	}
+	server := &Server{}
+	raw := json.RawMessage(`{"recipient_userid":"recipient","text":"hello","idempotency_key":"message-key-uncertain-0001"}`)
+	if _, err := server.sendApplicationMessage(context.Background(), runtime, fake, raw); err == nil || !strings.Contains(err.Error(), "保留幂等状态") {
+		t.Fatalf("inconclusive failure was not retained: %v", err)
+	}
+	state, err := loadState(runtime.StatePath)
+	if err != nil || state.Entries["message-key-uncertain-0001"].Status != "pending" {
+		t.Fatalf("inconclusive failure lost reservation: %#v err=%v", state, err)
+	}
+	if _, err := server.sendApplicationMessage(context.Background(), runtime, fake, raw); err == nil || !strings.Contains(err.Error(), "禁止盲目重试") {
+		t.Fatalf("pending reservation allowed a blind retry: %v", err)
+	}
+}
+
+func TestSendApplicationMessageKeepsPendingForContradictoryPartialRecipientReceipt(t *testing.T) {
+	for _, field := range []string{"invaliduser", "unlicenseduser"} {
+		t.Run(field, func(t *testing.T) {
+			fake := &appMessageFake{
+				employees: []any{
+					map[string]any{"userid": "operator", "status": float64(1)},
+					map[string]any{"userid": "recipient", "status": float64(1)},
+				},
+				receipt: map[string]any{"result": map[string]any{
+					"errcode": float64(0),
+					"msgid":   "possibly-sent-message",
+					field:     "other-user",
+				}},
+			}
+			runtime := config.Config{
+				WecomOperatorUserID: "operator",
+				StatePath:           filepath.Join(t.TempDir(), "state.json"),
+				APIWhitelist: map[string][]string{
+					appMessageCapabilityGroup: {"list_employees", "send_app_message"},
+				},
+			}
+			server := &Server{}
+			raw := json.RawMessage(`{"recipient_userid":"recipient","text":"hello","idempotency_key":"message-key-contradictory-0001"}`)
+			if _, err := server.sendApplicationMessage(context.Background(), runtime, fake, raw); err == nil || !strings.Contains(err.Error(), "保留幂等状态") {
+				t.Fatalf("contradictory receipt was not retained as uncertain: %v", err)
+			}
+			state, err := loadState(runtime.StatePath)
+			if err != nil || state.Entries["message-key-contradictory-0001"].Status != "pending" {
+				t.Fatalf("contradictory receipt released reservation: %#v err=%v", state, err)
+			}
+		})
+	}
+}
+
+func TestReleaseMessageStateRequiresExactPendingEntry(t *testing.T) {
+	tests := []struct {
+		name     string
+		entry    stateEntry
+		key      string
+		digest   string
+		operator string
+	}{
+		{name: "missing key", entry: stateEntry{Digest: "digest", Status: "pending", BusinessOperatorUserID: "operator"}, key: "other", digest: "digest", operator: "operator"},
+		{name: "wrong digest", entry: stateEntry{Digest: "digest", Status: "pending", BusinessOperatorUserID: "operator"}, key: "message-key", digest: "other", operator: "operator"},
+		{name: "completed entry", entry: stateEntry{Digest: "digest", Status: "completed", BusinessOperatorUserID: "operator"}, key: "message-key", digest: "digest", operator: "operator"},
+		{name: "wrong operator", entry: stateEntry{Digest: "digest", Status: "pending", BusinessOperatorUserID: "operator"}, key: "message-key", digest: "digest", operator: "other"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			statePath := filepath.Join(t.TempDir(), "state.json")
+			initial := idempotencyState{Entries: map[string]stateEntry{"message-key": test.entry}}
+			if err := saveState(statePath, initial); err != nil {
+				t.Fatal(err)
+			}
+			if err := (&Server{}).releaseStateWithOperator(statePath, test.key, test.digest, test.operator); err == nil {
+				t.Fatal("non-matching state was released")
+			}
+			got, err := loadState(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Entries["message-key"] != test.entry {
+				t.Fatalf("state changed after rejected release: got=%#v want=%#v", got.Entries["message-key"], test.entry)
+			}
+		})
 	}
 }

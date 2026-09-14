@@ -996,6 +996,29 @@ func (s *Server) completeStateWithOperator(path, key, digest, operator string) e
 	}
 	return nil
 }
+
+func (s *Server) releaseStateWithOperator(path, key, digest, operator string) error {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	release, err := acquireStateFileLock(path)
+	if err != nil {
+		return fmt.Errorf("获取幂等状态锁失败")
+	}
+	defer release()
+	state, err := loadState(path)
+	if err != nil {
+		return err
+	}
+	entry, found := state.Entries[key]
+	if !found || entry.Digest != digest || entry.Status != "pending" || entry.BusinessOperatorUserID != operator {
+		return fmt.Errorf("幂等状态与明确失败的消息不一致")
+	}
+	delete(state.Entries, key)
+	if err := saveState(path, state); err != nil {
+		return fmt.Errorf("释放幂等状态失败")
+	}
+	return nil
+}
 func loadState(path string) (idempotencyState, error) {
 	result := idempotencyState{Entries: map[string]stateEntry{}}
 	data, err := os.ReadFile(path)

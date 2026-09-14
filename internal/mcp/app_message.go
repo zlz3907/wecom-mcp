@@ -72,6 +72,12 @@ func (s *Server) sendApplicationMessage(ctx context.Context, runtime config.Conf
 	}
 	receipt, err := verifiedMessageReceipt(response)
 	if err != nil {
+		if definitiveMessageFailure(response) {
+			if releaseErr := s.releaseStateWithOperator(runtime.StatePath, input.IdempotencyKey, digest, businessActor); releaseErr != nil {
+				return nil, fmt.Errorf("企业微信明确拒绝消息且未发送，但幂等状态释放失败: %v: %w", releaseErr, err)
+			}
+			return nil, fmt.Errorf("企业微信明确拒绝消息且未发送，幂等键已释放: %w", err)
+		}
 		return nil, fmt.Errorf("企业微信消息发送未取得成功回执，保留幂等状态: %w", err)
 	}
 	if err := s.completeStateWithOperator(runtime.StatePath, input.IdempotencyKey, digest, businessActor); err != nil {
@@ -93,6 +99,21 @@ func (s *Server) sendApplicationMessage(ctx context.Context, runtime config.Conf
 		"recipient_userid": input.RecipientUserID,
 		"message_id":       receipt["message_id"],
 	}, businessActor), nil
+}
+
+func definitiveMessageFailure(response map[string]any) bool {
+	result, ok := response["result"].(map[string]any)
+	if !ok {
+		return false
+	}
+	code, ok := initializeInteger(result["errcode"])
+	if !ok {
+		return false
+	}
+	if code != 0 {
+		return true
+	}
+	return false
 }
 
 func validMessageRecipient(value string) bool {
