@@ -774,39 +774,46 @@ func (s *Server) apply(ctx context.Context, runtime config.Config, schema config
 	if err := apiError(result); err != nil {
 		return nil, fmt.Errorf("企业微信写入已发起但未确认成功: %w", err)
 	}
+	recordResults, err := writeRecordResults(input.Operation, prepared, result)
+	if err != nil {
+		return nil, fmt.Errorf("企业微信写入已发起但成功回执不完整: %w", err)
+	}
 	readback, readbackErr := client.Request(ctx, "get_records", map[string]any{"docid": target.DocumentID, "sheet_id": target.SheetID, "key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID", "limit": 200})
 	if readbackErr != nil || apiError(readback) != nil {
-		return withOperatorAudit(map[string]any{"state": "applied_readback_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false}, businessActor), nil
+		return pendingRecordApplyResponse(input, digest, result, recordResults, 0, businessActor), nil
 	}
+	readbackRecordCount := readbackTargetCount(input.Operation, prepared, result, readback)
 	if !verifyReadback(input.Operation, prepared, result, readback) {
 		if referenceReadbackGap(input.Operation, prepared, result, readback) {
 			if input.TargetRole == "Z-S03" {
-				return withOperatorAudit(map[string]any{"state": "applied_progress_sync_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "progress_error": "主需求关联回读不完整，未执行需求进度同步", "write_result": writeSummary(result)}, businessActor), nil
+				return withOperatorAudit(map[string]any{"state": "applied_progress_sync_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "progress_error": "主需求关联回读不完整，未执行需求进度同步", "write_result": writeSummary(result), "record_results": recordResults, "readback_record_count": readbackRecordCount}, businessActor), nil
 			}
 			if err := s.completeStateWithOperator(runtime.StatePath, input.IdempotencyKey, digest, businessActor); err != nil {
-				return withOperatorAudit(map[string]any{"state": "applied_idempotency_completion_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "idempotency_error": err.Error(), "write_result": writeSummary(result)}, businessActor), nil
+				return withOperatorAudit(map[string]any{"state": "applied_idempotency_completion_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "idempotency_error": err.Error(), "write_result": writeSummary(result), "record_results": recordResults, "readback_record_count": readbackRecordCount}, businessActor), nil
 			}
-			return withOperatorAudit(map[string]any{"state": "applied_reference_readback_inconclusive", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "write_result": writeSummary(result), "readback_record_count": len(recordsFrom(readback))}, businessActor), nil
+			return withOperatorAudit(map[string]any{"state": "applied_reference_readback_inconclusive", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false, "reference_write_accepted": true, "write_result": writeSummary(result), "record_results": recordResults, "readback_record_count": readbackRecordCount}, businessActor), nil
 		}
-		return withOperatorAudit(map[string]any{"state": "applied_readback_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": false}, businessActor), nil
+		return pendingRecordApplyResponse(input, digest, result, recordResults, readbackRecordCount, businessActor), nil
 	}
 	progressSync, progressErr := s.syncRequirementProgress(ctx, runtime, schema, client, target, input, result, taskReadbackBefore, readback)
 	if progressErr != nil {
 		return withOperatorAudit(map[string]any{
-			"state":             "applied_progress_sync_pending",
-			"target_role":       input.TargetRole,
-			"idempotency_key":   input.IdempotencyKey,
-			"source_revision":   input.SourceRevision,
-			"request_digest":    digest,
-			"readback_verified": true,
-			"progress_error":    progressErr.Error(),
-			"write_result":      writeSummary(result),
+			"state":                 "applied_progress_sync_pending",
+			"target_role":           input.TargetRole,
+			"idempotency_key":       input.IdempotencyKey,
+			"source_revision":       input.SourceRevision,
+			"request_digest":        digest,
+			"readback_verified":     true,
+			"progress_error":        progressErr.Error(),
+			"write_result":          writeSummary(result),
+			"record_results":        recordResults,
+			"readback_record_count": readbackRecordCount,
 		}, businessActor), nil
 	}
 	if err := s.completeStateWithOperator(runtime.StatePath, input.IdempotencyKey, digest, businessActor); err != nil {
-		return withOperatorAudit(map[string]any{"state": "applied_idempotency_completion_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "idempotency_error": err.Error(), "write_result": writeSummary(result)}, businessActor), nil
+		return withOperatorAudit(map[string]any{"state": "applied_idempotency_completion_pending", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "idempotency_error": err.Error(), "write_result": writeSummary(result), "record_results": recordResults, "readback_record_count": readbackRecordCount}, businessActor), nil
 	}
-	response := map[string]any{"state": "applied", "target_role": input.TargetRole, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "request_digest": digest, "readback_verified": true, "write_result": writeSummary(result), "readback_record_count": len(recordsFrom(readback)), "business_operator_userid": businessActor, "native_api_actor": "application"}
+	response := completedRecordApplyResponse(input, digest, result, recordResults, readbackRecordCount, businessActor)
 	if progressSync != nil {
 		response["requirement_progress_sync"] = progressSync
 	}
@@ -1054,17 +1061,38 @@ func recordsFrom(response map[string]any) []any {
 }
 func apiError(response map[string]any) error {
 	result, _ := response["result"].(map[string]any)
-	code, exists := result["errcode"]
-	if !exists {
-		return nil
-	}
-	number, numeric := code.(float64)
-	if numeric && number != 0 {
+	if number, exists := errorCode(result["errcode"]); exists && number != 0 {
 		message, _ := result["errmsg"].(string)
-		return fmt.Errorf("errcode %.0f: %s", number, message)
+		return fmt.Errorf("errcode %d: %s", number, message)
+	}
+	for index, item := range resultSlice(response, "records") {
+		record, _ := item.(map[string]any)
+		if number, exists := errorCode(record["errcode"]); exists && number != 0 {
+			message, _ := record["errmsg"].(string)
+			return fmt.Errorf("record[%d] errcode %d: %s", index, number, message)
+		}
 	}
 	return nil
 }
+
+func errorCode(value any) (int64, bool) {
+	switch number := value.(type) {
+	case float64:
+		return int64(number), true
+	case float32:
+		return int64(number), true
+	case int:
+		return int64(number), true
+	case int64:
+		return number, true
+	case json.Number:
+		parsed, err := number.Int64()
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
 func writeSummary(response map[string]any) map[string]any {
 	result, _ := response["result"].(map[string]any)
 	summary := map[string]any{}
@@ -1075,6 +1103,116 @@ func writeSummary(response map[string]any) map[string]any {
 		summary["errmsg"] = message
 	}
 	return summary
+}
+
+func writeRecordResults(operation string, prepared []map[string]any, response map[string]any) ([]map[string]any, error) {
+	result, _ := response["result"].(map[string]any)
+	upstreamRecords := resultSlice(response, "records")
+	if operation == "add_records" && len(upstreamRecords) != len(prepared) {
+		return nil, fmt.Errorf("企业微信返回 %d 个新增记录 ID，请求包含 %d 项", len(upstreamRecords), len(prepared))
+	}
+	if operation == "update_records" && len(upstreamRecords) != 0 && len(upstreamRecords) != len(prepared) {
+		return nil, fmt.Errorf("企业微信返回 %d 个更新记录回执，请求包含 %d 项", len(upstreamRecords), len(prepared))
+	}
+	globalCode, hasGlobalCode := errorCode(result["errcode"])
+	if !hasGlobalCode {
+		globalCode = 0
+	}
+	globalMessage, _ := result["errmsg"].(string)
+	if globalMessage == "" && globalCode == 0 {
+		globalMessage = "ok"
+	}
+	receipts := make([]map[string]any, 0, len(prepared))
+	for index, expected := range prepared {
+		var upstream map[string]any
+		if index < len(upstreamRecords) {
+			upstream, _ = upstreamRecords[index].(map[string]any)
+		}
+		recordID := ""
+		if operation == "update_records" {
+			recordID, _ = expected["record_id"].(string)
+			if upstreamID, _ := upstream["record_id"].(string); upstreamID != "" && upstreamID != recordID {
+				return nil, fmt.Errorf("第 %d 项更新回执 record_id 与请求不一致", index)
+			}
+		} else if upstream != nil {
+			recordID, _ = upstream["record_id"].(string)
+		}
+		if recordID == "" {
+			return nil, fmt.Errorf("第 %d 项缺少真实 record_id", index)
+		}
+		code := globalCode
+		if upstreamCode, exists := errorCode(upstream["errcode"]); exists {
+			code = upstreamCode
+		}
+		message := globalMessage
+		if upstreamMessage, ok := upstream["errmsg"].(string); ok && upstreamMessage != "" {
+			message = upstreamMessage
+		}
+		receipts = append(receipts, map[string]any{
+			"input_index": index,
+			"record_id":   recordID,
+			"errcode":     code,
+			"errmsg":      message,
+		})
+	}
+	return receipts, nil
+}
+
+func readbackTargetCount(operation string, prepared []map[string]any, writeResult, readback map[string]any) int {
+	ids := make([]string, 0, len(prepared))
+	if operation == "add_records" {
+		ids = writeRecordIDs(writeResult)
+	} else {
+		for _, record := range prepared {
+			id, _ := record["record_id"].(string)
+			if id != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+	targets := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		targets[id] = struct{}{}
+	}
+	seen := map[string]struct{}{}
+	for _, item := range recordsFrom(readback) {
+		record, _ := item.(map[string]any)
+		id, _ := record["record_id"].(string)
+		if _, targeted := targets[id]; targeted {
+			seen[id] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
+func completedRecordApplyResponse(input applyInput, digest string, writeResult map[string]any, recordResults []map[string]any, readbackRecordCount int, businessActor string) map[string]any {
+	return map[string]any{
+		"state":                    "applied",
+		"target_role":              input.TargetRole,
+		"idempotency_key":          input.IdempotencyKey,
+		"source_revision":          input.SourceRevision,
+		"request_digest":           digest,
+		"readback_verified":        true,
+		"write_result":             writeSummary(writeResult),
+		"record_results":           recordResults,
+		"readback_record_count":    readbackRecordCount,
+		"business_operator_userid": businessActor,
+		"native_api_actor":         "application",
+	}
+}
+
+func pendingRecordApplyResponse(input applyInput, digest string, writeResult map[string]any, recordResults []map[string]any, readbackRecordCount int, businessActor string) map[string]any {
+	return withOperatorAudit(map[string]any{
+		"state":                 "applied_readback_pending",
+		"target_role":           input.TargetRole,
+		"idempotency_key":       input.IdempotencyKey,
+		"source_revision":       input.SourceRevision,
+		"request_digest":        digest,
+		"readback_verified":     false,
+		"write_result":          writeSummary(writeResult),
+		"record_results":        recordResults,
+		"readback_record_count": readbackRecordCount,
+	}, businessActor)
 }
 
 func verifyReadback(operation string, prepared []map[string]any, writeResult, readback map[string]any) bool {
