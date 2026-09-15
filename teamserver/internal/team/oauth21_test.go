@@ -108,7 +108,7 @@ func TestOAuth21ServiceFiltersToolsFromCurrentIntrospectionPolicy(t *testing.T) 
 	server := httptest.NewServer(service.Handler(verifier))
 	defer server.Close()
 	tools := listTools(t, server.URL, "opaque-token")
-	if len(tools) != 1 || !tools["wecom_schema_status"] {
+	if len(tools) != 2 || !tools["wecom_schema_status"] || !tools["wecom_employee_list"] {
 		t.Fatalf("tools=%v", tools)
 	}
 }

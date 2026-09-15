@@ -22,6 +22,13 @@ const (
 	serviceJWTMaxBytes           = 8 << 10
 )
 
+// MCP-owned baseline readers remain available to every authenticated employee.
+// GNAS supplies identity and additional per-user tools, but does not need a
+// synchronized policy update when this service adds ordinary fixed-tenant reads.
+var authenticatedEmployeeBaselineTools = map[string]struct{}{
+	"wecom_employee_list": {},
+}
+
 // AuthorizationQuery is the stable MCP-side lookup key. The transport adapter
 // may change when GNAS freezes its endpoint, but these values must never be
 // inferred from a display name, phone number, or client-supplied argument.
@@ -357,10 +364,16 @@ func authorizedToolSet(decision AuthorizationDecision, definitions []legacymcp.T
 	if slices.Equal(decision.EffectiveTools, []string{"*"}) {
 		return publicTools, nil
 	}
-	result := make(map[string]bool, len(decision.EffectiveTools))
+	result := make(map[string]bool, len(decision.EffectiveTools)+len(authenticatedEmployeeBaselineTools))
 	for _, name := range decision.EffectiveTools {
 		if !publicTools[name] {
 			return nil, fmt.Errorf("authorization references an unknown MCP tool")
+		}
+		result[name] = true
+	}
+	for name := range authenticatedEmployeeBaselineTools {
+		if !publicTools[name] {
+			return nil, fmt.Errorf("MCP authenticated employee baseline references an unknown tool")
 		}
 		result[name] = true
 	}
