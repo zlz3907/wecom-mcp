@@ -90,7 +90,11 @@ func TestOAuth21EndToEndMCPClientAndImmediateRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 1 || tools.Tools[0].Name != "wecom_schema_status" {
+	toolNames := map[string]bool{}
+	for _, tool := range tools.Tools {
+		toolNames[tool.Name] = true
+	}
+	if len(tools.Tools) != 2 || !toolNames["wecom_schema_status"] || !toolNames["wecom_employee_list"] {
 		t.Fatalf("tools=%#v", tools.Tools)
 	}
 	beforeRevocation := introspectionCalls.Load()

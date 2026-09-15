@@ -174,12 +174,27 @@ func TestAuthorizedToolSetExpandsWildcardOnlyToCurrentCatalog(t *testing.T) {
 	}
 }
 
+func TestAuthorizedToolSetAddsMCPAuthenticatedEmployeeBaseline(t *testing.T) {
+	definitions, err := testToolDefinitions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := testAuthorizationDecision("wecom_schema_status")
+	tools, err := authorizedToolSet(decision, definitions, []string{"wecom.mcp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tools["wecom_schema_status"] || !tools["wecom_employee_list"] || len(tools) != 2 {
+		t.Fatalf("authenticated employee baseline missing: %#v", tools)
+	}
+}
+
 func TestUserAuthorizationFiltersToolsAndPreservesRoleBoundary(t *testing.T) {
 	resolver := &staticAuthorizationResolver{decision: testAuthorizationDecision("wecom_record_query", "wecom_record_apply")}
 	server := newUserAuthorizationHTTPServer(t, RoleReader, resolver, io.Discard)
 	defer server.Close()
 	tools := listTools(t, server.URL, "reader")
-	if !tools["wecom_record_query"] || tools["wecom_record_apply"] {
+	if !tools["wecom_record_query"] || !tools["wecom_employee_list"] || tools["wecom_record_apply"] {
 		t.Fatalf("reader tools=%#v", tools)
 	}
 }
