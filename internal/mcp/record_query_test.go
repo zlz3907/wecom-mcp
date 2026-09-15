@@ -122,7 +122,7 @@ func TestCompactQueryResultReportsResponseTruncation(t *testing.T) {
 			map[string]any{"record_id": "r2", "values": map[string]any{"field": []any{map[string]any{"text": "two"}}}},
 		},
 	}}
-	got := compactQueryResult(response, "Z-S03", 0, 190, true)
+	got := compactQueryResult(response, "Z-S03", 0, 190, true, nil)
 	if got["response_truncated"] != true || got["has_more"] != true || got["next_offset"] != 1 {
 		t.Fatalf("truncation metadata=%#v", got)
 	}
@@ -131,6 +131,45 @@ func TestCompactQueryResultReportsResponseTruncation(t *testing.T) {
 	}
 	if value := got["records"].([]any)[0].(map[string]any)["values"].(map[string]any)["field"].([]any)[0]; value != "one" {
 		t.Fatalf("compact cell=%v", value)
+	}
+}
+
+func TestCompactQueryRecordCanFillProjectedEmptyFields(t *testing.T) {
+	got := compactQueryRecord(map[string]any{
+		"record_id": "r1",
+		"values": map[string]any{
+			"field_task_id": []any{map[string]any{"text": "TASK-001"}},
+		},
+	}, []string{"field_task_id", "fGyxtt"})
+	values := got["values"].(map[string]any)
+	if values["field_task_id"].([]any)[0] != "TASK-001" {
+		t.Fatalf("present value changed: %#v", values)
+	}
+	if value, exists := values["fGyxtt"]; !exists || value != nil {
+		t.Fatalf("projected empty field not represented as null: %#v", values)
+	}
+}
+
+func TestRecordQueryToolSchemaPublishesOptInEmptyFieldContract(t *testing.T) {
+	properties := recordQueryToolSchema()["properties"].(map[string]any)
+	emptyFields := properties["include_empty_fields"].(map[string]any)
+	if emptyFields["default"] != false {
+		t.Fatalf("include_empty_fields must remain opt-in: %#v", emptyFields)
+	}
+}
+
+func TestEmptyFieldProjectionRequiresCompactProjection(t *testing.T) {
+	if err := validateEmptyFieldProjection(true, false, []string{"field_task_id"}); err == nil {
+		t.Fatal("raw responses must reject include_empty_fields")
+	}
+	if err := validateEmptyFieldProjection(true, true, nil); err == nil {
+		t.Fatal("empty-field expansion without a bounded projection must be rejected")
+	}
+	if err := validateEmptyFieldProjection(true, true, []string{"field_task_id"}); err != nil {
+		t.Fatalf("bounded compact projection rejected: %v", err)
+	}
+	if err := validateEmptyFieldProjection(false, false, nil); err != nil {
+		t.Fatalf("legacy defaults changed: %v", err)
 	}
 }
 

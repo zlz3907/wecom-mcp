@@ -46,6 +46,27 @@ func (s *Server) genericAPICall(ctx context.Context, runtime config.Config, clie
 	return map[string]any{"operation": input.Operation, "kind": definition.Kind, "result": sanitizeLegacyResponse(input.Operation, result["result"])}, nil
 }
 
+func (s *Server) listEmployees(ctx context.Context, runtime config.Config, client wecom.Requester, raw json.RawMessage) (any, error) {
+	if err := empty(raw); err != nil {
+		return nil, err
+	}
+	if !runtime.Allows("list_employees") {
+		return nil, fmt.Errorf("实例白名单未允许 list_employees")
+	}
+	response, err := client.Request(ctx, "list_employees", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	if err := apiError(response); err != nil {
+		return nil, err
+	}
+	result := sanitizeEmployees(response["result"])
+	employees, _ := result["employees"].([]map[string]any)
+	result["employee_count"] = len(employees)
+	result["scope"] = "current_fixed_tenant_root_with_children"
+	return result, nil
+}
+
 func schemaMutationOperation(operation string) bool {
 	return map[string]bool{
 		"add_sheet": true, "update_sheet": true, "delete_sheet": true,

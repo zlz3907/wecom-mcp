@@ -296,6 +296,34 @@ func TestCompactSchemaRegistryEntryIsUsefulAndBounded(t *testing.T) {
 	}
 }
 
+func TestCompactSchemaRegistryEntryPublishesSelectOptionsAndMetadataAvailability(t *testing.T) {
+	entry := schemaRegistryEntryView{
+		EntryType: "field", TargetRole: "Z-S09", FieldName: "AI 工具平台", FieldID: "platform",
+		FieldType: "FIELD_TYPE_SINGLE_SELECT", IsPrimary: "未知", Options: `{"OpenAI Codex":"option-codex"}`,
+	}
+	compact := compactSchemaRegistryEntry(entry)
+	options := compact["options"].(map[string]string)
+	if options["OpenAI Codex"] != "option-codex" || compact["options_available"] != true {
+		t.Fatalf("compact select options missing: %#v", compact)
+	}
+	if compact["primary_metadata_available"] != false {
+		t.Fatalf("unknown primary metadata must be explicit: %#v", compact)
+	}
+
+	entry.Options = ""
+	compact = compactSchemaRegistryEntry(entry)
+	if compact["options_available"] != false || compact["options"] != nil {
+		t.Fatalf("missing select options must not be guessed: %#v", compact)
+	}
+
+	entry.FieldType = "FIELD_TYPE_TEXT"
+	entry.IsPrimary = "否"
+	compact = compactSchemaRegistryEntry(entry)
+	if compact["options_available"] != nil || compact["primary_metadata_available"] != true {
+		t.Fatalf("non-select metadata flags are wrong: %#v", compact)
+	}
+}
+
 func TestSchemaRegistryPageStopsBeforeMaxBytesAndCanResume(t *testing.T) {
 	compact := true
 	pageInput := schemaRegistryReadInput{EntryType: "field", Limit: 20, Compact: &compact, MaxBytes: 1024}

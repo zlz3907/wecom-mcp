@@ -68,36 +68,38 @@ func recordQueryToolSchema() map[string]any {
 		"additionalProperties": false,
 		"required":             []string{"target_role"},
 		"properties": map[string]any{
-			"target_role":  map[string]any{"type": "string", "enum": []string{"Z-S01", "Z-S02", "Z-S03", "Z-S04", "Z-S05", "Z-S06", "Z-S07", "Z-S08", "Z-S09"}},
-			"record_ids":   map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}},
-			"filter_spec":  filterSpec,
-			"sort":         map[string]any{"type": "array", "maxItems": 10, "items": sortItem, "description": "不能与 filter_spec 同时使用。"},
-			"offset":       map[string]any{"type": "integer", "minimum": 0, "maximum": 10000000},
-			"limit":        map[string]any{"type": "integer", "minimum": 1, "maximum": maxQueryLimit},
-			"field_ids":    map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "description": "字段投影，与 field_titles 二选一。"},
-			"field_titles": map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "description": "按本地 Schema 字段标题投影，与 field_ids 二选一。"},
-			"compact":      map[string]any{"type": "boolean", "default": true},
-			"max_bytes":    map[string]any{"type": "integer", "minimum": 1024, "maximum": maxQueryBytes, "default": defaultQueryBytes},
+			"target_role":          map[string]any{"type": "string", "enum": []string{"Z-S01", "Z-S02", "Z-S03", "Z-S04", "Z-S05", "Z-S06", "Z-S07", "Z-S08", "Z-S09"}},
+			"record_ids":           map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}},
+			"filter_spec":          filterSpec,
+			"sort":                 map[string]any{"type": "array", "maxItems": 10, "items": sortItem, "description": "不能与 filter_spec 同时使用。"},
+			"offset":               map[string]any{"type": "integer", "minimum": 0, "maximum": 10000000},
+			"limit":                map[string]any{"type": "integer", "minimum": 1, "maximum": maxQueryLimit},
+			"field_ids":            map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "description": "字段投影，与 field_titles 二选一。"},
+			"field_titles":         map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "description": "按运行时 Schema 字段标题投影，与 field_ids 二选一。"},
+			"compact":              map[string]any{"type": "boolean", "default": true},
+			"include_empty_fields": map[string]any{"type": "boolean", "default": false, "description": "仅用于 compact=true；将本次 field_ids/field_titles 投影中未出现在上游记录 values 的字段补为 null。必须显式提供字段投影，避免整表宽响应。"},
+			"max_bytes":            map[string]any{"type": "integer", "minimum": 1024, "maximum": maxQueryBytes, "default": defaultQueryBytes},
 		},
 	}
 }
 
 type recordQueryInput struct {
-	TargetRole  string           `json:"target_role"`
-	RecordIDs   []string         `json:"record_ids"`
-	FilterSpec  map[string]any   `json:"filter_spec"`
-	Sort        []map[string]any `json:"sort"`
-	Offset      int              `json:"offset"`
-	Limit       int              `json:"limit"`
-	FieldIDs    []string         `json:"field_ids"`
-	FieldTitles []string         `json:"field_titles"`
-	Compact     *bool            `json:"compact"`
-	MaxBytes    int              `json:"max_bytes"`
+	TargetRole         string           `json:"target_role"`
+	RecordIDs          []string         `json:"record_ids"`
+	FilterSpec         map[string]any   `json:"filter_spec"`
+	Sort               []map[string]any `json:"sort"`
+	Offset             int              `json:"offset"`
+	Limit              int              `json:"limit"`
+	FieldIDs           []string         `json:"field_ids"`
+	FieldTitles        []string         `json:"field_titles"`
+	Compact            *bool            `json:"compact"`
+	IncludeEmptyFields bool             `json:"include_empty_fields"`
+	MaxBytes           int              `json:"max_bytes"`
 }
 
 func (s *Server) queryRecords(ctx context.Context, runtime config.Config, schema config.Schema, client *wecom.Client, raw json.RawMessage) (any, error) {
 	var input recordQueryInput
-	if err := strictDecode(raw, &input, "target_role", "record_ids", "filter_spec", "sort", "offset", "limit", "field_ids", "field_titles", "compact", "max_bytes"); err != nil {
+	if err := strictDecode(raw, &input, "target_role", "record_ids", "filter_spec", "sort", "offset", "limit", "field_ids", "field_titles", "compact", "include_empty_fields", "max_bytes"); err != nil {
 		return nil, err
 	}
 	if err := role(input.TargetRole); err != nil {
@@ -135,6 +137,9 @@ func (s *Server) queryRecords(ctx context.Context, runtime config.Config, schema
 	}
 	fieldIDs, err := resolveQueryProjection(fields, input.FieldIDs, input.FieldTitles)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateEmptyFieldProjection(input.IncludeEmptyFields, *input.Compact, fieldIDs); err != nil {
 		return nil, err
 	}
 	filterSpec, err := validateAndNormalizeFilter(fields, input.FilterSpec)
@@ -176,7 +181,27 @@ func (s *Server) queryRecords(ctx context.Context, runtime config.Config, schema
 	if err := apiError(response); err != nil {
 		return nil, err
 	}
-	return compactQueryResult(response, input.TargetRole, input.Offset, input.MaxBytes, *input.Compact), nil
+	return compactQueryResult(response, input.TargetRole, input.Offset, input.MaxBytes, *input.Compact, emptyFieldProjection(input.IncludeEmptyFields, fieldIDs)), nil
+}
+
+func emptyFieldProjection(include bool, fieldIDs []string) []string {
+	if !include {
+		return nil
+	}
+	return fieldIDs
+}
+
+func validateEmptyFieldProjection(include, compact bool, fieldIDs []string) error {
+	if !include {
+		return nil
+	}
+	if !compact {
+		return fmt.Errorf("include_empty_fields 仅支持 compact=true")
+	}
+	if len(fieldIDs) == 0 {
+		return fmt.Errorf("include_empty_fields=true 时必须提供 field_ids 或 field_titles")
+	}
+	return nil
 }
 
 func resolveQueryProjection(fields map[string]config.Field, fieldIDs, fieldTitles []string) ([]string, error) {
@@ -416,7 +441,7 @@ func validateFilterValue(name string, value any) error {
 	return nil
 }
 
-func compactQueryResult(response map[string]any, targetRole string, offset, maxBytes int, compact bool) map[string]any {
+func compactQueryResult(response map[string]any, targetRole string, offset, maxBytes int, compact bool, emptyFieldIDs []string) map[string]any {
 	result, _ := response["result"].(map[string]any)
 	records, _ := result["records"].([]any)
 	total := len(records)
@@ -431,7 +456,7 @@ func compactQueryResult(response map[string]any, targetRole string, offset, maxB
 	outputRecords := make([]any, 0, len(records))
 	for _, record := range records {
 		if compact {
-			outputRecords = append(outputRecords, compactQueryRecord(record))
+			outputRecords = append(outputRecords, compactQueryRecord(record, emptyFieldIDs))
 		} else {
 			outputRecords = append(outputRecords, record)
 		}
@@ -451,7 +476,7 @@ func compactQueryResult(response map[string]any, targetRole string, offset, maxB
 	return output
 }
 
-func compactQueryRecord(value any) map[string]any {
+func compactQueryRecord(value any, emptyFieldIDs []string) map[string]any {
 	record, _ := value.(map[string]any)
 	output := map[string]any{}
 	for _, key := range []string{"record_id", "create_time", "update_time"} {
@@ -461,13 +486,21 @@ func compactQueryRecord(value any) map[string]any {
 	}
 	values, _ := record["values"].(map[string]any)
 	compactValues := map[string]any{}
-	keys := make([]string, 0, len(values))
+	keys := make([]string, 0, len(values)+len(emptyFieldIDs))
 	for key := range values {
 		keys = append(keys, key)
 	}
+	for _, fieldID := range emptyFieldIDs {
+		if _, exists := values[fieldID]; !exists {
+			compactValues[fieldID] = nil
+			keys = append(keys, fieldID)
+		}
+	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		compactValues[key] = compactCell(values[key])
+		if value, exists := values[key]; exists {
+			compactValues[key] = compactCell(value)
+		}
 	}
 	output["values"] = compactValues
 	return output

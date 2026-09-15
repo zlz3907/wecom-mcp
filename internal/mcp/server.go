@@ -78,6 +78,7 @@ var tools = []tool{
 	{"wecom_field_codec_lab_replay_probe", "将已由人工填写并回读的可写字段原始值复制为一条新记录，再更新该新记录并回读核验；不修改人工样本行或 Zoop 正式八表。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_field_codec_lab_registry_status", "读取当前字段编码验证表在 SMART_SHEETS_IDS 中的登记状态与线上登记表字段，不修改任何企业微信数据。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_field_codec_lab_register", "将已创建的字段编码验证表按固定 SMART_SHEETS_IDS 规范登记为 active；仅允许当前实例创建的实验表，登记后回读核验。", map[string]any{"type": "object", "additionalProperties": false}},
+	{"wecom_employee_list", "只读列出当前固定企业微信租户根部门及子部门的员工基础信息。调用方不能指定租户或部门；仅返回 userid、姓名、部门、职位和状态。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_api_call", "调用当前固定租户的旧 MCP 全量企业微信 API 契约。operation 必须在实例 API 白名单内；不会接受租户、地址或凭据路由字段。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"operation", "payload"}, "properties": map[string]any{"operation": map[string]any{"type": "string", "enum": legacyOperations()}, "payload": map[string]any{"type": "object"}}}},
 	{"wecom_identity_binding_start", "按企业微信通讯录完整姓名唯一匹配启用员工及其启用的 Z-S09 人员主体，并向其企业微信发送一次性验证码。同 userid 的 AI 执行主体不参与人员绑定。首次绑定不传 current_binding_id；换绑时传当前永久绑定句柄。不会返回验证码。", identityBindingStartToolSchema()},
 	{"wecom_identity_binding_confirm", "用企业微信收到的 6 位验证码确认或换绑身份。成功后返回永久 identity_binding_id；验证码一次性且最多输错 5 次，绑定本身不设过期。", identityBindingConfirmToolSchema()},
@@ -286,6 +287,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 	}
 	if name == "wecom_api_call" {
 		return s.genericAPICall(ctx, runtime, client, raw)
+	}
+	if name == "wecom_employee_list" {
+		return s.listEmployees(ctx, runtime, client, raw)
 	}
 	if name == "wecom_identity_binding_start" {
 		return s.startIdentityBinding(ctx, runtime, client, raw)

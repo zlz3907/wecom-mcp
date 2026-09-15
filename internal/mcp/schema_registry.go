@@ -800,6 +800,18 @@ func compactSchemaRegistryEntry(entry schemaRegistryEntryView) map[string]any {
 		"is_system_field": entry.IsSystemField, "allow_add": entry.AllowAdd, "allow_update": entry.AllowUpdate,
 		"write_codec": entry.WriteCodec, "codec_status": entry.CodecStatus,
 	}
+	if entry.EntryType == "field" {
+		result["primary_metadata_available"] = entry.IsPrimary == "是" || entry.IsPrimary == "否"
+		if schemaRegistrySelectField(entry.FieldType) {
+			options := map[string]string{}
+			if entry.Options != "" && json.Unmarshal([]byte(entry.Options), &options) == nil {
+				result["options"] = options
+				result["options_available"] = true
+			} else {
+				result["options_available"] = false
+			}
+		}
+	}
 	if entry.EntryType != "field" {
 		result["entry_key"] = entry.EntryKey
 		result["state"] = entry.State
@@ -815,6 +827,10 @@ func compactSchemaRegistryEntry(entry schemaRegistryEntryView) map[string]any {
 		}
 	}
 	return result
+}
+
+func schemaRegistrySelectField(fieldType string) bool {
+	return fieldType == "FIELD_TYPE_SINGLE_SELECT" || fieldType == "FIELD_TYPE_SELECT" || fieldType == "FIELD_TYPE_MULTI_SELECT"
 }
 
 func schemaRegistryGenerationMetadata(table schemaRegistryTable, generation string) map[string]any {
