@@ -53,7 +53,7 @@ func recordApplyToolSchema() map[string]any {
 				"minProperties":        1,
 				"propertyNames":        map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
 				"additionalProperties": fieldValue,
-				"description":          "键必须是当前 target_role 本地 Schema 镜像中的字段标题，不是 field_id。系统自动字段、公式、查找引用和附件不可写。",
+				"description":          "键必须是当前 target_role 在 Z-S00 active generation 中的字段标题，不是 field_id。系统自动字段、公式、查找引用和附件不可写。",
 			},
 		},
 	}
@@ -62,11 +62,12 @@ func recordApplyToolSchema() map[string]any {
 		"additionalProperties": false,
 		"required":             []string{"target_role", "operation", "idempotency_key", "source_revision", "records"},
 		"properties": map[string]any{
-			"target_role":     zoopRoleToolSchema(),
-			"operation":       map[string]any{"type": "string", "enum": []string{"add_records", "update_records"}, "description": "add_records 的记录不能有 record_id；update_records 的每条记录必须有真实 record_id。"},
-			"idempotency_key": map[string]any{"type": "string", "minLength": 16, "maxLength": 256, "description": "同一次逻辑写入和不确定结果恢复必须复用同一键；它不是业务字段，不能用于记录查询。"},
-			"source_revision": map[string]any{"type": "string", "minLength": 1, "maxLength": 256, "description": "审计来源标识，不是预览 ID，也不用于记录查询。"},
-			"records":         map[string]any{"type": "array", "minItems": 1, "maxItems": 50, "items": record},
+			"target_role":                zoopRoleToolSchema(),
+			"operation":                  map[string]any{"type": "string", "enum": []string{"add_records", "update_records"}, "description": "add_records 的记录不能有 record_id；update_records 的每条记录必须有真实 record_id。"},
+			"idempotency_key":            map[string]any{"type": "string", "minLength": 16, "maxLength": 256, "description": "同一次逻辑写入和不确定结果恢复必须复用同一键；它不是业务字段，不能用于记录查询。"},
+			"source_revision":            map[string]any{"type": "string", "minLength": 1, "maxLength": 256, "description": "审计来源标识，不是预览 ID，也不用于记录查询。"},
+			"expected_schema_generation": map[string]any{"type": "string", "pattern": "^[a-f0-9]{64}$", "description": "可选并发保护；传入调用前从 Z-S00 读到的 active generation，变更后将在写入前失败关闭。"},
+			"records":                    map[string]any{"type": "array", "minItems": 1, "maxItems": 50, "items": record},
 		},
 	}
 }

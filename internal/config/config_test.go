@@ -268,3 +268,18 @@ func TestConfigRejectsUnknownSecretLikeFields(t *testing.T) {
 		t.Fatalf("secret-like unknown config field must fail closed: %v", err)
 	}
 }
+
+func TestConfigAllowsOnlineSchemaWithoutLocalMirror(t *testing.T) {
+	cfg := Config{
+		Version: 1, InstanceName: "instance", TenantRoute: "tenant", RegistryDocumentID: "registry",
+		RegistryKey: "key", StatePath: filepath.Join(t.TempDir(), "state.json"),
+		APIWhitelist: map[string][]string{"read": {"get_records"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("online Z-S00 runtime unexpectedly required a local mirror: %v", err)
+	}
+	cfg.SchemaSource = "local_compatibility"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "schema_mirror_path") {
+		t.Fatalf("explicit local compatibility without a mirror was accepted: %v", err)
+	}
+}

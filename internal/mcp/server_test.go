@@ -112,12 +112,15 @@ func TestCompleteStateReportsCorruptPersistence(t *testing.T) {
 func TestRecordApplyBindsConfiguredOperatorWithoutCallerActor(t *testing.T) {
 	input := applyInput{TargetRole: "Z-S01", Operation: "add_records", IdempotencyKey: "idempotency-key-0001", SourceRevision: "rev-1"}
 	prepared := []map[string]any{{"values": map[string]any{"field": "value"}}}
-	if requestDigest(input, prepared, "operator-a") == requestDigest(input, prepared, "operator-b") {
+	if requestDigest(input, prepared, "operator-a", "generation-a") == requestDigest(input, prepared, "operator-b", "generation-a") {
 		t.Fatal("request digest did not bind business operator userid")
+	}
+	if requestDigest(input, prepared, "operator-a", "generation-a") == requestDigest(input, prepared, "operator-a", "generation-b") {
+		t.Fatal("request digest did not bind schema generation")
 	}
 	server := &Server{}
 	path := filepath.Join(t.TempDir(), "state.json")
-	digest := requestDigest(input, prepared, "operator-a")
+	digest := requestDigest(input, prepared, "operator-a", "generation-a")
 	if err := server.reserveWithOperator(path, input.IdempotencyKey, digest, "operator-a"); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +131,7 @@ func TestRecordApplyBindsConfiguredOperatorWithoutCallerActor(t *testing.T) {
 	if err := server.completeStateWithOperator(path, input.IdempotencyKey, digest, "operator-b"); err == nil {
 		t.Fatal("different operator completed reserved mutation")
 	}
-	if _, err := server.apply(context.Background(), config.Config{}, config.Schema{}, nil, json.RawMessage(`{"target_role":"Z-S01","operation":"add_records","idempotency_key":"idempotency-key-0001","source_revision":"rev-1","records":[{"values":{"x":"y"}}]}`)); err == nil || !strings.Contains(err.Error(), "wecom_operator_userid") {
+	if _, err := server.apply(context.Background(), config.Config{}, config.Schema{}, strings.Repeat("a", 64), nil, json.RawMessage(`{"target_role":"Z-S01","operation":"add_records","idempotency_key":"idempotency-key-0001","source_revision":"rev-1","records":[{"values":{"x":"y"}}]}`)); err == nil || !strings.Contains(err.Error(), "wecom_operator_userid") {
 		t.Fatalf("record write without configured operator was not fail-closed: %v", err)
 	}
 	for _, item := range tools {
@@ -573,5 +576,32 @@ func TestSchemaDifferencesDetectsOptionAndReferenceChanges(t *testing.T) {
 func TestSchemaProbeRejectsNonEmptyArguments(t *testing.T) {
 	if err := empty(json.RawMessage(`{"target_role":"Z-S01"}`)); err == nil {
 		t.Fatal("probe must reject routing arguments")
+	}
+}
+
+func TestRecordApplyRejectsChangedSchemaGenerationBeforeWrite(t *testing.T) {
+	server := &Server{}
+	_, err := server.apply(context.Background(), config.Config{}, config.Schema{}, strings.Repeat("a", 64), nil, json.RawMessage(`{"target_role":"Z-S01","operation":"add_records","idempotency_key":"idempotency-key-0001","source_revision":"rev-1","expected_schema_generation":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","records":[{"values":{"x":"y"}}]}`))
+	if err == nil || !strings.Contains(err.Error(), "active schema generation 已变化") {
+		t.Fatalf("schema generation drift was not rejected before write: %v", err)
+	}
+}
+
+func TestRuntimeSchemaMetadataPreservesExistingResponse(t *testing.T) {
+	result := map[string]any{"state": "applied", "write_result": map[string]any{"errcode": 0}, "readback_verified": true, "request_digest": "digest"}
+	withRuntimeSchemaMetadata(result, strings.Repeat("a", 64))
+	if result["schema_source"] != "z-s00" || result["schema_generation"] != strings.Repeat("a", 64) || result["state"] != "applied" || result["readback_verified"] != true {
+		t.Fatalf("runtime metadata broke the existing response: %#v", result)
+	}
+}
+
+func TestCompileRecordsEnforcesOnlineWritePermission(t *testing.T) {
+	allowed := false
+	schema := config.Schema{Roles: map[string]map[string]config.Field{"Z-S01": {
+		"系统字段": {Title: "系统字段", ID: "field", Type: "FIELD_TYPE_TEXT", AllowAdd: &allowed, WriteCodec: "system_read_only", CodecStatus: "系统只读"},
+	}}}
+	_, err := compileRecords(schema, applyInput{TargetRole: "Z-S01", Operation: "add_records", Records: []recordInput{{Values: map[string]any{"系统字段": "value"}}}})
+	if err == nil || !strings.Contains(err.Error(), "不允许新增写入") {
+		t.Fatalf("Z-S00 add permission was ignored: %v", err)
 	}
 }

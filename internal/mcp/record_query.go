@@ -20,9 +20,9 @@ const (
 
 func recordQueryToolSchema() map[string]any {
 	conditionProperties := map[string]any{
-		"field_title": map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "本地 Schema 镜像中的字段标题。与 field_id 二选一；推荐使用标题，服务器会解析并校验真实 field_id。"},
-		"field_id":    map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "本地 Schema 镜像中的真实字段 ID。与 field_title 二选一。"},
-		"field_type":  map[string]any{"type": "string", "pattern": "^FIELD_TYPE_[A-Z0-9_]+$", "description": "可选校验值；提供时必须与本地 Schema 镜像一致。"},
+		"field_title": map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "Z-S00 active generation 中的字段标题。与 field_id 二选一；推荐使用标题，服务器会解析并校验真实 field_id。"},
+		"field_id":    map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "description": "Z-S00 active generation 中的真实字段 ID。与 field_title 二选一。"},
+		"field_type":  map[string]any{"type": "string", "pattern": "^FIELD_TYPE_[A-Z0-9_]+$", "description": "可选校验值；提供时必须与 Z-S00 active generation 一致。"},
 		"operator": map[string]any{"type": "string", "enum": []string{
 			"OPERATOR_IS", "OPERATOR_IS_NOT", "OPERATOR_CONTAINS", "OPERATOR_DOES_NOT_CONTAIN",
 			"OPERATOR_IS_GREATER", "OPERATOR_IS_GREATER_OR_EQUAL", "OPERATOR_IS_LESS", "OPERATOR_IS_LESS_OR_EQUAL",
@@ -128,7 +128,7 @@ func (s *Server) queryRecords(ctx context.Context, runtime config.Config, schema
 
 	fields := schema.Roles[input.TargetRole]
 	if len(fields) == 0 {
-		return nil, fmt.Errorf("Schema 镜像缺少 %s 字段", input.TargetRole)
+		return nil, fmt.Errorf("Z-S00 Schema 缺少 %s 字段", input.TargetRole)
 	}
 	if err := validateQueryIDs(input.RecordIDs, 100, "record_ids"); err != nil {
 		return nil, err

@@ -47,6 +47,112 @@ type schemaRegistryTable struct {
 	ActiveFieldCount int
 }
 
+type runtimeSchemaSnapshot struct {
+	Schema     config.Schema
+	Generation string
+}
+
+func loadActiveRuntimeSchema(ctx context.Context, runtime config.Config, client wecom.Requester) (runtimeSchemaSnapshot, error) {
+	table, err := loadSchemaRegistryTable(ctx, runtime, client)
+	if err != nil {
+		return runtimeSchemaSnapshot{}, fmt.Errorf("无法从 Z-S00 读取运行时 Schema: %w", err)
+	}
+	return runtimeSchemaFromRegistryTable(table, runtime)
+}
+
+func loadRuntimeSchema(ctx context.Context, runtime config.Config, client wecom.Requester) (runtimeSchemaSnapshot, error) {
+	if runtime.SchemaSource == "local_compatibility" {
+		schema, err := config.LoadSchema(runtime.SchemaMirrorPath)
+		if err != nil {
+			return runtimeSchemaSnapshot{}, err
+		}
+		return runtimeSchemaSnapshot{Schema: schema, Generation: "local-compatibility-" + schema.Digest}, nil
+	}
+	return loadActiveRuntimeSchema(ctx, runtime, client)
+}
+
+func runtimeSchemaFromRegistryTable(table schemaRegistryTable, runtime config.Config) (runtimeSchemaSnapshot, error) {
+	if table.ActiveGeneration == "" || !table.ActiveComplete || !initializeSHA256Digest.MatchString(table.ActiveGeneration) {
+		return runtimeSchemaSnapshot{}, fmt.Errorf("Z-S00 active generation 缺失或不完整")
+	}
+	result := config.Schema{Roles: map[string]map[string]config.Field{}, Digest: table.ActiveGeneration}
+	fieldIDsByRole := map[string]map[string]bool{}
+	fieldCount := 0
+	for _, record := range table.ByKey {
+		entry := schemaRegistryEntry(table, record)
+		if entry.EntryType != "field" || entry.Generation != table.ActiveGeneration {
+			continue
+		}
+		if entry.InstanceName != runtime.InstanceName || entry.RegistryKey != runtime.RegistryKey || entry.State != "ready" || entry.SchemaDigest != table.ActiveGeneration {
+			return runtimeSchemaSnapshot{}, fmt.Errorf("Z-S00 active generation 包含跨实例或未生效条目")
+		}
+		if _, ok := validRoles[entry.TargetRole]; !ok || entry.FieldName == "" || entry.FieldID == "" || !strings.HasPrefix(entry.FieldType, "FIELD_TYPE_") {
+			return runtimeSchemaSnapshot{}, fmt.Errorf("Z-S00 active generation 包含无效字段条目")
+		}
+		if entry.CodecStatus == "" || entry.WriteCodec == "" || (entry.AllowAdd != "是" && entry.AllowAdd != "否") || (entry.AllowUpdate != "是" && entry.AllowUpdate != "否") {
+			return runtimeSchemaSnapshot{}, fmt.Errorf("Z-S00 字段 %s/%s 缺少完整 Codec 契约", entry.TargetRole, entry.FieldName)
+		}
+		expectedCodec, expectedStatus, writable := schemaRegistryCodec(entry.FieldType)
+		if entry.WriteCodec != expectedCodec || entry.CodecStatus != expectedStatus || (!writable && (entry.AllowAdd == "是" || entry.AllowUpdate == "是")) {
+			return runtimeSchemaSnapshot{}, fmt.Errorf("Z-S00 字段 %s/%s 的 Codec 契约与服务器能力不匹配", entry.TargetRole, entry.FieldName)
+		}
+		if result.Roles[entry.TargetRole] == nil {
+			result.Roles[entry.TargetRole] = map[string]config.Field{}
+			fieldIDsByRole[entry.TargetRole] = map[string]bool{}
+		}
+		if _, exists := result.Roles[entry.TargetRole][entry.FieldName]; exists {
+			return runtimeSchemaSnapshot{}, fmt.Errorf("Z-S00 %s 字段 %s 重复", entry.TargetRole, entry.FieldName)
+		}
+		if fieldIDsByRole[entry.TargetRole][entry.FieldID] {
+			return runtimeSchemaSnapshot{}, fmt.Errorf("Z-S00 %s 字段 ID %s 重复", entry.TargetRole, entry.FieldID)
+		}
+		fieldIDsByRole[entry.TargetRole][entry.FieldID] = true
+		options := map[string]string(nil)
+		if entry.Options != "" {
+			if err := json.Unmarshal([]byte(entry.Options), &options); err != nil {
+				return runtimeSchemaSnapshot{}, fmt.Errorf("Z-S00 字段 %s/%s 选项定义无效", entry.TargetRole, entry.FieldName)
+			}
+		}
+		var multiple *bool
+		if entry.IsMultiple == "是" || entry.IsMultiple == "否" {
+			value := entry.IsMultiple == "是"
+			multiple = &value
+		} else if entry.IsMultiple != "" && entry.IsMultiple != "不适用" {
+			return runtimeSchemaSnapshot{}, fmt.Errorf("Z-S00 字段 %s/%s 多值定义无效", entry.TargetRole, entry.FieldName)
+		}
+		allowAdd := entry.AllowAdd == "是"
+		allowUpdate := entry.AllowUpdate == "是"
+		result.Roles[entry.TargetRole][entry.FieldName] = config.Field{
+			Title: entry.FieldName, ID: entry.FieldID, Type: entry.FieldType, Options: options,
+			ReferenceTargetSheetID: entry.ReferenceTargetTable, ReferenceTargetFieldID: entry.ReferenceTargetField,
+			ReferenceIsMultiple: multiple, AllowAdd: &allowAdd, AllowUpdate: &allowUpdate,
+			WriteCodec: entry.WriteCodec, CodecStatus: entry.CodecStatus,
+		}
+		fieldCount++
+	}
+	for role := range validRoles {
+		if len(result.Roles[role]) == 0 {
+			return runtimeSchemaSnapshot{}, fmt.Errorf("Z-S00 active generation 缺少 %s", role)
+		}
+	}
+	if fieldCount != table.ActiveFieldCount {
+		return runtimeSchemaSnapshot{}, fmt.Errorf("Z-S00 active generation 字段数不匹配：实际 %d，声明 %d", fieldCount, table.ActiveFieldCount)
+	}
+	return runtimeSchemaSnapshot{Schema: result, Generation: table.ActiveGeneration}, nil
+}
+
+func withRuntimeSchemaMetadata(value any, generation string) any {
+	if result, ok := value.(map[string]any); ok {
+		source := "z-s00"
+		if strings.HasPrefix(generation, "local-compatibility-") {
+			source = "local_compatibility"
+		}
+		result["schema_source"] = source
+		result["schema_generation"] = generation
+	}
+	return value
+}
+
 type schemaRegistryReadInput struct {
 	Generation string `json:"generation"`
 	EntryType  string `json:"entry_type"`
