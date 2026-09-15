@@ -373,10 +373,6 @@ func (s *Service) ready(w http.ResponseWriter, _ *http.Request) {
 		writeStatus(w, http.StatusServiceUnavailable, "not_ready")
 		return
 	}
-	if _, err := config.LoadSchema(runtime.SchemaMirrorPath); err != nil {
-		writeStatus(w, http.StatusServiceUnavailable, "not_ready")
-		return
-	}
 	if _, err := wecom.NewFromEnvironment(runtime.TenantRoute); err != nil {
 		writeStatus(w, http.StatusServiceUnavailable, "not_ready")
 		return

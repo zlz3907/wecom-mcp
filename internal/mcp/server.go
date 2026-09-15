@@ -302,12 +302,15 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 	if name == "wecom_send_app_media_message" {
 		return s.sendApplicationMediaMessage(ctx, runtime, client, raw)
 	}
-	schema, err := config.LoadSchema(runtime.SchemaMirrorPath)
-	if err != nil {
-		return nil, err
-	}
 	switch name {
 	case "wecom_schema_status":
+		if runtime.SchemaMirrorPath == "" {
+			return nil, fmt.Errorf("本地 Schema 兼容镜像未配置；运行时请使用 wecom_schema_registry_status")
+		}
+		schema, err := config.LoadSchema(runtime.SchemaMirrorPath)
+		if err != nil {
+			return nil, err
+		}
 		var input struct {
 			TargetRole string `json:"target_role"`
 		}
@@ -364,11 +367,26 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 		}
 		return sanitizedReadResult(result, input.TargetRole), nil
 	case "wecom_record_query":
-		return s.queryRecords(ctx, runtime, schema, client, raw)
+		snapshot, err := loadRuntimeSchema(ctx, runtime, client)
+		if err != nil {
+			return nil, err
+		}
+		result, err := s.queryRecords(ctx, runtime, snapshot.Schema, client, raw)
+		return withRuntimeSchemaMetadata(result, snapshot.Generation), err
 	case "wecom_record_apply":
-		return s.apply(ctx, runtime, schema, client, raw)
+		snapshot, err := loadRuntimeSchema(ctx, runtime, client)
+		if err != nil {
+			return nil, err
+		}
+		result, err := s.apply(ctx, runtime, snapshot.Schema, snapshot.Generation, client, raw)
+		return withRuntimeSchemaMetadata(result, snapshot.Generation), err
 	case "wecom_requirement_progress_reconcile":
-		return s.reconcileRequirementProgress(ctx, runtime, schema, client, raw)
+		snapshot, err := loadRuntimeSchema(ctx, runtime, client)
+		if err != nil {
+			return nil, err
+		}
+		result, err := s.reconcileRequirementProgress(ctx, runtime, snapshot.Schema, client, raw)
+		return withRuntimeSchemaMetadata(result, snapshot.Generation), err
 	case "wecom_field_codec_lab_registry_status":
 		return s.fieldCodecLabRegistryStatus(ctx, runtime, client, raw)
 	case "wecom_field_codec_lab_register":
@@ -691,22 +709,29 @@ type recordInput struct {
 	Values   map[string]any `json:"values"`
 }
 type applyInput struct {
-	TargetRole, Operation, IdempotencyKey, SourceRevision string
-	Records                                               []recordInput
+	TargetRole, Operation, IdempotencyKey, SourceRevision, ExpectedSchemaGeneration string
+	Records                                                                         []recordInput
 }
 
-func (s *Server) apply(ctx context.Context, runtime config.Config, schema config.Schema, client *wecom.Client, raw json.RawMessage) (any, error) {
+func (s *Server) apply(ctx context.Context, runtime config.Config, schema config.Schema, schemaGeneration string, client *wecom.Client, raw json.RawMessage) (any, error) {
 	var wire struct {
-		TargetRole     string        `json:"target_role"`
-		Operation      string        `json:"operation"`
-		IdempotencyKey string        `json:"idempotency_key"`
-		SourceRevision string        `json:"source_revision"`
-		Records        []recordInput `json:"records"`
+		TargetRole               string        `json:"target_role"`
+		Operation                string        `json:"operation"`
+		IdempotencyKey           string        `json:"idempotency_key"`
+		SourceRevision           string        `json:"source_revision"`
+		ExpectedSchemaGeneration string        `json:"expected_schema_generation"`
+		Records                  []recordInput `json:"records"`
 	}
-	if err := strictDecode(raw, &wire, "target_role", "operation", "idempotency_key", "source_revision", "records"); err != nil {
+	if err := strictDecode(raw, &wire, "target_role", "operation", "idempotency_key", "source_revision", "expected_schema_generation", "records"); err != nil {
 		return nil, err
 	}
-	input := applyInput{TargetRole: wire.TargetRole, Operation: wire.Operation, IdempotencyKey: wire.IdempotencyKey, SourceRevision: wire.SourceRevision, Records: wire.Records}
+	input := applyInput{TargetRole: wire.TargetRole, Operation: wire.Operation, IdempotencyKey: wire.IdempotencyKey, SourceRevision: wire.SourceRevision, ExpectedSchemaGeneration: wire.ExpectedSchemaGeneration, Records: wire.Records}
+	if input.ExpectedSchemaGeneration != "" && !initializeSHA256Digest.MatchString(input.ExpectedSchemaGeneration) {
+		return nil, fmt.Errorf("expected_schema_generation 必须是 64 位摘要")
+	}
+	if input.ExpectedSchemaGeneration != "" && input.ExpectedSchemaGeneration != schemaGeneration {
+		return nil, fmt.Errorf("active schema generation 已变化：期望 %s，实际 %s；请重新读取 Z-S00", input.ExpectedSchemaGeneration, schemaGeneration)
+	}
 	if err := verifyBoundOperator(ctx, runtime, client, "zoop_records_write"); err != nil {
 		return nil, err
 	}
@@ -741,7 +766,7 @@ func (s *Server) apply(ctx context.Context, runtime config.Config, schema config
 		return nil, err
 	}
 	businessActor := businessActorUserID(ctx, runtime)
-	digest := requestDigest(input, prepared, businessActor)
+	digest := requestDigest(input, prepared, businessActor, schemaGeneration)
 	target, err := wecom.ResolveTarget(ctx, client, runtime.RegistryDocumentID, runtime.RegistryKey, input.TargetRole, runtime.Allows)
 	if err != nil {
 		return nil, err
@@ -823,7 +848,7 @@ func (s *Server) apply(ctx context.Context, runtime config.Config, schema config
 func compileRecords(schema config.Schema, input applyInput) ([]map[string]any, error) {
 	fields := schema.Roles[input.TargetRole]
 	if len(fields) == 0 {
-		return nil, fmt.Errorf("Schema 镜像缺少 %s", input.TargetRole)
+		return nil, fmt.Errorf("Z-S00 Schema 缺少 %s", input.TargetRole)
 	}
 	result := make([]map[string]any, 0, len(input.Records))
 	for _, record := range input.Records {
@@ -840,7 +865,16 @@ func compileRecords(schema config.Schema, input applyInput) ([]map[string]any, e
 		for title, value := range record.Values {
 			field, exists := fields[title]
 			if !exists {
-				return nil, fmt.Errorf("%s 未在本地 Schema 镜像 %s 中定义", title, input.TargetRole)
+				return nil, fmt.Errorf("%s 未在 Z-S00 Schema %s 中定义", title, input.TargetRole)
+			}
+			if input.Operation == "add_records" && field.AllowAdd != nil && !*field.AllowAdd {
+				return nil, fmt.Errorf("字段 %s 在 Z-S00 中不允许新增写入", title)
+			}
+			if input.Operation == "update_records" && field.AllowUpdate != nil && !*field.AllowUpdate {
+				return nil, fmt.Errorf("字段 %s 在 Z-S00 中不允许更新写入", title)
+			}
+			if field.CodecStatus != "" && field.CodecStatus != "已验证" {
+				return nil, fmt.Errorf("字段 %s 的 Z-S00 Codec 未验证", title)
 			}
 			switch field.Type {
 			case "FIELD_TYPE_TEXT":
@@ -924,8 +958,8 @@ func compileReferenceValue(title string, value any) ([]any, error) {
 	return result, nil
 }
 
-func requestDigest(input applyInput, prepared []map[string]any, businessOperatorUserID string) string {
-	data, _ := json.Marshal(map[string]any{"role": input.TargetRole, "operation": input.Operation, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "records": prepared, "business_operator_userid": businessOperatorUserID, "native_api_actor": "application"})
+func requestDigest(input applyInput, prepared []map[string]any, businessOperatorUserID, schemaGeneration string) string {
+	data, _ := json.Marshal(map[string]any{"role": input.TargetRole, "operation": input.Operation, "idempotency_key": input.IdempotencyKey, "source_revision": input.SourceRevision, "records": prepared, "business_operator_userid": businessOperatorUserID, "native_api_actor": "application", "schema_generation": schemaGeneration})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }

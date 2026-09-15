@@ -47,7 +47,7 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 			if err := os.WriteFile(schemaPath, []byte(schema), 0600); err != nil {
 				t.Fatal(err)
 			}
-			runtime := config.Config{Version: 1, InstanceName: "fixture-instance", TenantRoute: "fixture-source", RegistryDocumentID: "registry", RegistryKey: "fixture-key", SchemaMirrorPath: schemaPath, StatePath: filepath.Join(dir, "state.json"), WecomOperatorUserID: "application-operator", AIExecutionSubjectRecordID: "ai-subject", APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}, "zoop_records_write": {"list_employees", "add_records"}}}
+			runtime := config.Config{Version: 1, InstanceName: "fixture-instance", TenantRoute: "fixture-source", RegistryDocumentID: "registry", RegistryKey: "fixture-key", SchemaMirrorPath: schemaPath, SchemaSource: "local_compatibility", StatePath: filepath.Join(dir, "state.json"), WecomOperatorUserID: "application-operator", AIExecutionSubjectRecordID: "ai-subject", APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}, "zoop_records_write": {"list_employees", "add_records"}}}
 			encoded, _ := json.Marshal(runtime)
 			if err := os.WriteFile(cfg.InstanceConfigPath, encoded, 0600); err != nil {
 				t.Fatal(err)

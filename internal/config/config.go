@@ -42,6 +42,7 @@ type Config struct {
 	RegistryDocumentID         string              `json:"registry_document_id"`
 	RegistryKey                string              `json:"registry_key"`
 	SchemaMirrorPath           string              `json:"schema_mirror_path"`
+	SchemaSource               string              `json:"schema_source,omitempty"`
 	StatePath                  string              `json:"state_path"`
 	InitializationGeneration   string              `json:"initialization_generation,omitempty"`
 	SchemaVersion              string              `json:"schema_version,omitempty"`
@@ -96,8 +97,14 @@ func (c Config) validate(requireRegistry bool) error {
 			return fmt.Errorf("配置 registry_document_id 非法")
 		}
 	}
-	if (!strings.HasSuffix(c.SchemaMirrorPath, ".md") && !strings.HasSuffix(c.SchemaMirrorPath, ".json")) || !filepath.IsAbs(c.SchemaMirrorPath) {
+	if c.SchemaMirrorPath != "" && ((!strings.HasSuffix(c.SchemaMirrorPath, ".md") && !strings.HasSuffix(c.SchemaMirrorPath, ".json")) || !filepath.IsAbs(c.SchemaMirrorPath)) {
 		return fmt.Errorf("schema_mirror_path 必须是绝对 Markdown 或 JSON 文件路径")
+	}
+	if c.SchemaSource != "" && c.SchemaSource != "z-s00" && c.SchemaSource != "local_compatibility" {
+		return fmt.Errorf("schema_source 仅允许 z-s00 或 local_compatibility")
+	}
+	if c.SchemaSource == "local_compatibility" && c.SchemaMirrorPath == "" {
+		return fmt.Errorf("local_compatibility 需要 schema_mirror_path")
 	}
 	if !filepath.IsAbs(c.StatePath) {
 		return fmt.Errorf("state_path 必须是绝对路径")
@@ -189,7 +196,7 @@ func (c Config) Digest() string {
 		groups = append(groups, name+":"+strings.Join(copyOperations, ","))
 	}
 	sort.Strings(groups)
-	sum := sha256.Sum256([]byte(strings.Join([]string{fmt.Sprintf("%d", c.Version), c.InstanceName, c.TenantRoute, c.SchemaAdminUser, c.WecomOperatorUserID, c.AIExecutionSubjectRecordID, c.RegistryDocumentID, c.RegistryKey, c.SchemaMirrorPath, c.StatePath, c.InitializationGeneration, c.SchemaVersion, c.SchemaDigest, c.RegistrySheetID, c.InitializedState, strings.Join(groups, ";")}, "\x00")))
+	sum := sha256.Sum256([]byte(strings.Join([]string{fmt.Sprintf("%d", c.Version), c.InstanceName, c.TenantRoute, c.SchemaAdminUser, c.WecomOperatorUserID, c.AIExecutionSubjectRecordID, c.RegistryDocumentID, c.RegistryKey, c.SchemaMirrorPath, c.SchemaSource, c.StatePath, c.InitializationGeneration, c.SchemaVersion, c.SchemaDigest, c.RegistrySheetID, c.InitializedState, strings.Join(groups, ";")}, "\x00")))
 	return hex.EncodeToString(sum[:])
 }
 

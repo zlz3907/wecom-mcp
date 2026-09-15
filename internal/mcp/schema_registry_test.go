@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -395,4 +396,51 @@ func schemaRegistryTestTable(t *testing.T) (schemaRegistryTable, config.Config, 
 		Fields: registryFields, FieldIDs: fieldIDs, Records: records, ByKey: byKey,
 		ActiveGeneration: snapshot.Generation, ActiveRecordID: "record-active", ActiveComplete: true, ActiveFieldCount: 2,
 	}, runtime, snapshot.Generation
+}
+
+func TestRuntimeSchemaUsesCompleteActiveGeneration(t *testing.T) {
+	table, _, generation := schemaRegistryTestTable(t)
+	for index := 3; index <= 9; index++ {
+		role := fmt.Sprintf("Z-S0%d", index)
+		key := "field:" + generation + ":" + role + ":field-" + strconv.Itoa(index)
+		values := map[string]any{}
+		for title, value := range map[string]string{
+			"Schema 条目键": key, "条目类型": "field", "Schema 版本": generation,
+			"生效状态": "ready", "实例名称": "instance", "Registry Key": "registry", "Schema Digest": generation,
+			"表角色": role, "表名": role + "｜fixture", "表 ID": "sheet-" + strconv.Itoa(index),
+			"字段名": "字段" + strconv.Itoa(index), "字段 ID": "field-" + strconv.Itoa(index),
+			"字段类型": "FIELD_TYPE_TEXT", "是否允许新增": "是", "是否允许更新": "是",
+			"写入编码器": "text_cell_array", "Codec 验证状态": "已验证",
+		} {
+			values[table.FieldIDs[title]] = []any{map[string]any{"text": value}}
+		}
+		table.ByKey[key] = map[string]any{"record_id": "record-" + key, "values": values}
+	}
+	table.ActiveFieldCount = 9
+	runtime := config.Config{InstanceName: "instance", RegistryKey: "registry"}
+	snapshot, err := runtimeSchemaFromRegistryTable(table, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Generation != generation || snapshot.Schema.Digest != generation || len(snapshot.Schema.Roles) != 9 {
+		t.Fatalf("runtime snapshot did not bind the active generation: %#v", snapshot)
+	}
+	if snapshot.Schema.Roles["Z-S02"]["数量"].ID != "field-2" {
+		t.Fatalf("field identity was not loaded from Z-S00: %#v", snapshot.Schema.Roles["Z-S02"])
+	}
+	table.ActiveComplete = false
+	if _, err := runtimeSchemaFromRegistryTable(table, runtime); err == nil {
+		t.Fatal("incomplete active generation was accepted")
+	}
+}
+
+func TestRuntimeSchemaDoesNotSilentlyFallBackToLocalMirror(t *testing.T) {
+	runtime := config.Config{
+		SchemaMirrorPath: filepath.Join(t.TempDir(), "schema.json"), RegistryDocumentID: "registry", RegistryKey: "key",
+		APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}},
+	}
+	_, err := loadRuntimeSchema(context.Background(), runtime, schemaRegistryReadFailClient{})
+	if err == nil || !strings.Contains(err.Error(), "lookup attempted") {
+		t.Fatalf("online runtime silently fell back to local Schema: %v", err)
+	}
 }

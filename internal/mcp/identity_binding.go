@@ -541,10 +541,11 @@ func resolvePersonnelIdentity(ctx context.Context, runtime config.Config, client
 	if !validMessageRecipient(identity.UserID) {
 		return verifiedIdentity{}, fmt.Errorf("企业微信员工身份无效")
 	}
-	schema, err := config.LoadSchema(runtime.SchemaMirrorPath)
+	snapshot, err := loadRuntimeSchema(ctx, runtime, client)
 	if err != nil {
 		return verifiedIdentity{}, err
 	}
+	schema := snapshot.Schema
 	memberField, ok := schema.Roles["Z-S09"]["企业微信成员或责任人"]
 	if !ok || memberField.Type != "FIELD_TYPE_USER" || memberField.ID == "" {
 		return verifiedIdentity{}, fmt.Errorf("Z-S09 缺少企业微信成员绑定字段")

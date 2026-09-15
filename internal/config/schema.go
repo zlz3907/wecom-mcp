@@ -21,6 +21,10 @@ type Field struct {
 	ReferenceTargetSheetID string            `json:"reference_target_sheet_id,omitempty"`
 	ReferenceTargetFieldID string            `json:"reference_target_field_id,omitempty"`
 	ReferenceIsMultiple    *bool             `json:"reference_is_multiple,omitempty"`
+	AllowAdd               *bool             `json:"allow_add,omitempty"`
+	AllowUpdate            *bool             `json:"allow_update,omitempty"`
+	WriteCodec             string            `json:"write_codec,omitempty"`
+	CodecStatus            string            `json:"codec_status,omitempty"`
 }
 type Schema struct {
 	Roles  map[string]map[string]Field
