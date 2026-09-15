@@ -26,6 +26,7 @@ func TestEveryToolHasTeamAccessClassification(t *testing.T) {
 		"wecom_identity_binding_start":   ToolAccessOperator,
 		"wecom_identity_binding_confirm": ToolAccessOperator,
 		"wecom_identity_binding_status":  ToolAccessReader,
+		"wecom_employee_list":            ToolAccessReader,
 		"wecom_record_query":             ToolAccessReader,
 		"wecom_record_apply":             ToolAccessOperator,
 		"wecom_send_app_message":         ToolAccessOperator,
