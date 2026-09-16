@@ -45,6 +45,30 @@ func TestLoadFleetManifestIsolatesHostsSourcesAndState(t *testing.T) {
 	if loaded[0].Config.OIDCAudience == loaded[1].Config.OIDCAudience || loaded[0].Config.OIDCAudience != "https://a.example.com/gmzoop/mcp" {
 		t.Fatalf("OAuth resources were not isolated: %q %q", loaded[0].Config.OIDCAudience, loaded[1].Config.OIDCAudience)
 	}
+	if !loaded[0].Config.TrustedLoopbackProxy || !loaded[1].Config.TrustedLoopbackProxy {
+		t.Fatal("fleet loopback proxy trust was not enabled behind the exact Host router")
+	}
+}
+
+func TestLoadFleetManifestRejectsNonLoopbackListener(t *testing.T) {
+	setupFleetOAuthEnvironment(t)
+	directory := t.TempDir()
+	instancePath := filepath.Join(directory, "instance.json")
+	writeJSONFile(t, instancePath, map[string]any{
+		"version": 1, "instance_name": "instance-a", "tenant_route": "source-a",
+		"registry_document_id": "registry-a", "registry_key": "registry-key-a",
+		"schema_mirror_path": filepath.Join(directory, "schema.json"), "state_path": filepath.Join(directory, "state.json"),
+		"api_whitelist": map[string]any{"read": []string{"get_records"}},
+	})
+	manifestPath := filepath.Join(directory, "fleet.json")
+	writeJSONFile(t, manifestPath, FleetManifest{Version: 1, Bindings: []FleetBinding{{
+		BindingID: "binding-a", Hosts: []string{"a.example.com"}, PublicURL: "https://a.example.com/gmzoop",
+		AuthorizationTenant: "tenant-a", AuthorizationResource: "gmzoop", Source: "source-a",
+		InstanceConfigPath: instancePath, Plugins: []string{"zoop"},
+	}}})
+	if _, err := LoadFleetManifest(manifestPath, "0.0.0.0:17801"); err == nil {
+		t.Fatal("fleet accepted a non-loopback listener")
+	}
 }
 
 func TestLoadFleetManifestRejectsSourceMismatch(t *testing.T) {

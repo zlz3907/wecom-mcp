@@ -1,0 +1,8 @@
+# Systemd drop-in for the GNAS-owned binding registry. The referenced local
+# file contains runtime paths and per-binding client credential references;
+# secrets come from the protected EnvironmentFile. Domain, Source, and plugins are
+# resolved from app_info with the protected GNAS service identity.
+[Service]
+ExecStart=
+ExecStartPre=/home/product/services/mcp/wecom/current/wecom-mcp-team --gnas-fleet-runtime /home/product/services/mcp/wecom/config/fleet-runtime.json --check-config
+ExecStart=/home/product/services/mcp/wecom/current/wecom-mcp-team --gnas-fleet-runtime /home/product/services/mcp/wecom/config/fleet-runtime.json

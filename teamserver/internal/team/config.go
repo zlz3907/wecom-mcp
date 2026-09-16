@@ -49,17 +49,23 @@ type Config struct {
 	OAuth21IntrospectionURL       string
 	OAuth21ClientID               string
 	OAuth21ClientSecret           string
+	TrustedLoopbackProxy          bool
 }
 
-// BindingOverrides contains only the non-secret, per-enterprise values that
-// differ when several isolated instances share one team MCP process. Secrets
-// and authentication endpoints continue to come from the protected process
-// environment.
+// BindingOverrides supplies per-enterprise values. OAuth credentials, when
+// present, are resolved from the protected process environment by the caller.
 type BindingOverrides struct {
 	PublicURL             string
+	OIDCIssuer            string
 	AuthorizationTenant   string
 	AuthorizationResource string
 	Plugins               []string
+	OAuth21Credentials    *OAuth21ClientCredentials
+}
+
+type OAuth21ClientCredentials struct {
+	ClientID     string
+	ClientSecret string
 }
 
 type AuthenticationMode string
@@ -88,7 +94,7 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 		ConnectorRole:                 Role(firstNonEmpty(os.Getenv("TEAM_MCP_CONNECTOR_ROLE"), string(RoleReader))),
 		ListenAddress:                 firstNonEmpty(listenAddress, os.Getenv("TEAM_MCP_LISTEN_ADDR"), "127.0.0.1:17801"),
 		PublicURL:                     firstNonEmpty(overrides.PublicURL, os.Getenv("TEAM_MCP_PUBLIC_URL")),
-		OIDCIssuer:                    strings.TrimSpace(os.Getenv("TEAM_MCP_OIDC_ISSUER")),
+		OIDCIssuer:                    firstNonEmpty(overrides.OIDCIssuer, os.Getenv("TEAM_MCP_OIDC_ISSUER")),
 		OIDCAudience:                  strings.TrimSpace(os.Getenv("TEAM_MCP_OIDC_AUDIENCE")),
 		AccessTokenClaim:              strings.TrimSpace(os.Getenv("TEAM_MCP_ACCESS_TOKEN_CLAIM")),
 		AccessTokenValue:              strings.TrimSpace(os.Getenv("TEAM_MCP_ACCESS_TOKEN_VALUE")),
@@ -114,6 +120,12 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 		OAuth21IntrospectionURL:       strings.TrimSpace(os.Getenv("TEAM_MCP_OAUTH21_INTROSPECTION_URL")),
 		OAuth21ClientID:               strings.TrimSpace(os.Getenv("TEAM_MCP_OAUTH21_CLIENT_ID")),
 		OAuth21ClientSecret:           os.Getenv("TEAM_MCP_OAUTH21_CLIENT_SECRET"),
+	}
+	if overrides.OAuth21Credentials != nil {
+		// Explicit binding credentials never fall back to another tenant's
+		// process-wide client, including when either field is empty.
+		cfg.OAuth21ClientID = overrides.OAuth21Credentials.ClientID
+		cfg.OAuth21ClientSecret = overrides.OAuth21Credentials.ClientSecret
 	}
 	if len(cfg.Plugins) == 0 {
 		cfg.Plugins = []string{"zoop"}
@@ -255,7 +267,10 @@ func placeholderValue(value string) bool {
 // leaves the existing fail-closed required-value validation in charge.
 func gnasServiceURL(baseURL, endpointPath string) string {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return ""
+	}
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopbackHost(parsed.Hostname())) {
 		return ""
 	}
 	parsed.Path = endpointPath

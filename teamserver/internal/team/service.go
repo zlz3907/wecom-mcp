@@ -98,6 +98,7 @@ func (s *Service) Handler(verifier sdkauth.TokenVerifier) http.Handler {
 		MaxRequestBodyBytes:          30 << 20,
 		PropagateRequestCancellation: true,
 		CrossOriginProtection:        &http.CrossOriginProtection{},
+		DisableLocalhostProtection:   s.config.TrustedLoopbackProxy,
 		Logger:                       s.logger,
 	})
 

@@ -157,6 +157,22 @@ func TestLoadConfigUserAuthorizationReusesGNASAppInfoIdentity(t *testing.T) {
 	}
 }
 
+func TestGNASServiceURLAllowsOnlyHTTPSOrLoopbackHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		base string
+		want string
+	}{
+		{"https://gnas.example.test", "https://gnas.example.test/gnas/service/getJwtToken"},
+		{"http://127.0.0.1:7501", "http://127.0.0.1:7501/gnas/service/getJwtToken"},
+		{"http://[::1]:7501", "http://[::1]:7501/gnas/service/getJwtToken"},
+		{"http://gnas.example.test", ""},
+	} {
+		if got := gnasServiceURL(tc.base, "/gnas/service/getJwtToken"); got != tc.want {
+			t.Fatalf("base=%q got=%q want=%q", tc.base, got, tc.want)
+		}
+	}
+}
+
 func TestLoadConfigConnectorAPIKeyModeNeedsNoOIDC(t *testing.T) {
 	t.Setenv("TEAM_MCP_AUTH_MODE", "connector_api_key")
 	t.Setenv("TEAM_MCP_CONNECTOR_API_KEY", "0123456789abcdef0123456789abcdef")

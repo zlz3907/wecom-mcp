@@ -69,6 +69,31 @@ func TestManagedExecutorTransportIsExplicit(t *testing.T) {
 	}
 }
 
+func TestGNASBaseURLAllowsOnlyHTTPSOrLoopbackHTTP(t *testing.T) {
+	t.Setenv("GNAS_APP_ID", "fixture-app")
+	t.Setenv("GNAS_APP_SECRET", "fixture-secret")
+	for _, tc := range []struct {
+		url  string
+		want bool
+	}{
+		{"https://gnas.example.test", true},
+		{"http://127.0.0.1:7501", true},
+		{"http://[::1]:7501", true},
+		{"http://localhost:7501", true},
+		{"http://gnas.example.test", false},
+		{"http://127.0.0.1:7501/path", false},
+		{"ftp://127.0.0.1:7501", false},
+	} {
+		t.Run(tc.url, func(t *testing.T) {
+			t.Setenv("GNAS_BASE_URL", tc.url)
+			_, err := NewFromEnvironment("fixed-instance")
+			if (err == nil) != tc.want {
+				t.Fatalf("url=%q err=%v", tc.url, err)
+			}
+		})
+	}
+}
+
 func TestManagedExecutorRejectsGatewayErrorsWithoutUpstreamErrcode(t *testing.T) {
 	for _, status := range []int{400, 403, 500, 503} {
 		calls := 0
