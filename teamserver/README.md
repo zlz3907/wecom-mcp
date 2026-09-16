@@ -20,6 +20,20 @@ flowchart TB
 - 审计日志只记录请求 ID、角色、工具、结果、耗时和 HMAC 密钥化的主体假名，不记录 Token、Secret、业务参数或响应内容；审计密钥按 PII/Secret 管理。
 - 应用层默认最多同时执行 16 个业务工具调用，可通过受控配置调低或调高；公网速率限制仍由组织 API Gateway/WAF 提供。
 
+## 多企业单进程模式
+
+原有 `--config` 继续启动一个固定实例。需要让多个企业域名共用同一进程时，改用 `--fleet /absolute/path/fleet.json`；两者必须且只能提供一个。fleet 示例位于 [`../config/fleet.json.example`](../config/fleet.json.example)。每个 binding 明确绑定：
+
+- 一个或多个精确域名；
+- 一个实例配置和独立 `state_path`；
+- 一个不可重复的 GNAS Source；
+- GNAS 授权 tenant/resource；
+- 显式业务插件列表，目前支持 `zoop`。
+
+fleet 不保存企业微信 Secret。启动时会回读每个实例配置并验证 `source` 与 `tenant_route` 完全一致，同时拒绝复用域名、Source、实例配置、Schema 镜像或状态路径。fleet 强制使用 OAuth 2.1；每个 binding 自动以 `public_url/mcp` 作为独立 audience，并核验自己的 GNAS tenant/resource，共享 Connector API Key 不允许承担多企业隔离。请求只使用原始 HTTP `Host` 选实例，不读取 `X-Forwarded-Host`，未知域名返回 421。因此 fleet 模式下 Nginx 必须保留外部 Host，例如 `proxy_set_header Host $host`；现有单实例部署中固定 upstream Host 的配置不能原样用于 fleet。
+
+`zoop` 只决定该实例是否暴露 Zoop 初始化、九表、Z-S00 和记录治理工具。员工目录、受控企业微信 API、单人消息及 `SMART_SHEETS_IDS` bootstrap 属于通用企业微信层。旧单实例模式默认启用 Zoop，保持原工具兼容。
+
 ## WorkBuddy Connector API Key 测试模式
 
 当前 `deploy/gmzoop.env.example` 是固定连接器模式：在 WorkBuddy 企业后台创建自定义连接器，认证方式选择 **API Key**，Header Name 填 `Authorization`，Header Value 填 `Bearer <与服务器受保护环境相同的值>`，MCP Server URL 填 `https://mcp.jyiai.com/gmzoop/mcp`。示例把 `TEAM_MCP_CONNECTOR_ROLE` 设为 `admin`，暴露当前二进制实现的全部 MCP 工具；不发布 OAuth metadata，且拒绝同时启用 `TEAM_MCP_USER_AUTHZ_ENABLED=true`。固定租户、Schema、幂等、写后回读和 API 白名单继续生效。
@@ -125,7 +139,7 @@ go build ./cmd/oauth21-contract-check
 2. gmzoop 实例只使用 `/home/product/services/mcp/wecom/instances/gmzoop/config` 与 `/home/product/services/mcp/wecom/instances/gmzoop/data`。config 只读，Schema generation、journal 和其他运行状态写入 data。实例配置中的绝对路径必须对应这些真实路径；`schema_admin_user` 必须受控更新为服务器进程用户 `wecom-mcp-gmzoop`，OIDC admin 不替代 OS 身份门禁。
 3. 将 `deploy/gmzoop.env.example` 审阅后写为 `/etc/wecom-mcp/gmzoop.env`，属主 root:root、权限 0600；通过服务器 Secret 管理注入 GNAS 与审计密钥。Secret 不得进入项目目录、Git、镜像或日志。
 4. 将 `deploy/wecom-mcp@.service.example` 审阅后安装为 `/etc/systemd/system/wecom-mcp@.service`，只启用 `wecom-mcp@gmzoop.service`。日志使用 journald。
-5. 使用项目交付包中的独立 `nginx-mcp.jyiai.com-gmzoop.conf`；只暴露 `/gmzoop` 精确路由，保留 `Authorization` 和流式响应，并把 upstream `Host` 固定为 `127.0.0.1:7702` 以保留 SDK DNS-rebinding 防护。不得覆盖既有站点。
+5. 使用项目交付包中的独立 `nginx-mcp.jyiai.com-gmzoop.conf`；只暴露 `/gmzoop` 精确路由，保留 `Authorization` 和流式响应。Nginx 先以精确 `server_name`/`$host` 拒绝未知域名，再把原始 `$host` 传给后端用于 fleet binding；不得用 `X-Forwarded-Host` 选择实例，也不得覆盖既有站点。
 6. API Key 测试模式下，在服务器执行交付包的 `create-gmzoop-env.sh /etc/wecom-mcp/gmzoop.env`；脚本在服务器本地生成 Connector Key 与审计 Key，随后由 Secret 管理注入 GNAS App ID/Secret。不要把生成的 Key 写入 Git、压缩包或聊天。
 7. 先验证 `/healthz`、`/readyz` 和未认证 `/mcp` 的 `401`，再在 WorkBuddy 企业自定义连接器中配置 `Authorization: Bearer <Connector Key>`，执行 `initialize`、`tools/list` 和一个只读工具调用。
 

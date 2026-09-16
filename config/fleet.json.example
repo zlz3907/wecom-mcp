@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "bindings": [
+    {
+      "binding_id": "example_enterprise_zoop",
+      "hosts": ["mcp.example.com"],
+      "public_url": "https://mcp.example.com/zoop",
+      "authorization_tenant": "example-enterprise",
+      "authorization_resource": "zoop",
+      "source": "wecom-example-admin-assistant",
+      "instance_config_path": "/absolute/path/to/instances/example/instance.json",
+      "plugins": ["zoop"]
+    }
+  ]
+}

@@ -25,7 +25,7 @@
 | gmzoop metadata（Owner 固定入口） | `https://mcp.jyiai.com/gmzoop/.well-known/oauth-protected-resource` | `127.0.0.1:7702/.well-known/oauth-protected-resource` |
 | gmzoop metadata（RFC 9728 发现入口） | `https://mcp.jyiai.com/.well-known/oauth-protected-resource/gmzoop/mcp` | `127.0.0.1:7702/.well-known/oauth-protected-resource` |
 
-所有其他 `/gmzoop/*` 和根路径返回 404，防止错误路由。`127.0.0.1:7701` 已由 ImgToWebpToOSS 占用，禁止 MCP 使用。本轮不配置、不启动 `zhyczoop`，不占用 `7703`。未来新增实例必须另行审批后再从 `7703–7709` 选择未占用端口，并新增独立 upstream、精确路径、env、systemd 实例、日志和保护区；通用模板本身不预创建任何实例。
+所有其他 `/gmzoop/*` 和根路径返回 404，防止错误路由。`127.0.0.1:7701` 已由 ImgToWebpToOSS 占用，禁止 MCP 使用。本轮只迁移既有 gmzoop binding，不创建第二个企业实例。启用 fleet 后，未来企业域名可复用同一个 `127.0.0.1:7702` 进程；每个域名仍需独立 TLS/server_name、GNAS OAuth resource、Source、实例配置与 fleet binding。Nginx 必须先精确校验 `$host`，随后以 `proxy_set_header Host $host` 把原始企业域名交给后端；后端不信任 `X-Forwarded-Host`。
 
 ## 发布物兼容性门槛
 

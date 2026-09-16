@@ -14,6 +14,7 @@ import (
 
 type Config struct {
 	InstanceConfigPath            string
+	Plugins                       []string
 	AuthenticationMode            AuthenticationMode
 	ConnectorAPIKey               string
 	ConnectorRole                 Role
@@ -50,6 +51,17 @@ type Config struct {
 	OAuth21ClientSecret           string
 }
 
+// BindingOverrides contains only the non-secret, per-enterprise values that
+// differ when several isolated instances share one team MCP process. Secrets
+// and authentication endpoints continue to come from the protected process
+// environment.
+type BindingOverrides struct {
+	PublicURL             string
+	AuthorizationTenant   string
+	AuthorizationResource string
+	Plugins               []string
+}
+
 type AuthenticationMode string
 
 const (
@@ -59,6 +71,10 @@ const (
 )
 
 func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
+	return LoadConfigForBinding(instanceConfigPath, listenAddress, BindingOverrides{})
+}
+
+func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides BindingOverrides) (Config, error) {
 	gnasBaseURL := strings.TrimSpace(os.Getenv("GNAS_BASE_URL"))
 	authorizationServiceSecret := os.Getenv("TEAM_MCP_GNAS_SERVICE_APP_SECRET")
 	if authorizationServiceSecret == "" {
@@ -66,11 +82,12 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 	}
 	cfg := Config{
 		InstanceConfigPath:            instanceConfigPath,
+		Plugins:                       append([]string(nil), overrides.Plugins...),
 		AuthenticationMode:            AuthenticationMode(firstNonEmpty(os.Getenv("TEAM_MCP_AUTH_MODE"), string(AuthenticationModeOIDC))),
 		ConnectorAPIKey:               os.Getenv("TEAM_MCP_CONNECTOR_API_KEY"),
 		ConnectorRole:                 Role(firstNonEmpty(os.Getenv("TEAM_MCP_CONNECTOR_ROLE"), string(RoleReader))),
 		ListenAddress:                 firstNonEmpty(listenAddress, os.Getenv("TEAM_MCP_LISTEN_ADDR"), "127.0.0.1:17801"),
-		PublicURL:                     strings.TrimSpace(os.Getenv("TEAM_MCP_PUBLIC_URL")),
+		PublicURL:                     firstNonEmpty(overrides.PublicURL, os.Getenv("TEAM_MCP_PUBLIC_URL")),
 		OIDCIssuer:                    strings.TrimSpace(os.Getenv("TEAM_MCP_OIDC_ISSUER")),
 		OIDCAudience:                  strings.TrimSpace(os.Getenv("TEAM_MCP_OIDC_AUDIENCE")),
 		AccessTokenClaim:              strings.TrimSpace(os.Getenv("TEAM_MCP_ACCESS_TOKEN_CLAIM")),
@@ -89,14 +106,17 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 		AuthorizationTokenEndpoint:    firstNonEmpty(os.Getenv("TEAM_MCP_GNAS_SERVICE_TOKEN_URL"), gnasServiceURL(gnasBaseURL, "/gnas/service/getJwtToken")),
 		AuthorizationServiceAppID:     firstNonEmpty(os.Getenv("TEAM_MCP_GNAS_SERVICE_APP_ID"), os.Getenv("GNAS_APP_ID")),
 		AuthorizationServiceAppSecret: authorizationServiceSecret,
-		AuthorizationTenant:           strings.TrimSpace(os.Getenv("TEAM_MCP_AUTHZ_TENANT")),
-		AuthorizationResource:         strings.TrimSpace(os.Getenv("TEAM_MCP_AUTHZ_RESOURCE")),
+		AuthorizationTenant:           firstNonEmpty(overrides.AuthorizationTenant, os.Getenv("TEAM_MCP_AUTHZ_TENANT")),
+		AuthorizationResource:         firstNonEmpty(overrides.AuthorizationResource, os.Getenv("TEAM_MCP_AUTHZ_RESOURCE")),
 		AuthorizationTimeout:          2 * time.Second,
 		WeComUserIDClaim:              strings.TrimSpace(os.Getenv("TEAM_MCP_WECOM_USERID_CLAIM")),
 		PrincipalAssertionClaim:       strings.TrimSpace(os.Getenv("TEAM_MCP_GNAS_PRINCIPAL_ASSERTION_CLAIM")),
 		OAuth21IntrospectionURL:       strings.TrimSpace(os.Getenv("TEAM_MCP_OAUTH21_INTROSPECTION_URL")),
 		OAuth21ClientID:               strings.TrimSpace(os.Getenv("TEAM_MCP_OAUTH21_CLIENT_ID")),
 		OAuth21ClientSecret:           os.Getenv("TEAM_MCP_OAUTH21_CLIENT_SECRET"),
+	}
+	if len(cfg.Plugins) == 0 {
+		cfg.Plugins = []string{"zoop"}
 	}
 	if cfg.InstanceConfigPath == "" {
 		return Config{}, fmt.Errorf("--config is required")
@@ -109,6 +129,12 @@ func LoadConfig(instanceConfigPath, listenAddress string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.PublicURL = normalizedPublicURL
+	if overrides.PublicURL != "" && cfg.AuthenticationMode == AuthenticationModeOAuth21 {
+		// Each fleet binding is a distinct OAuth resource even when every
+		// hostname reaches the same process and uses the same confidential
+		// resource-server client for introspection.
+		cfg.OIDCAudience = cfg.PublicURL + "/mcp"
+	}
 	if cfg.AuthorizationResource == "" {
 		parsedPublicURL, _ := url.Parse(cfg.PublicURL)
 		cfg.AuthorizationResource = strings.TrimPrefix(parsedPublicURL.Path, "/")

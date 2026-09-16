@@ -39,6 +39,50 @@ func TestEveryToolHasTeamAccessClassification(t *testing.T) {
 	}
 }
 
+func TestToolDefinitionsForPluginsSeparatesGenericAndZoopTools(t *testing.T) {
+	generic, err := ToolDefinitionsForPlugins(nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genericNames := map[string]bool{}
+	for _, definition := range generic {
+		genericNames[definition.Name] = true
+	}
+	if !genericNames["wecom_employee_list"] || !genericNames["wecom_registry_bootstrap"] {
+		t.Fatalf("generic WeCom tools missing: %#v", genericNames)
+	}
+	for _, name := range []string{"wecom_record_query", "wecom_record_apply", "wecom_instance_initialize", "wecom_schema_registry_read"} {
+		if genericNames[name] {
+			t.Fatalf("Zoop tool %s leaked into generic tool surface", name)
+		}
+	}
+
+	withZoop, err := ToolDefinitionsForPlugins([]string{PluginZoop}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zoopNames := map[string]bool{}
+	for _, definition := range withZoop {
+		zoopNames[definition.Name] = true
+	}
+	for _, name := range []string{"wecom_record_query", "wecom_record_apply", "wecom_instance_initialize", "wecom_schema_registry_read"} {
+		if !zoopNames[name] {
+			t.Fatalf("Zoop tool %s missing from plugin tool surface", name)
+		}
+	}
+	if len(withZoop) != len(tools) {
+		t.Fatalf("legacy Zoop surface changed: got=%d want=%d", len(withZoop), len(tools))
+	}
+}
+
+func TestToolDefinitionsForPluginsRejectsUnknownOrDuplicatePlugins(t *testing.T) {
+	for _, plugins := range [][]string{{"unknown"}, {PluginZoop, PluginZoop}, {" zoop"}} {
+		if _, err := ToolDefinitionsForPlugins(plugins, false); err == nil {
+			t.Fatalf("plugins %#v unexpectedly accepted", plugins)
+		}
+	}
+}
+
 func TestReaderAndOperatorToolSchemasHaveNoNestedBareObjects(t *testing.T) {
 	definitions, err := ToolDefinitions()
 	if err != nil {

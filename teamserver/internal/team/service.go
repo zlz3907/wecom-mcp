@@ -19,7 +19,7 @@ import (
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/wecom"
 )
 
-const serverVersion = "0.1.5"
+const serverVersion = "0.2.0"
 
 const serverInstructions = "Fixed-tenant Enterprise WeCom Smart Sheet service. WorkBuddy Enterprise uses one organization credential, so it is never a human identity. Before every operator or admin tool call, use an active identity_binding_id that resolves to one verified Enterprise WeCom member and one unique Z-S09 personnel subject. The server separately supplies its configured Z-S09 AI execution subject; never substitute the human initiator for the AI executor or the connector credential for either subject. If no binding is available in the current conversation, ask the user for their exact Enterprise WeCom directory name, call wecom_identity_binding_start, ask for the 6-digit code delivered by the self-built application, and call wecom_identity_binding_confirm. Preserve the returned binding handle in subsequent tool arguments. Rebinding uses wecom_identity_binding_start with current_binding_id. Never use workbuddy-enterprise-connector, the shared API key, or an unverified name/userid as a Zoop business actor."
 
@@ -53,10 +53,10 @@ func newService(cfg Config, logger *slog.Logger, resolver AuthorizationResolver)
 	if cfg.MaxConcurrentTools <= 0 {
 		return nil, fmt.Errorf("max concurrent tool calls must be positive")
 	}
-	definitions, err := legacymcp.ToolDefinitions()
-	if cfg.AuthenticationMode == AuthenticationModeOAuth21 {
-		definitions, err = legacymcp.OAuthToolDefinitions()
+	if len(cfg.Plugins) == 0 {
+		cfg.Plugins = []string{legacymcp.PluginZoop}
 	}
+	definitions, err := legacymcp.ToolDefinitionsForPlugins(cfg.Plugins, cfg.AuthenticationMode == AuthenticationModeOAuth21)
 	if err != nil {
 		return nil, err
 	}
@@ -368,16 +368,23 @@ func (s *Service) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Service) ready(w http.ResponseWriter, _ *http.Request) {
-	runtime, err := config.LoadBootstrapCandidate(s.config.InstanceConfigPath)
-	if err != nil {
-		writeStatus(w, http.StatusServiceUnavailable, "not_ready")
-		return
-	}
-	if _, err := wecom.NewFromEnvironment(runtime.TenantRoute); err != nil {
+	if err := CheckRuntimeSource(s.config); err != nil {
 		writeStatus(w, http.StatusServiceUnavailable, "not_ready")
 		return
 	}
 	writeStatus(w, http.StatusOK, "ready")
+}
+
+// CheckRuntimeSource validates the protected local instance and confirms that
+// its fixed GNAS Source can construct a managed WeCom client. It performs no
+// remote request and exposes no source or credential value.
+func CheckRuntimeSource(cfg Config) error {
+	runtime, err := config.LoadBootstrapCandidate(cfg.InstanceConfigPath)
+	if err != nil {
+		return err
+	}
+	_, err = wecom.NewFromEnvironment(runtime.TenantRoute)
+	return err
 }
 
 func writeStatus(w http.ResponseWriter, status int, value string) {
