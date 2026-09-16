@@ -41,10 +41,11 @@ type gnasFleetPlugins struct {
 }
 
 type gnasFleetBinding struct {
-	BindingID      string           `json:"binding_id"`
-	PublicResource string           `json:"public_resource"`
-	Source         string           `json:"source"`
-	Plugins        gnasFleetPlugins `json:"plugins"`
+	BindingID             string           `json:"binding_id"`
+	PublicResource        string           `json:"public_resource"`
+	AuthorizationResource string           `json:"authorization_resource"`
+	Source                string           `json:"source"`
+	Plugins               gnasFleetPlugins `json:"plugins"`
 }
 
 type gnasFleetPayload struct {
@@ -176,7 +177,7 @@ func mergeGNASFleet(payload gnasFleetPayload, runtimeBindings map[string]string,
 	loaded := make([]LoadedFleetBinding, 0, len(payload.Bindings))
 	for _, remote := range payload.Bindings {
 		instancePath := runtimeBindings[remote.BindingID]
-		if instancePath == "" || !fleetIdentifier.MatchString(remote.BindingID) || remote.Plugins.Zoop == nil {
+		if instancePath == "" || !fleetIdentifier.MatchString(remote.BindingID) || !fleetIdentifier.MatchString(remote.AuthorizationResource) || remote.Plugins.Zoop == nil {
 			return nil, fmt.Errorf("GNAS binding %q has no exact local runtime mapping", remote.BindingID)
 		}
 		parsed, err := url.Parse(remote.PublicResource)
@@ -194,13 +195,9 @@ func mergeGNASFleet(payload gnasFleetPayload, runtimeBindings map[string]string,
 		if seenStates[runtime.StatePath] || runtime.SchemaMirrorPath != "" && seenSchemas[runtime.SchemaMirrorPath] {
 			return nil, fmt.Errorf("GNAS binding %s reuses local state", remote.BindingID)
 		}
-		authorizationResource := strings.Trim(strings.TrimSpace(parsed.Path), "/")
-		if authorizationResource == "" {
-			authorizationResource = "zoop"
-		}
 		binding := FleetBinding{
 			BindingID: remote.BindingID, Hosts: []string{host}, PublicURL: strings.TrimSuffix(remote.PublicResource, "/"),
-			AuthorizationTenant: remote.BindingID, AuthorizationResource: authorizationResource,
+			AuthorizationTenant: remote.BindingID, AuthorizationResource: remote.AuthorizationResource,
 			Source: remote.Source, InstanceConfigPath: instancePath, Plugins: []string{"zoop"},
 		}
 		oauthIssuer := parsed.Scheme + "://" + parsed.Host + "/gnas/oauth"

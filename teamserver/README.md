@@ -32,7 +32,7 @@ flowchart TB
 
 fleet 不保存企业微信 Secret。启动时会回读每个实例配置并验证 `source` 与 `tenant_route` 完全一致，同时拒绝复用域名、Source、实例配置、Schema 镜像或状态路径。fleet 强制使用 OAuth 2.1；每个 binding 自动以 `public_url/mcp` 作为独立 audience，并核验自己的 GNAS tenant/resource，共享 Connector API Key 不允许承担多企业隔离。请求只使用原始 HTTP `Host` 选实例，不读取 `X-Forwarded-Host`，未知域名返回 421。因此 fleet 模式下 Nginx 必须保留外部 Host，例如 `proxy_set_header Host $host`；现有单实例部署中固定 upstream Host 的配置不能原样用于 fleet。
 
-生产多企业模式优先使用 `--gnas-fleet-runtime` 而不是完整本地 fleet manifest。GNAS `app_info.config.mcp_bindings` 提供域名、Source 和插件绑定；本地 runtime manifest 只保存 `binding_id` 与受保护的 `instance_config_path`。MCP 启动时使用 Service JWT 从 GNAS 回读绑定，并强制核对本地 `tenant_route` 与 Zoop Registry；任何漂移都拒绝启动。
+生产多企业模式优先使用 `--gnas-fleet-runtime` 而不是完整本地 fleet manifest。GNAS `app_info.config.mcp_bindings` 提供域名、稳定的 `authorization_resource`、Source 和插件绑定；授权资源不从 URL 猜测，因此把既有实例迁到独立域名不会使历史用户授权失效。本地 runtime manifest 只保存 `binding_id` 与受保护的 `instance_config_path`。MCP 启动时使用 Service JWT 从 GNAS 回读绑定，并强制核对本地 `tenant_route` 与 Zoop Registry；任何漂移都拒绝启动。
 
 `zoop` 只决定该实例是否暴露 Zoop 初始化、九表、Z-S00 和记录治理工具。员工目录、受控企业微信 API、单人消息及 `SMART_SHEETS_IDS` bootstrap 属于通用企业微信层。旧单实例模式默认启用 Zoop，保持原工具兼容。
 

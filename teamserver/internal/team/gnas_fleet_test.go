@@ -24,7 +24,7 @@ func TestLoadGNASFleetUsesRemoteBindingAuthority(t *testing.T) {
 	runtimePath := filepath.Join(directory, "runtime.json")
 	writeJSONFile(t, runtimePath, GNASFleetRuntimeManifest{Version: 1, Bindings: []GNASFleetRuntimeBinding{{BindingID: "company_a", InstanceConfigPath: instancePath}}})
 	payload := signedGNASFleetPayload(t, []gnasFleetBinding{{
-		BindingID: "company_a", PublicResource: "https://mcp.company-a.example", Source: "wecom-company-a",
+		BindingID: "company_a", PublicResource: "https://mcp.company-a.example", AuthorizationResource: "existing_policy", Source: "wecom-company-a",
 		Plugins: gnasFleetPlugins{Zoop: &gnasFleetZoopPlugin{RegistryDocumentID: "doc-a", RegistryKey: "company_a_zoop_v1"}},
 	}})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +51,7 @@ func TestLoadGNASFleetUsesRemoteBindingAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 1 || loaded[0].Binding.Source != "wecom-company-a" || loaded[0].Binding.Hosts[0] != "mcp.company-a.example" || !loaded[0].Config.TrustedLoopbackProxy || loaded[0].Config.OIDCAudience != "https://mcp.company-a.example/mcp" || loaded[0].Config.OIDCIssuer != "https://mcp.company-a.example/gnas/oauth" {
+	if len(loaded) != 1 || loaded[0].Binding.Source != "wecom-company-a" || loaded[0].Binding.Hosts[0] != "mcp.company-a.example" || loaded[0].Binding.AuthorizationResource != "existing_policy" || loaded[0].Config.AuthorizationResource != "existing_policy" || !loaded[0].Config.TrustedLoopbackProxy || loaded[0].Config.OIDCAudience != "https://mcp.company-a.example/mcp" || loaded[0].Config.OIDCIssuer != "https://mcp.company-a.example/gnas/oauth" {
 		t.Fatalf("loaded=%#v", loaded)
 	}
 }
@@ -67,7 +67,7 @@ func TestMergeGNASFleetRejectsRegistryDrift(t *testing.T) {
 		"api_whitelist": map[string]any{"read": []string{"get_records"}},
 	})
 	payload := signedGNASFleetPayload(t, []gnasFleetBinding{{
-		BindingID: "company_a", PublicResource: "https://mcp.company-a.example", Source: "wecom-company-a",
+		BindingID: "company_a", PublicResource: "https://mcp.company-a.example", AuthorizationResource: "company_a_zoop", Source: "wecom-company-a",
 		Plugins: gnasFleetPlugins{Zoop: &gnasFleetZoopPlugin{RegistryDocumentID: "remote-doc", RegistryKey: "company_a_zoop_v1"}},
 	}})
 	if _, err := mergeGNASFleet(payload, map[string]string{"company_a": instancePath}, "127.0.0.1:17801"); err == nil {
