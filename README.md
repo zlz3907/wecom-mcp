@@ -116,11 +116,21 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 
 文档权限核验遵循企业微信“获取文档权限信息”（官方文档 path 97461）的实际响应结构，并依赖该接口只能访问调用应用所创建文档的权限约束证明应用管理面；`doc_member_list` 中的人类成员可以是只读、可编辑或管理员，初始化器会严格校验其官方结构。`schema_admin_user` 仅作为受保护本机操作系统账号门禁，不与企业微信 `userid` 混用；Windows 必须填写 `whoami` 返回的完整 `域或电脑名\\用户名`，运行时按 Windows 规则对完整身份忽略大小写比较，不会丢弃 authority 前缀或把不同安全主体的同名账号视为同一人。空的部门权限列表被上游省略时按空列表处理。任意自造的 `auth_type=admin` 等字段不会被视为管理权限证据。
 
-`wecom_instance_initialize_apply` 只接受未过期且与当前完整快照一致的 `preview_id`、status 原样返回的 `preview_expires_at` 和固定 Owner 防误触授权。实际写权限仍由专用 `instance_initialize` capability group 控制；初始化器不会自行扩展白名单。当前生产 catalog 已包含 Z-S01“进度条”的依赖和公式结构，但该字段仍标记为 `unsupported_for_create=true`，因此 catalog 的 `complete_for_creation=false`；需要 fresh 创建 Registry、业务文档或九表时会返回 `capability_gap`，不签发 apply preview，也不执行线上或本地写入。已有完整九表实例的 `ready`/no-op、导入和恢复路径已通过本地 synthetic requester 测试，但这不等于真实企业微信运行验收。已有 `wecom_registry_bootstrap` 和 `wecom_schema_sync` 保持兼容，但不能替代完整实例初始化。
+`wecom_instance_initialize_apply` 只接受未过期且与当前完整快照一致的 `preview_id`、status 原样返回的 `preview_expires_at` 和固定 Owner 防误触授权。实际写权限仍由专用 `instance_initialize` capability group 控制；初始化器不会自行扩展白名单。Z-S01“进度条”的数字依赖、公式模型和进度格式已经通过专用企业微信探针创建并回读，生产 catalog 因此达到 `complete_for_creation=true`；fresh 初始化可以按 durable journal 创建 Registry、业务文档、九表和唯一 active 登记行。任何目录外公式或未知字段能力仍返回 `capability_gap`。完整 fresh 生命周期已由 synthetic requester 覆盖，但仍须在独立测试企业完成一次受控真实验收后才能宣告生产验收。已有 `wecom_registry_bootstrap` 和 `wecom_schema_sync` 保持兼容，但不能替代完整实例初始化。
 
 当线上 Registry、唯一 active row 和九表已经满足 catalog 时，apply 会生成并回读新的 Schema generation，执行 Z-S01 候选 smoke，备份并原子切换完整配置，再对持久配置执行最终 Z-S01 只读 smoke。新建文档或子表只允许复用平台唯一默认文本主字段；必须先验证完整默认字段模板，随后才可删除本次操作创建表中的空默认记录。已有 `docid` 只做核验与补齐，不清理已有字段或记录。远程创建或 active row 写入结果不确定时保留 durable journal，并要求回读恢复，禁止盲目重复创建。
 
 示例配置展示完整的 `instance_initialize` 权限集合，但不会迁移已部署实例。现有实例若仅允许只读初始化操作，必须由管理员通过受保护配置包升级 capability group；普通调用者和初始化器本身都不能提升该权限。
+
+### 单进程多企业与业务插件
+
+远程 team server 保留原有 `--config` 单实例启动方式，同时支持 `--fleet /absolute/path/fleet.json`。fleet manifest 只保存非敏感绑定：精确域名、公开资源地址、GNAS tenant/resource、固定 Source、实例配置路径和启用的业务插件。企业微信凭据仍只由 GNAS Source 管理，不进入 manifest 或 MCP 参数。
+
+请求只按 HTTP `Host` 精确选择实例，不信任 `X-Forwarded-Host`，未知域名返回 421。manifest 启动时强制核对 `source == instance.tenant_route`，并拒绝重复域名、Source、实例配置路径或 `state_path`，防止跨企业状态混用。fleet 模式强制使用 OAuth 2.1：每个 binding 的 `public_url/mcp` 是独立 audience，并同时核验 GNAS tenant；共享 Connector API Key 不能用于多企业路由。Nginx 可以让多个企业域名指向同一个监听端口，但必须保留原始 `Host`。
+
+业务工具按 `plugins` 显式暴露。目前首个插件 ID 为 `zoop`；不启用它时只保留企业微信通用工具。旧单实例模式默认启用 `zoop`，现有客户端工具列表保持兼容。示例见 `config/fleet.json.example`。
+
+新增企业前，manifest 中的 `source` 必须已经通过 GNAS 受控凭据登记与应用授权流程启用；MCP 不创建、修改或解密 `api_keys_desc` / `app_info`，也不要求运维人员直接编辑 MongoDB。Source 未配置、被禁用或不在服务应用权限内时，实例保持 not ready。
 
 ### Z-S00 在线 Schema Registry
 

@@ -20,6 +20,20 @@ flowchart TB
 - 审计日志只记录请求 ID、角色、工具、结果、耗时和 HMAC 密钥化的主体假名，不记录 Token、Secret、业务参数或响应内容；审计密钥按 PII/Secret 管理。
 - 应用层默认最多同时执行 16 个业务工具调用，可通过受控配置调低或调高；公网速率限制仍由组织 API Gateway/WAF 提供。
 
+## 多企业单进程模式
+
+原有 `--config` 继续启动一个固定实例。需要让多个企业域名共用同一进程时，改用 `--fleet /absolute/path/fleet.json`；两者必须且只能提供一个。fleet 示例位于 [`../config/fleet.json.example`](../config/fleet.json.example)。每个 binding 明确绑定：
+
+- 一个或多个精确域名；
+- 一个实例配置和独立 `state_path`；
+- 一个不可重复的 GNAS Source；
+- GNAS 授权 tenant/resource；
+- 显式业务插件列表，目前支持 `zoop`。
+
+fleet 不保存企业微信 Secret。启动时会回读每个实例配置并验证 `source` 与 `tenant_route` 完全一致，同时拒绝复用域名、Source、实例配置、Schema 镜像或状态路径。fleet 强制使用 OAuth 2.1；每个 binding 自动以 `public_url/mcp` 作为独立 audience，并核验自己的 GNAS tenant/resource，共享 Connector API Key 不允许承担多企业隔离。请求只使用原始 HTTP `Host` 选实例，不读取 `X-Forwarded-Host`，未知域名返回 421。因此 fleet 模式下 Nginx 必须保留外部 Host，例如 `proxy_set_header Host $host`；现有单实例部署中固定 upstream Host 的配置不能原样用于 fleet。
+
+`zoop` 只决定该实例是否暴露 Zoop 初始化、九表、Z-S00 和记录治理工具。员工目录、受控企业微信 API、单人消息及 `SMART_SHEETS_IDS` bootstrap 属于通用企业微信层。旧单实例模式默认启用 Zoop，保持原工具兼容。
+
 ## WorkBuddy Connector API Key 测试模式
 
 当前 `deploy/gmzoop.env.example` 是固定连接器模式：在 WorkBuddy 企业后台创建自定义连接器，认证方式选择 **API Key**，Header Name 填 `Authorization`，Header Value 填 `Bearer <与服务器受保护环境相同的值>`，MCP Server URL 填 `https://mcp.jyiai.com/gmzoop/mcp`。示例把 `TEAM_MCP_CONNECTOR_ROLE` 设为 `admin`，暴露当前二进制实现的全部 MCP 工具；不发布 OAuth metadata，且拒绝同时启用 `TEAM_MCP_USER_AUTHZ_ENABLED=true`。固定租户、Schema、幂等、写后回读和 API 白名单继续生效。

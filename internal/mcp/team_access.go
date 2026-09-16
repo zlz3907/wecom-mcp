@@ -63,22 +63,77 @@ var teamToolAccess = map[string]ToolAccess{
 	"wecom_schema_migration_apply":                ToolAccessAdmin,
 }
 
+const PluginZoop = "zoop"
+
+var zoopPluginTools = map[string]struct{}{
+	"wecom_instance_initialize":            {},
+	"wecom_instance_initialize_status":     {},
+	"wecom_instance_initialize_apply":      {},
+	"wecom_schema_status":                  {},
+	"wecom_schema_probe":                   {},
+	"wecom_schema_sync":                    {},
+	"wecom_schema_registry_status":         {},
+	"wecom_schema_registry_read":           {},
+	"wecom_schema_registry_update":         {},
+	"wecom_record_read":                    {},
+	"wecom_record_query":                   {},
+	"wecom_record_apply":                   {},
+	"wecom_requirement_progress_reconcile": {},
+	"wecom_schema_migration_preview":       {},
+	"wecom_schema_migration_apply":         {},
+}
+
+var genericWeComTools = map[string]struct{}{
+	"wecom_registry_bootstrap":                    {},
+	"wecom_field_codec_lab_create":                {},
+	"wecom_field_codec_lab_read":                  {},
+	"wecom_field_codec_lab_reference_debug":       {},
+	"wecom_field_codec_lab_reference_write_probe": {},
+	"wecom_field_codec_lab_write_probe":           {},
+	"wecom_field_codec_lab_replay_probe":          {},
+	"wecom_field_codec_lab_registry_status":       {},
+	"wecom_field_codec_lab_register":              {},
+	"wecom_employee_list":                         {},
+	"wecom_api_call":                              {},
+	"wecom_identity_binding_start":                {},
+	"wecom_identity_binding_confirm":              {},
+	"wecom_identity_binding_status":               {},
+	"wecom_send_app_message":                      {},
+	"wecom_send_app_media_message":                {},
+}
+
 // ToolDefinitions returns a copy of the current transport-neutral tool list.
 // A missing access classification fails closed so a newly added privileged
 // tool cannot accidentally become available to remote team callers.
 func ToolDefinitions() ([]ToolDefinition, error) {
-	return toolDefinitions(false)
+	return ToolDefinitionsForPlugins([]string{PluginZoop}, false)
 }
 
 // OAuthToolDefinitions omits legacy login tools and binding-handle arguments.
 // Only a trusted transport may supply the authenticated employee separately.
 func OAuthToolDefinitions() ([]ToolDefinition, error) {
-	return toolDefinitions(true)
+	return ToolDefinitionsForPlugins([]string{PluginZoop}, true)
 }
 
-func toolDefinitions(oauth bool) ([]ToolDefinition, error) {
+// ToolDefinitionsForPlugins returns the generic WeCom tools plus the tools
+// owned by explicitly enabled business plugins. Unknown and duplicate plugin
+// IDs fail closed. The legacy entrypoints enable Zoop explicitly above so
+// existing clients keep the same tool surface.
+func ToolDefinitionsForPlugins(plugins []string, oauth bool) ([]ToolDefinition, error) {
+	enabled, err := validatedPlugins(plugins)
+	if err != nil {
+		return nil, err
+	}
 	definitions := make([]ToolDefinition, 0, len(tools))
 	for _, item := range tools {
+		_, zoopOwned := zoopPluginTools[item.Name]
+		_, generic := genericWeComTools[item.Name]
+		if zoopOwned == generic {
+			return nil, fmt.Errorf("工具 %s 缺少唯一业务插件归属", item.Name)
+		}
+		if zoopOwned && !enabled[PluginZoop] {
+			continue
+		}
 		if oauth && strings.HasPrefix(item.Name, "wecom_identity_binding_") {
 			continue
 		}
@@ -104,6 +159,23 @@ func toolDefinitions(oauth bool) ([]ToolDefinition, error) {
 		})
 	}
 	return definitions, nil
+}
+
+func validatedPlugins(plugins []string) (map[string]bool, error) {
+	enabled := make(map[string]bool, len(plugins))
+	for _, plugin := range plugins {
+		if plugin != strings.TrimSpace(plugin) || plugin == "" {
+			return nil, fmt.Errorf("业务插件标识非法")
+		}
+		if plugin != PluginZoop {
+			return nil, fmt.Errorf("不支持的业务插件: %s", plugin)
+		}
+		if enabled[plugin] {
+			return nil, fmt.Errorf("业务插件重复: %s", plugin)
+		}
+		enabled[plugin] = true
+	}
+	return enabled, nil
 }
 
 // CallTool lets an additional MCP transport reuse the same fixed-tenant
