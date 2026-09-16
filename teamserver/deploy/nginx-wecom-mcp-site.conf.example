@@ -1,0 +1,9 @@
+server {
+    listen 443 ssl;
+    server_name mcp.company-a.example;
+
+    ssl_certificate /protected/path/fullchain.pem;
+    ssl_certificate_key /protected/path/privkey.pem;
+
+    include /etc/nginx/snippets/wecom-mcp-routes.conf;
+}

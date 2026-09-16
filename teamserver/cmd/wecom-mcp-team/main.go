@@ -18,20 +18,35 @@ import (
 func main() {
 	configPath := flag.String("config", "", "absolute fixed-tenant instance configuration path")
 	fleetPath := flag.String("fleet", "", "absolute multi-instance fleet manifest path")
+	gnasFleetRuntimePath := flag.String("gnas-fleet-runtime", "", "absolute local runtime mapping for bindings resolved from GNAS")
 	listenAddress := flag.String("listen", "", "listen address; defaults to TEAM_MCP_LISTEN_ADDR or 127.0.0.1:17801")
 	checkConfig := flag.Bool("check-config", false, "validate configuration and initialize local handlers without listening")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	if (*configPath == "") == (*fleetPath == "") {
-		logger.Error("invalid team MCP configuration", "error", "exactly one of --config or --fleet is required")
+	configuredModes := 0
+	for _, value := range []string{*configPath, *fleetPath, *gnasFleetRuntimePath} {
+		if value != "" {
+			configuredModes++
+		}
+	}
+	if configuredModes != 1 {
+		logger.Error("invalid team MCP configuration", "error", "exactly one of --config, --fleet, or --gnas-fleet-runtime is required")
 		os.Exit(2)
 	}
 	var cfg team.Config
 	var handler http.Handler
 	var err error
-	if *fleetPath != "" {
-		bindings, loadErr := team.LoadFleetManifest(*fleetPath, *listenAddress)
+	if *fleetPath != "" || *gnasFleetRuntimePath != "" {
+		var bindings []team.LoadedFleetBinding
+		var loadErr error
+		if *gnasFleetRuntimePath != "" {
+			loadContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			bindings, loadErr = team.LoadGNASFleet(loadContext, *gnasFleetRuntimePath, *listenAddress)
+			cancel()
+		} else {
+			bindings, loadErr = team.LoadFleetManifest(*fleetPath, *listenAddress)
+		}
 		if loadErr != nil {
 			logger.Error("invalid team MCP fleet configuration", "error", loadErr)
 			os.Exit(2)

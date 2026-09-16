@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -81,8 +82,8 @@ type Client struct {
 func NewFromEnvironment(route string) (*Client, error) {
 	baseURL, appID, appSecret := strings.TrimSpace(os.Getenv("GNAS_BASE_URL")), strings.TrimSpace(os.Getenv("GNAS_APP_ID")), os.Getenv("GNAS_APP_SECRET")
 	parsed, err := url.Parse(baseURL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-		return nil, fmt.Errorf("GNAS_BASE_URL 必须是 HTTPS 根地址")
+	if err != nil || !validGNASBaseURL(parsed) {
+		return nil, fmt.Errorf("GNAS_BASE_URL 必须是 HTTPS 根地址，或使用 HTTP 的回环根地址")
 	}
 	if appID == "" || appSecret == "" {
 		return nil, fmt.Errorf("GNAS 服务凭据未配置")
@@ -92,6 +93,21 @@ func NewFromEnvironment(route string) (*Client, error) {
 		return nil, fmt.Errorf("GNAS_WECOM_TRANSPORT must be legacy_proxy or managed_executor")
 	}
 	return &Client{baseURL: strings.TrimSuffix(baseURL, "/"), appID: appID, appSecret: appSecret, route: route, managedExecutor: transport == "managed_executor", httpClient: &http.Client{Timeout: requestTimeout}}, nil
+}
+
+func validGNASBaseURL(parsed *url.URL) bool {
+	if parsed == nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return false
+	}
+	if parsed.Scheme == "https" {
+		return true
+	}
+	if parsed.Scheme != "http" {
+		return false
+	}
+	host := parsed.Hostname()
+	ip := net.ParseIP(host)
+	return strings.EqualFold(host, "localhost") || ip != nil && ip.IsLoopback()
 }
 
 func (c *Client) jwt(ctx context.Context, force bool) (string, error) {

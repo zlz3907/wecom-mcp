@@ -185,6 +185,60 @@ func TestLoopbackProxyPreservesSDKDNSRebindingProtection(t *testing.T) {
 	}
 }
 
+func TestTrustedFleetLoopbackProxyUsesExactHostRouterBoundary(t *testing.T) {
+	cfg := testServiceConfig(t)
+	cfg.TrustedLoopbackProxy = true
+	service, err := NewService(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := func(_ context.Context, token string, _ *http.Request) (*sdkauth.TokenInfo, error) {
+		if token != "reader" {
+			return nil, sdkauth.ErrInvalidToken
+		}
+		return &sdkauth.TokenInfo{Expiration: time.Now().Add(time.Hour), UserID: "test-user", Extra: map[string]any{"role": "reader"}}, nil
+	}
+	router, err := NewHostRouter(
+		[]LoadedFleetBinding{{Binding: FleetBinding{BindingID: "a", Hosts: []string{"mcp.example.test"}}}},
+		map[string]http.Handler{"a": service.Handler(verifier)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/mcp", bytes.NewBufferString(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = "mcp.example.test"
+	request.Header.Set("Authorization", "Bearer reader")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	request.Header.Set("Mcp-Protocol-Version", "2025-11-25")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("known fleet host status=%d", response.StatusCode)
+	}
+
+	request, _ = http.NewRequest(http.MethodPost, server.URL+"/mcp", bytes.NewBufferString(`{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`))
+	request.Host = "unknown.example.test"
+	request.Header.Set("X-Forwarded-Host", "mcp.example.test")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusMisdirectedRequest {
+		t.Fatalf("unknown fleet host status=%d", response.StatusCode)
+	}
+}
+
 func TestReaderCannotForgeWriteToolCall(t *testing.T) {
 	server := newTestHTTPServer(t)
 	defer server.Close()

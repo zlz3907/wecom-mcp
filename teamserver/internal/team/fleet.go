@@ -113,6 +113,13 @@ func LoadFleetManifest(path, listenAddress string) ([]LoadedFleetBinding, error)
 		if cfg.AuthenticationMode != AuthenticationModeOAuth21 {
 			return nil, fmt.Errorf("fleet binding %s requires oauth21 authentication for tenant and resource isolation", binding.BindingID)
 		}
+		if !listenIsLoopback(cfg.ListenAddress) {
+			return nil, fmt.Errorf("fleet binding %s must listen on a loopback address", binding.BindingID)
+		}
+		// The fleet HostRouter is the DNS-rebinding boundary for this loopback
+		// listener. It accepts only exact manifest hosts before the request
+		// reaches the SDK handler.
+		cfg.TrustedLoopbackProxy = true
 		loaded = append(loaded, LoadedFleetBinding{Binding: binding, Config: cfg})
 	}
 	return loaded, nil

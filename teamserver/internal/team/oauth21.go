@@ -64,6 +64,14 @@ func (a *OAuth21IntrospectionAuthenticator) Verify(ctx context.Context, rawToken
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.SetBasicAuth(a.config.OAuth21ClientID, a.config.OAuth21ClientSecret)
+	if introspectionURL, parseErr := url.Parse(a.config.OAuth21IntrospectionURL); parseErr == nil && isLoopbackHost(introspectionURL.Hostname()) {
+		if resourceURL, resourceErr := url.Parse(a.config.OIDCAudience); resourceErr == nil && resourceURL.Host != "" {
+			// GNAS multiplexes tenant-bound OAuth centers by the canonical MCP
+			// resource host. The connection remains on loopback; only the HTTP
+			// Host used by GNAS's exact allowlist is preserved.
+			request.Host = resourceURL.Host
+		}
+	}
 	response, err := a.client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("%w: token verification unavailable", sdkauth.ErrInvalidToken)

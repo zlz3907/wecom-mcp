@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "bindings": [
+    {
+      "binding_id": "company_a",
+      "instance_config_path": "/home/product/services/mcp/wecom/instances/company_a/config/instance.json"
+    }
+  ]
+}

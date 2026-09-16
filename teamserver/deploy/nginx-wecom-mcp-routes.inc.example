@@ -1,0 +1,32 @@
+# Include this file inside an exact TLS server block for every approved MCP
+# hostname. Keep certificates and server_name declarations in the site file;
+# keep shared proxy behavior here so tenants cannot drift independently.
+
+location ^~ /gnas/oauth/ {
+    proxy_pass http://127.0.0.1:7501;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Request-ID $request_id;
+}
+
+location = /.well-known/oauth-authorization-server/gnas/oauth {
+    proxy_pass http://127.0.0.1:7501;
+    proxy_set_header Host $host;
+    proxy_set_header X-Request-ID $request_id;
+}
+
+location = /.well-known/openid-configuration/gnas/oauth {
+    proxy_pass http://127.0.0.1:7501;
+    proxy_set_header Host $host;
+    proxy_set_header X-Request-ID $request_id;
+}
+
+location / {
+    proxy_pass http://127.0.0.1:7702;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Authorization $http_authorization;
+    proxy_set_header X-Request-ID $request_id;
+    proxy_buffering off;
+    proxy_read_timeout 3600s;
+}
