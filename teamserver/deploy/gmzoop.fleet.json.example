@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "bindings": [
+    {
+      "binding_id": "gmzoop",
+      "hosts": ["mcp.jyiai.com"],
+      "public_url": "https://mcp.jyiai.com/gmzoop",
+      "authorization_tenant": "<PROTECTED_CANONICAL_GM_TENANT_KEY>",
+      "authorization_resource": "gmzoop",
+      "source": "<EXISTING_GM_WECOM_SOURCE_KEY>",
+      "instance_config_path": "/home/product/services/mcp/wecom/instances/gmzoop/config/instance.json",
+      "plugins": ["zoop"]
+    }
+  ]
+}

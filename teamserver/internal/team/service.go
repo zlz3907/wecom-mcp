@@ -368,16 +368,23 @@ func (s *Service) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Service) ready(w http.ResponseWriter, _ *http.Request) {
-	runtime, err := config.LoadBootstrapCandidate(s.config.InstanceConfigPath)
-	if err != nil {
-		writeStatus(w, http.StatusServiceUnavailable, "not_ready")
-		return
-	}
-	if _, err := wecom.NewFromEnvironment(runtime.TenantRoute); err != nil {
+	if err := CheckRuntimeSource(s.config); err != nil {
 		writeStatus(w, http.StatusServiceUnavailable, "not_ready")
 		return
 	}
 	writeStatus(w, http.StatusOK, "ready")
+}
+
+// CheckRuntimeSource validates the protected local instance and confirms that
+// its fixed GNAS Source can construct a managed WeCom client. It performs no
+// remote request and exposes no source or credential value.
+func CheckRuntimeSource(cfg Config) error {
+	runtime, err := config.LoadBootstrapCandidate(cfg.InstanceConfigPath)
+	if err != nil {
+		return err
+	}
+	_, err = wecom.NewFromEnvironment(runtime.TenantRoute)
+	return err
 }
 
 func writeStatus(w http.ResponseWriter, status int, value string) {

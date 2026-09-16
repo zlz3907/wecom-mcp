@@ -1,0 +1,8 @@
+# Install only after the deployed binary supports --fleet and the protected
+# fleet.json passes the ExecStartPre check. This is a systemd drop-in for the
+# existing wecom-mcp@gmzoop.service, so its current OS user, environment file,
+# state permissions, port and rollback unit remain unchanged.
+[Service]
+ExecStart=
+ExecStartPre=/home/product/services/mcp/wecom/current/wecom-mcp-team --fleet /home/product/services/mcp/wecom/instances/gmzoop/config/fleet.json --check-config
+ExecStart=/home/product/services/mcp/wecom/current/wecom-mcp-team --fleet /home/product/services/mcp/wecom/instances/gmzoop/config/fleet.json

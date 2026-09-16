@@ -85,3 +85,16 @@ curl -fsS http://127.0.0.1:7702/readyz
 候选启动后先运行不带 Token 的只读合同检查，确认 GNAS metadata、gmzoop protected-resource metadata 和 401 challenge 一致；再由测试员工完成一次企业微信扫码，把取得的短期访问令牌写入 0600 临时文件，仅追加 `-token-file` 验证 `initialize + tools/list`。检查器不调用业务工具、不输出令牌。验证结束立即删除临时令牌文件并撤销测试授权。
 
 只有以下结果全部独立通过，才可另行申请生产启用：PKCE S256、精确 redirect URI、本人身份映射、按员工 `effective_tools` 过滤、撤权下一请求生效、审计不含 userid/Token/Secret、旧 Connector 模式回归无变化。测试通过本身不授权切换生产入口。
+
+## 8. 将既有 gmzoop 原地迁移为 fleet binding
+
+只有既有 gmzoop 已经完成 OAuth 2.1 验收且新二进制包含 `--fleet` 后才能执行。Connector API Key 模式禁止迁移到 fleet。迁移复用原 `instance.json`、GNAS Source、Registry、Schema、state、systemd 服务用户、监听端口和 OAuth 资源，不创建文档、不修改 MongoDB。
+
+1. 将 `gmzoop.fleet.json.example` 复制到受保护临时位置，只从现有受保护配置确认 `authorization_tenant` 和 `source`，不得在终端输出其余配置或任何 Secret。
+2. 以 root 属主、`wecom-mcp-gmzoop` 组和 0640 权限安装为 `/home/product/services/mcp/wecom/instances/gmzoop/config/fleet.json`。
+3. 使用新二进制和现有 `/etc/wecom-mcp/gmzoop.env` 执行一次 `--fleet ... --check-config`；必须正常退出且不得监听端口。
+4. 将 `wecom-mcp-fleet.conf.example` 安装为 `/etc/systemd/system/wecom-mcp@gmzoop.service.d/20-fleet.conf`。它只替换 `ExecStart`，不改变服务用户、环境文件、写目录、端口或资源限制。
+5. 把 Nginx gmzoop 精确 location 的 upstream `Host` 更新为 `$host`。配置仍须先以 `server_name mcp.jyiai.com` 和 `$host` 精确检查拒绝其他域名；不得把 `X-Forwarded-Host` 用作后端路由。
+6. 依次执行 `systemctl daemon-reload`、`nginx -t`，在受控窗口重启 `wecom-mcp@gmzoop.service` 并 reload Nginx，然后回读 health、ready、OAuth metadata、401 challenge、`initialize`、`tools/list` 和一个只读工具。
+
+迁移失败时，将 `20-fleet.conf` 移到受保护的禁用路径，恢复原 Nginx 文件，重新执行 `daemon-reload`、`nginx -t` 和服务重启。回滚只恢复启动参数与 Host 转发，不覆盖 `instance.json`、Registry、Schema、journal 或企业微信数据。

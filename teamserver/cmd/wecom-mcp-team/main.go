@@ -19,6 +19,7 @@ func main() {
 	configPath := flag.String("config", "", "absolute fixed-tenant instance configuration path")
 	fleetPath := flag.String("fleet", "", "absolute multi-instance fleet manifest path")
 	listenAddress := flag.String("listen", "", "listen address; defaults to TEAM_MCP_LISTEN_ADDR or 127.0.0.1:17801")
+	checkConfig := flag.Bool("check-config", false, "validate configuration and initialize local handlers without listening")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -43,6 +44,12 @@ func main() {
 				logger.Error("team MCP fleet binding initialization failed", "binding_id", binding.Binding.BindingID, "error", err)
 				os.Exit(1)
 			}
+			if *checkConfig {
+				if err := team.CheckRuntimeSource(binding.Config); err != nil {
+					logger.Error("team MCP fleet binding runtime source invalid", "binding_id", binding.Binding.BindingID, "error", err)
+					os.Exit(1)
+				}
+			}
 		}
 		handler, err = team.NewHostRouter(bindings, handlers)
 		if err != nil {
@@ -62,6 +69,16 @@ func main() {
 			logger.Error("team MCP initialization failed", "error", err)
 			os.Exit(1)
 		}
+		if *checkConfig {
+			if err := team.CheckRuntimeSource(cfg); err != nil {
+				logger.Error("team MCP runtime source invalid", "error", err)
+				os.Exit(1)
+			}
+		}
+	}
+	if *checkConfig {
+		logger.Info("team MCP configuration valid")
+		return
 	}
 
 	httpServer := &http.Server{

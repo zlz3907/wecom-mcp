@@ -139,7 +139,7 @@ go build ./cmd/oauth21-contract-check
 2. gmzoop 实例只使用 `/home/product/services/mcp/wecom/instances/gmzoop/config` 与 `/home/product/services/mcp/wecom/instances/gmzoop/data`。config 只读，Schema generation、journal 和其他运行状态写入 data。实例配置中的绝对路径必须对应这些真实路径；`schema_admin_user` 必须受控更新为服务器进程用户 `wecom-mcp-gmzoop`，OIDC admin 不替代 OS 身份门禁。
 3. 将 `deploy/gmzoop.env.example` 审阅后写为 `/etc/wecom-mcp/gmzoop.env`，属主 root:root、权限 0600；通过服务器 Secret 管理注入 GNAS 与审计密钥。Secret 不得进入项目目录、Git、镜像或日志。
 4. 将 `deploy/wecom-mcp@.service.example` 审阅后安装为 `/etc/systemd/system/wecom-mcp@.service`，只启用 `wecom-mcp@gmzoop.service`。日志使用 journald。
-5. 使用项目交付包中的独立 `nginx-mcp.jyiai.com-gmzoop.conf`；只暴露 `/gmzoop` 精确路由，保留 `Authorization` 和流式响应，并把 upstream `Host` 固定为 `127.0.0.1:7702` 以保留 SDK DNS-rebinding 防护。不得覆盖既有站点。
+5. 使用项目交付包中的独立 `nginx-mcp.jyiai.com-gmzoop.conf`；只暴露 `/gmzoop` 精确路由，保留 `Authorization` 和流式响应。Nginx 先以精确 `server_name`/`$host` 拒绝未知域名，再把原始 `$host` 传给后端用于 fleet binding；不得用 `X-Forwarded-Host` 选择实例，也不得覆盖既有站点。
 6. API Key 测试模式下，在服务器执行交付包的 `create-gmzoop-env.sh /etc/wecom-mcp/gmzoop.env`；脚本在服务器本地生成 Connector Key 与审计 Key，随后由 Secret 管理注入 GNAS App ID/Secret。不要把生成的 Key 写入 Git、压缩包或聊天。
 7. 先验证 `/healthz`、`/readyz` 和未认证 `/mcp` 的 `401`，再在 WorkBuddy 企业自定义连接器中配置 `Authorization: Bearer <Connector Key>`，执行 `initialize`、`tools/list` 和一个只读工具调用。
 
