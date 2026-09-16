@@ -1,5 +1,6 @@
 # Systemd drop-in for the GNAS-owned binding registry. The referenced local
-# file contains runtime paths only; domain, Source, and plugin bindings are
+# file contains runtime paths and per-binding client credential references;
+# secrets come from the protected EnvironmentFile. Domain, Source, and plugins are
 # resolved from app_info with the protected GNAS service identity.
 [Service]
 ExecStart=

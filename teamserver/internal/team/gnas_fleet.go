@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -21,6 +22,8 @@ import (
 
 const gnasFleetRuntimeVersion = 1
 
+var fleetSecretEnvironmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 type GNASFleetRuntimeManifest struct {
 	Version  int                       `json:"version"`
 	Bindings []GNASFleetRuntimeBinding `json:"bindings"`
@@ -29,6 +32,8 @@ type GNASFleetRuntimeManifest struct {
 type GNASFleetRuntimeBinding struct {
 	BindingID          string `json:"binding_id"`
 	InstanceConfigPath string `json:"instance_config_path"`
+	ClientID           string `json:"client_id"`
+	ClientSecretEnv    string `json:"client_secret_env"`
 }
 
 type gnasFleetZoopPlugin struct {
@@ -84,7 +89,7 @@ func LoadGNASFleet(ctx context.Context, runtimeManifestPath, listenAddress strin
 	return mergeGNASFleet(payload, runtimeBindings, listenAddress)
 }
 
-func loadGNASFleetRuntimeManifest(path string) (map[string]string, error) {
+func loadGNASFleetRuntimeManifest(path string) (map[string]GNASFleetRuntimeBinding, error) {
 	if !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("--gnas-fleet-runtime must be an absolute path")
 	}
@@ -103,17 +108,22 @@ func loadGNASFleetRuntimeManifest(path string) (map[string]string, error) {
 	if err := decoder.Decode(&manifest); err != nil || decoder.Decode(&struct{}{}) != io.EOF || manifest.Version != gnasFleetRuntimeVersion || len(manifest.Bindings) == 0 || len(manifest.Bindings) > 64 {
 		return nil, fmt.Errorf("GNAS fleet runtime manifest is invalid")
 	}
-	bindings := make(map[string]string, len(manifest.Bindings))
+	bindings := make(map[string]GNASFleetRuntimeBinding, len(manifest.Bindings))
 	paths := make(map[string]bool, len(manifest.Bindings))
+	clients := make(map[string]bool, len(manifest.Bindings))
 	for _, binding := range manifest.Bindings {
-		if !fleetIdentifier.MatchString(binding.BindingID) || bindings[binding.BindingID] != "" || !filepath.IsAbs(binding.InstanceConfigPath) || paths[binding.InstanceConfigPath] {
+		if !fleetIdentifier.MatchString(binding.BindingID) || bindings[binding.BindingID].BindingID != "" || !filepath.IsAbs(binding.InstanceConfigPath) || paths[binding.InstanceConfigPath] {
 			return nil, fmt.Errorf("GNAS fleet runtime binding is invalid or duplicated")
+		}
+		if binding.ClientID == "" || binding.ClientID != strings.TrimSpace(binding.ClientID) || clients[binding.ClientID] || !fleetSecretEnvironmentName.MatchString(binding.ClientSecretEnv) {
+			return nil, fmt.Errorf("GNAS fleet runtime client credentials must have a unique client_id and explicit client_secret_env")
 		}
 		fileInfo, err := os.Lstat(binding.InstanceConfigPath)
 		if err != nil || !fileInfo.Mode().IsRegular() || fileInfo.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("GNAS fleet instance config must be a readable regular file and not a symlink")
 		}
-		bindings[binding.BindingID] = binding.InstanceConfigPath
+		bindings[binding.BindingID] = binding
+		clients[binding.ClientID] = true
 		paths[binding.InstanceConfigPath] = true
 	}
 	return bindings, nil
@@ -169,14 +179,18 @@ func validateGNASFleetPayload(payload gnasFleetPayload) error {
 	return nil
 }
 
-func mergeGNASFleet(payload gnasFleetPayload, runtimeBindings map[string]string, listenAddress string) ([]LoadedFleetBinding, error) {
+func mergeGNASFleet(payload gnasFleetPayload, runtimeBindings map[string]GNASFleetRuntimeBinding, listenAddress string) ([]LoadedFleetBinding, error) {
+	if strings.TrimSpace(os.Getenv("TEAM_MCP_AUTH_MODE")) != string(AuthenticationModeOAuth21) {
+		return nil, fmt.Errorf("GNAS fleet requires oauth21 authentication for tenant and resource isolation")
+	}
 	seenHosts := map[string]bool{}
 	seenSources := map[string]bool{}
 	seenStates := map[string]bool{}
 	seenSchemas := map[string]bool{}
 	loaded := make([]LoadedFleetBinding, 0, len(payload.Bindings))
 	for _, remote := range payload.Bindings {
-		instancePath := runtimeBindings[remote.BindingID]
+		local := runtimeBindings[remote.BindingID]
+		instancePath := local.InstanceConfigPath
 		if instancePath == "" || !fleetIdentifier.MatchString(remote.BindingID) || !fleetIdentifier.MatchString(remote.AuthorizationResource) || remote.Plugins.Zoop == nil {
 			return nil, fmt.Errorf("GNAS binding %q has no exact local runtime mapping", remote.BindingID)
 		}
@@ -204,8 +218,9 @@ func mergeGNASFleet(payload gnasFleetPayload, runtimeBindings map[string]string,
 		cfg, err := LoadConfigForBinding(instancePath, listenAddress, BindingOverrides{
 			PublicURL: binding.PublicURL, OIDCIssuer: oauthIssuer, AuthorizationTenant: binding.AuthorizationTenant,
 			AuthorizationResource: binding.AuthorizationResource, Plugins: binding.Plugins,
+			OAuth21Credentials: &OAuth21ClientCredentials{ClientID: local.ClientID, ClientSecret: os.Getenv(local.ClientSecretEnv)},
 		})
-		if err != nil || !listenIsLoopback(cfg.ListenAddress) {
+		if err != nil || cfg.AuthenticationMode != AuthenticationModeOAuth21 || !listenIsLoopback(cfg.ListenAddress) {
 			return nil, fmt.Errorf("GNAS binding %s runtime configuration is invalid", remote.BindingID)
 		}
 		cfg.TrustedLoopbackProxy = true

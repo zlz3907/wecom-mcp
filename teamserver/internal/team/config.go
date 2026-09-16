@@ -52,16 +52,20 @@ type Config struct {
 	TrustedLoopbackProxy          bool
 }
 
-// BindingOverrides contains only the non-secret, per-enterprise values that
-// differ when several isolated instances share one team MCP process. Secrets
-// and authentication endpoints continue to come from the protected process
-// environment.
+// BindingOverrides supplies per-enterprise values. OAuth credentials, when
+// present, are resolved from the protected process environment by the caller.
 type BindingOverrides struct {
 	PublicURL             string
 	OIDCIssuer            string
 	AuthorizationTenant   string
 	AuthorizationResource string
 	Plugins               []string
+	OAuth21Credentials    *OAuth21ClientCredentials
+}
+
+type OAuth21ClientCredentials struct {
+	ClientID     string
+	ClientSecret string
 }
 
 type AuthenticationMode string
@@ -116,6 +120,12 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 		OAuth21IntrospectionURL:       strings.TrimSpace(os.Getenv("TEAM_MCP_OAUTH21_INTROSPECTION_URL")),
 		OAuth21ClientID:               strings.TrimSpace(os.Getenv("TEAM_MCP_OAUTH21_CLIENT_ID")),
 		OAuth21ClientSecret:           os.Getenv("TEAM_MCP_OAUTH21_CLIENT_SECRET"),
+	}
+	if overrides.OAuth21Credentials != nil {
+		// Explicit binding credentials never fall back to another tenant's
+		// process-wide client, including when either field is empty.
+		cfg.OAuth21ClientID = overrides.OAuth21Credentials.ClientID
+		cfg.OAuth21ClientSecret = overrides.OAuth21Credentials.ClientSecret
 	}
 	if len(cfg.Plugins) == 0 {
 		cfg.Plugins = []string{"zoop"}
