@@ -20,13 +20,17 @@ func main() {
 	fleetPath := flag.String("fleet", "", "absolute multi-instance fleet manifest path")
 	gnasFleetRuntimePath := flag.String("gnas-fleet-runtime", "", "absolute local runtime mapping for bindings resolved from GNAS")
 	discoveryPolicy := flag.String("gnas-discovery-policy", "", "absolute shared capability policy; discovers unmapped GNAS instances; combine with --gnas-fleet-runtime to preserve protected local instances")
+	staticRecoveryURL := flag.String("gnas-static-only", "", "recover one protected runtime mapping at this exact public URL; retains Service JWT and authoritative revocation")
 	stateRoot := flag.String("gnas-state-root", "", "existing dedicated absolute state directory for database discovery")
 	gnasFleetRefresh := flag.Duration("gnas-fleet-refresh", 0, "GNAS refresh interval (minimum 5s); discovery defaults to 30s, runtime manifest defaults to disabled")
 	listenAddress := flag.String("listen", "", "listen address; defaults to TEAM_MCP_LISTEN_ADDR or 127.0.0.1:17801")
 	checkConfig := flag.Bool("check-config", false, "validate configuration and initialize local handlers without listening")
 	flag.Parse()
-	refreshExplicit := false
+	refreshExplicit, staticRecoveryExplicit := false, false
 	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "gnas-static-only" {
+			staticRecoveryExplicit = true
+		}
 		if f.Name == "gnas-fleet-refresh" {
 			refreshExplicit = true
 		}
@@ -36,6 +40,10 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if staticRecoveryExplicit && (*staticRecoveryURL == "" || *discoveryPolicy == "" || *gnasFleetRuntimePath == "") {
+		logger.Error("static recovery requires hybrid discovery configuration")
+		os.Exit(2)
+	}
 	if *gnasFleetRefresh < 0 || *gnasFleetRefresh > 0 && ((*gnasFleetRuntimePath == "" && *discoveryPolicy == "") || *gnasFleetRefresh < 5*time.Second) || *discoveryPolicy != "" && (*stateRoot == "" || *gnasFleetRefresh == 0) || *stateRoot != "" && *discoveryPolicy == "" {
 		logger.Error("invalid GNAS fleet refresh interval or mode")
 		os.Exit(2)
@@ -60,7 +68,9 @@ func main() {
 	if *discoveryPolicy != "" {
 		var discovery *team.GNASDiscovery
 		var discoveryErr error
-		if *gnasFleetRuntimePath != "" {
+		if *staticRecoveryURL != "" {
+			discovery, discoveryErr = team.NewGNASStaticRecovery(*discoveryPolicy, *stateRoot, *gnasFleetRuntimePath, *listenAddress, *staticRecoveryURL)
+		} else if *gnasFleetRuntimePath != "" {
 			discovery, discoveryErr = team.NewGNASHybridDiscovery(*discoveryPolicy, *stateRoot, *gnasFleetRuntimePath, *listenAddress)
 		} else {
 			discovery, discoveryErr = team.NewGNASDiscovery(*discoveryPolicy, *stateRoot, *listenAddress)

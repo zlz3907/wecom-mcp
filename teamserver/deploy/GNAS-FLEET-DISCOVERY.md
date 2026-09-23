@@ -70,11 +70,11 @@ GNAS 还把 Binding/企业元数据指纹绑定到现有不透明授权状态和
 
 以 [已纳入仓库的混合模式生产控制器说明](production/README.md) 为唯一执行入口。流程区分 MCP 基础设施安装、GNAS 二进制切换、GNAS 功能启用和 MCP 业务切换，各自满足精确批准和依赖门禁。禁止使用旧测试部署示例直接改 systemd/current 或旁路启动生产配置实例。
 
-候选与同提交 CI、独立 Verifier/Reviewer 通过后，管理员分别签发安装和业务 receipt。GNAS 配对候选先暂存，MCP 兼容门禁通过才可切 GNAS。MCP 必须保留 gmzoop 全能力，增加尖品客只读；先通过旧二进制只读可启动检查，再由控制器切换并完成双域名 HTTP/OAuth 合同与五分钟观察。真实员工身份和 Owner 验收单列，不能用 fake 测试或无 token HTTP 状态替代。
+候选与同提交 CI、独立 Verifier/Reviewer 通过后，管理员分别签发安装和业务 receipt。GNAS 配对候选先暂存，MCP 兼容门禁通过才可切 GNAS。MCP 必须保留 gmzoop 全能力，增加尖品客只读；先通过同版本国脉静态恢复模式只读可启动检查，再由控制器切换并完成双域名 HTTP/OAuth 合同与五分钟观察。真实员工身份和 Owner 验收单列，不能用 fake 测试或无 token HTTP 状态替代。
 
 ## 回滚
 
-优先恢复 MCP 旧二进制、drop-in 和受保护运行依赖，保留 GNAS 新版认证保护；按已批准发布流程重启。旧模式如果缺少新增 Binding 的本地运行依赖，可能仍无法启动，所以回滚可启动性必须在切换前验证，不能承诺“恢复旧文件必然成功”。不删除新 Binding、Registry、Schema、state 或业务数据。
+Owner 已明确不兼容旧 MCP 二进制，正常与失败恢复均使用新版本。恢复固定为同二进制的 `--gnas-static-only https://mcp.wesiyu.com`，保留 Service JWT、单 Binding 摘要及动态撤路由，仅跳过未映射租户发现。普通 `--fleet` 不作为合规恢复。恢复参数与 SHA 必须写入 schema v2 制品和精确 receipt，详情见 [生产发布规则](production/README.md)。GNAS 不可用、权威 payload 无效或同二进制通用崩溃时仍失败关闭，需新修复版。不删除新 Binding、Registry、Schema、state 或业务数据。
 
 GNAS 回滚需区分“保留新版二进制关闭动态开关”和“恢复完全不理解代际 namespace 的旧二进制”。后者不能直接当作等价回滚；需按配套 GNAS 文档处理 token 生命周期/密钥或等待期，且任何生产密钥、会话处理都须另获授权。发现隔离失败、现有用户回归或持续刷新失败时停止切换，保留候选和脱敏诊断证据，不盲目循环重启。
 

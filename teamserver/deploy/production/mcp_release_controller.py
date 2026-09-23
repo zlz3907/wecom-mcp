@@ -27,7 +27,7 @@ DROPIN = Path('/etc/systemd/system/wecom-mcp@gmzoop.service.d/zz-managed-release
 RUNTIME = BASE / 'instances/gmzoop/config/fleet-runtime-20260916.json'
 STATE = BASE / 'state/discovery'
 HOSTS = ('mcp.wesiyu.com', 'mcp.jianpinke.com')
-FILES = ('wecom-mcp-team', 'discovery-policy.json', 'service.conf', 'manifest.json')
+FILES = ('wecom-mcp-team', 'discovery-policy.json', 'service.conf', 'recovery.conf', 'manifest.json')
 RID = re.compile(r'^\d{8}T\d{6}Z-[a-f0-9]{12}$')
 SHA = re.compile(r'^[a-f0-9]{64}$')
 APR = re.compile(r'^APR-\d{8}T\d{6}Z-[A-Za-z0-9._-]{6,64}$')
@@ -70,12 +70,14 @@ def run(*args):
     return result.stdout.strip()
 
 
-def unit_fingerprint():
+def unit_fingerprint(exclude_managed=False):
     paths = [run('systemctl', 'show', UNIT, '-p', 'FragmentPath', '--value')]
     paths += run('systemctl', 'show', UNIT, '-p', 'DropInPaths', '--value').split()
     pairs = []
     for name in sorted(paths):
         p = Path(name)
+        if exclude_managed and p == DROPIN:
+            continue
         regular(p, True)
         pairs.append([name, sha(p)])
     return hashlib.sha256(json.dumps(pairs, separators=(',', ':')).encode()).hexdigest()
@@ -97,6 +99,17 @@ def runtime_fingerprint():
     return hashlib.sha256(json.dumps(sorted(pairs), separators=(',', ':')).encode()).hexdigest()
 
 
+def recovery_dropin(release_id):
+    require(RID.fullmatch(release_id), 'invalid release ID')
+    # Reuse the exact hybrid template and narrow it to the single approved URL.
+    return dropin(release_id).replace(b' --listen ', (' --gnas-static-only https://' + HOSTS[0] + ' --listen ').encode())
+
+
+def recovery_matches(m):
+    require(runtime_fingerprint() == m['expected_runtime_config_fingerprint'], 'protected runtime configuration drift')
+    require(unit_fingerprint(exclude_managed=True) == m['expected_unmanaged_unit_fingerprint'], 'unmanaged unit drift')
+
+
 def status():
     pid = int(run('systemctl', 'show', UNIT, '-p', 'MainPID', '--value'))
     active = run('systemctl', 'show', UNIT, '-p', 'ActiveState', '--value')
@@ -110,8 +123,8 @@ def status():
         executable = Path(paths[0])
     regular(executable, True)
     require(executable.parent.parent == RELEASES and executable.name == 'wecom-mcp-team', 'unexpected runtime path')
-    return {'environment': ENVIRONMENT, 'runtime_path': str(executable), 'binary_sha256': sha(executable),
-            'unit_fingerprint': unit_fingerprint(), 'runtime_config_fingerprint': runtime_fingerprint(), 'active': active, 'runtime_verified': verified,
+    return {'environment': ENVIRONMENT, 'main_pid': pid, 'runtime_path': str(executable), 'binary_sha256': sha(executable),
+            'unit_fingerprint': unit_fingerprint(), 'unmanaged_unit_fingerprint': unit_fingerprint(exclude_managed=True), 'runtime_config_fingerprint': runtime_fingerprint(), 'active': active, 'runtime_verified': verified,
             'restarts': int(run('systemctl', 'show', UNIT, '-p', 'NRestarts', '--value'))}
 
 
@@ -130,7 +143,7 @@ def verify(directory, release_id):
     regular(directory / 'SHA256SUMS', True)
     require((directory / 'SHA256SUMS').read_text() == ''.join(sha(directory / name) + '  ' + name + '\n' for name in sorted(FILES)), 'candidate checksum mismatch')
     m = read_json(directory / 'manifest.json', True)
-    require(m.get('schema_version') == 1 and m.get('environment') == ENVIRONMENT and m.get('release_id') == release_id, 'manifest identity mismatch')
+    require(m.get('schema_version') == 2 and m.get('environment') == ENVIRONMENT and m.get('release_id') == release_id, 'manifest identity mismatch')
     require(re.fullmatch(r'[a-f0-9]{40}', m.get('git_commit', '')) and re.fullmatch(r'[a-f0-9]{40}', m.get('git_tree', '')), 'invalid source identity')
     require(m.get('source_clean') is True and m.get('target') == 'linux/amd64', 'invalid build provenance')
     require(set(m.get('files', {})) == set(FILES[:-1]), 'unexpected artifact list')
@@ -138,6 +151,9 @@ def verify(directory, release_id):
         regular(directory / name, True)
         require(SHA.fullmatch(digest) and sha(directory / name) == digest, 'artifact digest mismatch')
     require((directory / 'service.conf').read_bytes() == dropin(release_id), 'unexpected service arguments')
+    require((directory / 'recovery.conf').read_bytes() == recovery_dropin(release_id), 'unexpected recovery arguments')
+    require(m.get('recovery_mode') == 'same-version-static' and m.get('recovery_hosts') == list(HOSTS[:1]), 'recovery scope missing')
+    require(SHA.fullmatch(m.get('expected_unmanaged_unit_fingerprint', '')), 'recovery baseline missing')
     policy = read_json(directory / 'discovery-policy.json', True)
     require(set(policy) == {'version', 'api_whitelist'} and policy['version'] == 1, 'unexpected discovery policy')
     require(m.get('expected_runtime_path', '').startswith(str(RELEASES) + '/') and SHA.fullmatch(m.get('expected_binary_sha256', '')) and SHA.fullmatch(m.get('expected_unit_fingerprint', '')) and SHA.fullmatch(m.get('expected_runtime_config_fingerprint', '')), 'rollback baseline missing')
@@ -264,6 +280,7 @@ def check_gnas(m):
 def stage(release_id):
     source, dest = INCOMING / release_id, RELEASES / release_id
     m = verify(source, release_id)
+    require(m.get('ci_url', '').startswith('https://'), 'successful same-commit CI evidence required before staging')
     require(baseline_matches(status(), m), 'live baseline drift')
     require(not dest.exists(), 'immutable release already exists')
     dest.mkdir(mode=0o750)
@@ -275,13 +292,12 @@ def stage(release_id):
     return {'state': 'staged', 'release_id': release_id, 'service_restarted': False}
 
 
-def preflight_rollback(release_id):
+def preflight_recovery(release_id):
     m = verify(RELEASES / release_id, release_id)
-    require(baseline_matches(status(), m), 'live baseline drift before rollback preflight')
-    # systemd loads the existing protected environment. Neither Python nor the
-    # caller reads it. The old binary exits before Listen or any business write.
+    recovery_matches(m)
+    # The candidate itself validates static recovery; no old binary is executed.
     run('systemd-run', '--quiet', '--wait', '--collect',
-        '--unit=wecom-mcp-rollback-check-' + release_id,
+        '--unit=wecom-mcp-recovery-check-' + release_id,
         '--property=Type=oneshot', '--property=RuntimeMaxSec=35',
         '--property=TimeoutStartSec=35', '--property=Restart=no',
         '--property=User=wecom-mcp-gmzoop', '--property=Group=wecom-mcp-gmzoop',
@@ -290,84 +306,102 @@ def preflight_rollback(release_id):
         '--property=NoNewPrivileges=yes', '--property=PrivateTmp=yes',
         '--property=ReadWritePaths=' + str(BASE / 'instances/gmzoop/data'),
         '--property=StandardOutput=null', '--property=StandardError=null',
-        m['expected_runtime_path'], '--gnas-fleet-runtime', str(RUNTIME), '--check-config')
-    require(baseline_matches(status(), m), 'live baseline drift during rollback preflight')
-    return {'state': 'rollback_preflight_passed', 'release_id': release_id, 'service_restarted': False}
+        str(RELEASES / release_id / 'wecom-mcp-team'), '--gnas-fleet-runtime', str(RUNTIME),
+        '--gnas-discovery-policy', str(RELEASES / release_id / 'discovery-policy.json'),
+        '--gnas-state-root', str(STATE), '--gnas-static-only', 'https://' + HOSTS[0],
+        '--listen', '127.0.0.1:7702', '--check-config')
+    recovery_matches(m)
+    return {'state': 'recovery_preflight_passed', 'release_id': release_id, 'service_restarted': False}
+
+
+def deploy_fields(m, directory):
+    expected = {k: m[k] for k in ('release_id', 'expected_runtime_path', 'expected_binary_sha256', 'expected_unit_fingerprint', 'expected_runtime_config_fingerprint', 'expected_gnas_release_id', 'expected_gnas_binary_sha256', 'expected_unmanaged_unit_fingerprint', 'recovery_mode', 'recovery_hosts')}
+    expected.update(binary_sha256=m['files']['wecom-mcp-team'], manifest_sha256=sha(directory / 'manifest.json'), recovery_sha256=m['files']['recovery.conf'])
+    return expected
 
 
 def deploy(release_id, approval_id):
     directory = RELEASES / release_id
     m = verify(directory, release_id)
     require(baseline_matches(status(), m), 'live baseline drift')
+    require(m.get('ci_url', '').startswith('https://'), 'successful same-commit CI evidence required before deploy')
     check_gnas(m)
-    previous = Path(m['expected_runtime_path'])
-    regular(previous, True)
-    require(sha(previous) == m['expected_binary_sha256'], 'rollback binary changed')
-    # Prove existing host's baseline before touching the effective unit.
-    healthy(str(previous), m['expected_binary_sha256'], HOSTS[:1], True)
+    healthy(m['expected_runtime_path'], m['expected_binary_sha256'], HOSTS[:1], True)
     require(STATE.is_dir() and STATE.resolve() == STATE, 'state root not provisioned')
-    expected = {k: m[k] for k in ('release_id', 'expected_runtime_path', 'expected_binary_sha256', 'expected_unit_fingerprint', 'expected_runtime_config_fingerprint', 'expected_gnas_release_id', 'expected_gnas_binary_sha256')}
-    expected.update(binary_sha256=m['files']['wecom-mcp-team'], manifest_sha256=sha(directory / 'manifest.json'))
+    expected = deploy_fields(m, directory)
     check_approval(approval_id, 'deploy', expected)
-    preflight_rollback(release_id)
+    preflight_recovery(release_id)
     require(baseline_matches(status(), m), 'live baseline drift before approval consumption')
     approval(approval_id, 'deploy', expected)
-    # Snapshot only the managed override; old protected env/drop-ins stay in place.
-    rollback = CONTROL / 'rollback' / release_id
-    rollback.mkdir(mode=0o700)
-    old = DROPIN.read_bytes() if DROPIN.exists() else None
-    if old is not None:
+    record = CONTROL / 'rollback' / release_id
+    record.mkdir(mode=0o700)
+    # Retain the original configuration as audit evidence, never as a runtime target.
+    before = dict(expected, managed_override_present=DROPIN.exists())
+    if DROPIN.exists():
         regular(DROPIN, True)
-        (rollback / 'service.conf').write_bytes(old)
-        os.chmod(rollback / 'service.conf', 0o400)
-    record = {'runtime_path': str(previous), 'binary_sha256': m['expected_binary_sha256'], 'unit_fingerprint': m['expected_unit_fingerprint'], 'managed_override_present': old is not None}
-    atomic(rollback / 'baseline.json', json.dumps(record).encode(), 0o400)
+        atomic(record / 'service.before.conf', DROPIN.read_bytes(), 0o400)
+    atomic(record / 'baseline.json', json.dumps(before).encode(), 0o400)
     require(baseline_matches(status(), m), 'live baseline drift before switch')
+    recovery_matches(m)
     try:
         atomic(DROPIN, (directory / 'service.conf').read_bytes())
         restart_and_verify(str(directory / 'wecom-mcp-team'), m['files']['wecom-mcp-team'], HOSTS, expected_config_fingerprint=m['expected_runtime_config_fingerprint'])
+        recovery_matches(m)
+        atomic(record / 'deployed.json', json.dumps({'unit_fingerprint': unit_fingerprint(), 'runtime_config_fingerprint': runtime_fingerprint()}).encode(), 0o400)
     except Exception:
         restore(release_id)
-        raise ValueError('deploy failed; approved automatic rollback completed')
-    atomic(rollback / 'deployed.json', json.dumps({'unit_fingerprint': unit_fingerprint(), 'runtime_config_fingerprint': runtime_fingerprint()}).encode(), 0o400)
+        raise ValueError('deploy failed; approved same-version static recovery completed')
     return {'state': 'deployed', 'release_id': release_id, 'observation_complete': False}
 
 
+def recovery_health(m):
+    recovery_matches(m)
+    require(sha(DROPIN) == m['files']['recovery.conf'], 'recovery override drift')
+    healthy(str(RELEASES / m['release_id'] / 'wecom-mcp-team'), m['files']['wecom-mcp-team'], HOSTS[:1])
+    for endpoint in ('/healthz', '/readyz', '/mcp', '/.well-known/oauth-protected-resource/mcp'):
+        probe(HOSTS[1], endpoint, 421)
+    probe(HOSTS[1], '/mcp', 421, True)
+
+
 def restore(release_id):
-    directory = CONTROL / 'rollback' / release_id
-    baseline = read_json(directory / 'baseline.json', True)
-    target = Path(baseline['runtime_path'])
-    regular(target, True)
-    require(sha(target) == baseline['binary_sha256'], 'rollback binary mismatch')
-    if baseline['managed_override_present']:
-        regular(directory / 'service.conf', True)
-        atomic(DROPIN, (directory / 'service.conf').read_bytes())
-    elif DROPIN.exists():
-        DROPIN.unlink()
-    run('systemctl', 'daemon-reload')
-    require(unit_fingerprint() == baseline['unit_fingerprint'], 'rollback unit fingerprint mismatch')
-    restart_and_verify(str(target), baseline['binary_sha256'], HOSTS[:1], True)
+    directory = RELEASES / release_id
+    m = verify(directory, release_id)
+    recovery_matches(m)
+    # Both the binary and the exact recovery override are immutable artifacts.
+    atomic(DROPIN, (directory / 'recovery.conf').read_bytes())
+    restart_and_verify(str(directory / 'wecom-mcp-team'), m['files']['wecom-mcp-team'], HOSTS[:1], expected_config_fingerprint=m['expected_runtime_config_fingerprint'])
+    recovery_health(m)
+    atomic(CONTROL / 'rollback' / release_id / 'recovered.json', json.dumps({'unit_fingerprint': unit_fingerprint(), 'recovery_mode': m['recovery_mode']}).encode(), 0o400)
 
 
 def rollback(release_id, approval_id):
-    m = verify(RELEASES / release_id, release_id)
+    directory = RELEASES / release_id
+    m = verify(directory, release_id)
     regular(DROPIN, True)
-    require(sha(DROPIN) == m['files']['service.conf'], 'managed override is not the rollback source')
+    require(sha(DROPIN) in (m['files']['service.conf'], m['files']['recovery.conf']), 'managed override is not an approved recovery source')
     current = status()
-    require(current['runtime_path'] == str(RELEASES / release_id / 'wecom-mcp-team') and current['binary_sha256'] == m['files']['wecom-mcp-team'], 'rollback source drift')
-    saved = read_json(CONTROL / 'rollback' / release_id / 'baseline.json', True)
-    expected = {'release_id': release_id, 'binary_sha256': current['binary_sha256'], 'expected_unit_fingerprint': current['unit_fingerprint'], 'rollback_runtime_path': saved['runtime_path'], 'rollback_binary_sha256': saved['binary_sha256']}
+    require(current['runtime_path'] == str(directory / 'wecom-mcp-team') and current['binary_sha256'] == m['files']['wecom-mcp-team'], 'recovery source drift')
+    expected = deploy_fields(m, directory)
+    expected.update(expected_unit_fingerprint=current['unit_fingerprint'], source_override_sha256=sha(DROPIN))
+    check_approval(approval_id, 'rollback', expected)
+    preflight_recovery(release_id)
+    require(status() == current, 'recovery source changed during preflight')
     approval(approval_id, 'rollback', expected)
     restore(release_id)
-    return {'state': 'rolled_back', 'release_id': release_id}
+    return {'state': 'recovered_static', 'release_id': release_id, 'observation_complete': False}
 
 
-def observe(release_id):
+def observe(release_id, recovery=False):
     m = verify(RELEASES / release_id, release_id)
-    recorded = read_json(CONTROL / 'rollback' / release_id / 'deployed.json', True)
+    recorded = read_json(CONTROL / 'rollback' / release_id / ('recovered.json' if recovery else 'deployed.json'), True)
     for index in range(11):
-        require(unit_fingerprint() == recorded['unit_fingerprint'] and runtime_fingerprint() == recorded['runtime_config_fingerprint'], 'configuration drift during observation')
-        healthy(str(RELEASES / release_id / 'wecom-mcp-team'), m['files']['wecom-mcp-team'], HOSTS)
+        require(unit_fingerprint() == recorded['unit_fingerprint'], 'configuration drift during observation')
+        recovery_matches(m)
+        if recovery:
+            recovery_health(m)
+        else:
+            require(sha(DROPIN) == m['files']['service.conf'], 'hybrid override drift')
+            healthy(str(RELEASES / release_id / 'wecom-mcp-team'), m['files']['wecom-mcp-team'], HOSTS)
         print(json.dumps({'state': 'observing', 'sample': index + 1, 'total': 11}), flush=True)
         if index < 10:
             time.sleep(30)
@@ -384,9 +418,9 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if action == 'status' and not args:
             result = status()
-        elif action in ('verify', 'stage', 'observe', 'preflight-rollback') and len(args) == 1:
+        elif action in ('verify', 'stage', 'observe', 'observe-recovery', 'preflight-recovery') and len(args) == 1:
             require(RID.fullmatch(args[0]), 'invalid release ID')
-            handlers = {'verify': lambda rid: verify(RELEASES / rid, rid), 'stage': stage, 'observe': observe, 'preflight-rollback': preflight_rollback}
+            handlers = {'verify': lambda rid: verify(RELEASES / rid, rid), 'stage': stage, 'observe': observe, 'preflight-recovery': preflight_recovery, 'observe-recovery': lambda rid: observe(rid, True)}
             result = handlers[action](args[0])
         elif action in ('deploy', 'rollback') and len(args) == 2:
             require(RID.fullmatch(args[0]), 'invalid release ID')

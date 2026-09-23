@@ -41,6 +41,7 @@ type discoveredInstance struct {
 
 type GNASDiscovery struct {
 	runtimeManifestPath string
+	staticRecoveryURL   string
 	policyPath          string
 	stateRoot           string
 	listen              string
@@ -84,6 +85,21 @@ func NewGNASHybridDiscovery(policyPath, stateRoot, runtimeManifestPath, listen s
 	return d, nil
 }
 
+// NewGNASStaticRecovery publishes only the existing mapped instance at the
+// approved URL. GNAS remains authoritative for identity and route revocation.
+func NewGNASStaticRecovery(policyPath, stateRoot, runtimeManifestPath, listen, publicURL string) (*GNASDiscovery, error) {
+	d, err := NewGNASHybridDiscovery(policyPath, stateRoot, runtimeManifestPath, listen)
+	if err != nil {
+		return nil, err
+	}
+	u, parseErr := url.Parse(publicURL)
+	if normalized, err := normalizeTeamPublicURL(publicURL); err != nil || normalized != publicURL || parseErr != nil || u.Scheme != "https" || !fleetHost.MatchString(u.Hostname()) || u.Port() != "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" {
+		return nil, fmt.Errorf("static recovery requires an exact public URL")
+	}
+	d.staticRecoveryURL = publicURL
+	return d, nil
+}
+
 func (d *GNASDiscovery) ListenAddress() string { return d.listen }
 
 func (d *GNASDiscovery) Load(ctx context.Context) ([]LoadedFleetBinding, error) {
@@ -112,6 +128,9 @@ func (d *GNASDiscovery) assemble(ctx context.Context, payload gnasFleetPayload, 
 }
 
 func (d *GNASDiscovery) assembleWithLocals(ctx context.Context, payload gnasFleetPayload, policy DiscoveryPolicy, locals map[string]GNASFleetRuntimeBinding) ([]LoadedFleetBinding, error) {
+	if d.staticRecoveryURL != "" && len(locals) != 1 {
+		return nil, fmt.Errorf("static recovery requires exactly one protected local mapping")
+	}
 	if err := validateGNASFleetPayload(payload); err != nil {
 		return nil, err
 	}
@@ -139,11 +158,17 @@ func (d *GNASDiscovery) assembleWithLocals(ctx context.Context, payload gnasFlee
 	loaded := make([]LoadedFleetBinding, 0, len(payload.Bindings))
 	for _, b := range payload.Bindings {
 		if local, ok := locals[b.BindingID]; ok {
+			if d.staticRecoveryURL != "" && b.PublicResource != d.staticRecoveryURL {
+				return nil, fmt.Errorf("static recovery public resource drift")
+			}
 			binding, err := d.localBinding(b, local)
 			if err != nil {
 				return nil, err
 			}
 			loaded = append(loaded, binding)
+			continue
+		}
+		if d.staticRecoveryURL != "" {
 			continue
 		}
 		runtime := d.runtimeFor(b, policy)
