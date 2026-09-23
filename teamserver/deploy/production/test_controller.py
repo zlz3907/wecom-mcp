@@ -69,16 +69,16 @@ class ControllerTests(unittest.TestCase):
         control=self.root/'control';(control/'rollback').mkdir(parents=True)
         state=self.root/'state';state.mkdir()
         override=self.root/'service.conf'
-        m={'release_id':rid,'expected_runtime_path':str(previous),'expected_binary_sha256':c.sha(previous),'expected_unit_fingerprint':'b'*64,'expected_runtime_config_fingerprint':'e'*64,'expected_gnas_release_id':'gnas','expected_gnas_binary_sha256':'c'*64,'files':{'wecom-mcp-team':'d'*64}}
+        m={'ci_url':'https://ci.example/run','release_id':rid,'expected_runtime_path':str(previous),'expected_binary_sha256':c.sha(previous),'expected_unit_fingerprint':'b'*64,'expected_runtime_config_fingerprint':'e'*64,'expected_unmanaged_unit_fingerprint':'f'*64,'recovery_mode':'same-version-static','recovery_hosts':list(c.HOSTS[:1]),'expected_gnas_release_id':'gnas','expected_gnas_binary_sha256':'c'*64,'files':{'wecom-mcp-team':'d'*64,'recovery.conf':'f'*64}}
         original=c.regular
-        with patch.object(c,'RELEASES',releases),patch.object(c,'CONTROL',control),patch.object(c,'STATE',state),patch.object(c,'DROPIN',override),patch.object(c,'verify',return_value=m),patch.object(c,'status'),patch.object(c,'baseline_matches',return_value=True),patch.object(c,'check_gnas'),patch.object(c,'healthy'),patch.object(c,'regular',side_effect=lambda p,root=False:original(p,False)),patch.object(c,'check_approval'),patch.object(c,'preflight_rollback'),patch.object(c,'approval'),patch.object(c,'restart_and_verify',side_effect=ValueError('test failure')),patch.object(c,'restore') as restore:
-            with self.assertRaisesRegex(ValueError,'automatic rollback completed'):c.deploy(rid,'APR-20260923T080000Z-testonly')
+        with patch.object(c,'RELEASES',releases),patch.object(c,'CONTROL',control),patch.object(c,'STATE',state),patch.object(c,'DROPIN',override),patch.object(c,'verify',return_value=m),patch.object(c,'status'),patch.object(c,'baseline_matches',return_value=True),patch.object(c,'check_gnas'),patch.object(c,'healthy'),patch.object(c,'regular',side_effect=lambda p,root=False:original(p,False)),patch.object(c,'check_approval'),patch.object(c,'preflight_recovery'),patch.object(c,'recovery_matches'),patch.object(c,'approval'),patch.object(c,'restart_and_verify',side_effect=ValueError('test failure')),patch.object(c,'restore') as restore:
+            with self.assertRaisesRegex(ValueError,'same-version static recovery completed'):c.deploy(rid,'APR-20260923T080000Z-testonly')
             restore.assert_called_once_with(rid)
             self.assertTrue((control/'rollback'/rid/'baseline.json').exists())
 
     def test_observation_has_eleven_samples_and_ten_intervals(self):
-        m={'files':{'wecom-mcp-team':'a'*64}}
-        with patch.object(c,'verify',return_value=m),patch.object(c,'read_json',return_value={'unit_fingerprint':'u','runtime_config_fingerprint':'r'}),patch.object(c,'unit_fingerprint',return_value='u'),patch.object(c,'runtime_fingerprint',return_value='r'),patch.object(c,'healthy') as healthy,patch.object(c.time,'sleep') as sleep,patch('builtins.print'):
+        m={'files':{'wecom-mcp-team':'a'*64,'service.conf':'s'}}
+        with patch.object(c,'verify',return_value=m),patch.object(c,'read_json',return_value={'unit_fingerprint':'u','runtime_config_fingerprint':'r'}),patch.object(c,'unit_fingerprint',return_value='u'),patch.object(c,'runtime_fingerprint',return_value='r'),patch.object(c,'recovery_matches'),patch.object(c,'sha',return_value='s'),patch.object(c,'healthy') as healthy,patch.object(c.time,'sleep') as sleep,patch('builtins.print'):
             result=c.observe('20260923T080000Z-'+'a'*12)
             self.assertEqual(healthy.call_count,11);self.assertEqual(sleep.call_count,10)
             sleep.assert_called_with(30);self.assertFalse(result['owner_accepted'])
@@ -91,39 +91,27 @@ class ControllerTests(unittest.TestCase):
         with patch.object(c,'run'),patch.object(c,'status',return_value=current),patch.object(c,'unit_fingerprint',return_value='u'),patch.object(c,'runtime_fingerprint',return_value='r'),patch.object(c,'healthy',side_effect=OSError('not ready')),patch.object(c.time,'monotonic',side_effect=[0,46]):
             with self.assertRaisesRegex(ValueError,'deadline'):c.restart_and_verify('/expected','a'*64,c.HOSTS)
 
-    def test_dead_candidate_can_rollback_only_exact_override(self):
-        rid='20260923T080000Z-'+'a'*12
-        override=self.root/'override.conf';override.write_bytes(c.dropin(rid))
-        m={'files':{'wecom-mcp-team':'a'*64,'service.conf':c.sha(override)}}
-        current={'runtime_path':str(c.RELEASES/rid/'wecom-mcp-team'),'binary_sha256':'a'*64,'unit_fingerprint':'u','active':'failed','runtime_verified':False,'restarts':3}
-        saved={'runtime_path':'/old','binary_sha256':'b'*64}
-        original=c.regular
-        with patch.object(c,'DROPIN',override),patch.object(c,'verify',return_value=m),patch.object(c,'status',return_value=current),patch.object(c,'read_json',return_value=saved),patch.object(c,'regular',side_effect=lambda p,root=False:original(p,False)),patch.object(c,'approval') as approval,patch.object(c,'restore') as restore:
-            self.assertEqual(c.rollback(rid,'APR-20260923T080000Z-testonly')['state'],'rolled_back')
-            restore.assert_called_once_with(rid)
-            override.write_bytes(b'unexpected configuration')
-            with self.assertRaises(ValueError):c.rollback(rid,'APR-20260923T080000Z-otherone')
-            self.assertEqual(approval.call_count,1)
-
     def test_unverified_process_cannot_pass_health(self):
         current=dict(active='active',restarts=0,runtime_path='/expected',binary_sha256='a'*64,runtime_verified=False)
         with patch.object(c,'status',return_value=current),patch.object(c,'probe') as probe:
             with self.assertRaises(ValueError):c.healthy('/expected','a'*64,c.HOSTS)
             probe.assert_not_called()
 
-    def test_old_binary_preflight_is_read_only_and_failure_keeps_live_unit(self):
+    def test_new_binary_preflight_is_read_only_and_failure_keeps_live_unit(self):
         rid='20260923T080000Z-'+'a'*12
-        m={'expected_runtime_path':'/fixed/old/wecom-mcp-team'}
-        with patch.object(c,'verify',return_value=m),patch.object(c,'status'),patch.object(c,'baseline_matches',return_value=True),patch.object(c,'run') as run:
-            c.preflight_rollback(rid)
+        with patch.object(c,'verify',return_value={}),patch.object(c,'recovery_matches'),patch.object(c,'run') as run:
+            c.preflight_recovery(rid)
             args=run.call_args.args
             self.assertEqual(args[0],'systemd-run')
-            self.assertEqual(args[-4:],('/fixed/old/wecom-mcp-team','--gnas-fleet-runtime',str(c.RUNTIME),'--check-config'))
+            self.assertIn(str(c.RELEASES/rid/'wecom-mcp-team'),args)
+            self.assertIn('--gnas-static-only',args)
+            self.assertNotIn('--fleet',args)
+            self.assertEqual(args[-1],'--check-config')
             self.assertIn('--property=StandardOutput=null',args)
             self.assertIn('--property=StandardError=null',args)
             self.assertNotIn('restart',args)
             run.side_effect=ValueError('controlled check failed')
-            with self.assertRaises(ValueError):c.preflight_rollback(rid)
+            with self.assertRaises(ValueError):c.preflight_recovery(rid)
 
     def test_approved_configuration_drift_refuses_restart(self):
         with patch.object(c,'run') as run,patch.object(c,'unit_fingerprint',return_value='u'),patch.object(c,'runtime_fingerprint',return_value='changed'):

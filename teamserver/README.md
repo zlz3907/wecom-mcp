@@ -38,6 +38,8 @@ fleet 不保存企业微信 Secret。启动时会回读每个实例配置并验�
 
 共享生产使用混合模式：同时传入 `--gnas-fleet-runtime` 和 `--gnas-discovery-policy`，manifest 中已有 Binding 保留原完整工具能力、operator、AI 执行主体及 schema/state 路径，未映射 Binding 动态发现为只读。静态 Source/Registry 不匹配或配置失效时拒绝，绝不降级为 reader；所有实例以 Service JWT 和单 Binding 摘要校验。受保护配置漂移使相应 handler 返回503，下一次完整刷新重新验证。发布、基础设施安装和回滚门禁见 [混合模式生产发布](deploy/production/README.md)。
 
+同版本恢复可在混合参数上增加 `--gnas-static-only https://<approved-host>`：runtime manifest 必须仅有一个静态映射，仍使用 Service JWT、单 Binding 摘要、完整权威校验和动态撤路由，只跳过未映射租户发现。普通 `--fleet` 的配置检查通过不能替代这套恢复合同。恢复范围和限制见上述生产发布文档。
+
 两种 GNAS 模式均可使用 `--gnas-fleet-refresh 30s`；旧 runtime 模式默认 0，保留启动时加载行为。完整候选成功后原子切换 Host 路由，未变更的 handler 复用；变更前返回 503 并有界排空旧请求，排空最多 10 秒。刷新失败时已有 Host 全部返回 503，未知 Host 为 421，完整成功后恢复。发现模式接受带正确摘要的空数组并撤下全部租户；错误响应、null 和摘要错误绝不当作空集合。`--check-config` 仅首次加载及只读核验，不启动监听或循环。完整根因、接口边界、发布及回滚步骤见 [数据库自动发现候选](deploy/GNAS-FLEET-DISCOVERY.md)。
 
 `zoop` 只决定该实例是否暴露 Zoop 初始化、九表、Z-S00 和记录治理工具。员工目录、受控企业微信 API、单人消息及 `SMART_SHEETS_IDS` bootstrap 属于通用企业微信层。旧单实例模式默认启用 Zoop，保持原工具兼容。
