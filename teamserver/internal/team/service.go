@@ -47,6 +47,9 @@ func NewServiceWithAuthorizationResolver(cfg Config, logger *slog.Logger, resolv
 }
 
 func newService(cfg Config, logger *slog.Logger, resolver AuthorizationResolver) (*Service, error) {
+	if cfg.Runtime != nil && cfg.BoundRuntime != nil || cfg.OAuth21ServiceJWT && (cfg.Runtime == nil && cfg.BoundRuntime == nil || !bindingDigestPattern.MatchString(cfg.GNASBindingDigest)) {
+		return nil, fmt.Errorf("Service JWT requires a single bound runtime and Binding digest")
+	}
 	if len(cfg.AuditHMACKey) < 32 {
 		return nil, fmt.Errorf("audit HMAC key must contain at least 32 bytes")
 	}
@@ -69,6 +72,12 @@ func newService(cfg Config, logger *slog.Logger, resolver AuthorizationResolver)
 		}
 	}
 	legacy := legacymcp.New(cfg.InstanceConfigPath)
+	if cfg.BoundRuntime != nil {
+		legacy, err = legacymcp.NewWithBoundConfig(cfg.InstanceConfigPath, *cfg.BoundRuntime)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if cfg.Runtime != nil {
 		legacy, err = legacymcp.NewWithRuntime(*cfg.Runtime)
 		if err != nil {
@@ -143,7 +152,13 @@ func (s *Service) Handler(verifier sdkauth.TokenVerifier) http.Handler {
 	}
 	mux.HandleFunc("/healthz", s.health)
 	mux.HandleFunc("/readyz", s.ready)
-	return requestIDMiddleware(securityHeaders(mux))
+	return requestIDMiddleware(securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.legacy.CheckBoundRuntime(); err != nil {
+			writeStatus(w, http.StatusServiceUnavailable, "not_ready")
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})))
 }
 
 func (s *Service) serverForRole(role Role) *sdkmcp.Server {
@@ -387,6 +402,12 @@ func (s *Service) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Service) ready(w http.ResponseWriter, _ *http.Request) {
+	// Bound local instances were checked through the same Store in Handler;
+	// its controlled lifecycle writes may legitimately update the snapshot.
+	if s.config.BoundRuntime != nil {
+		writeStatus(w, http.StatusOK, "ready")
+		return
+	}
 	if err := CheckRuntimeSource(s.config); err != nil {
 		writeStatus(w, http.StatusServiceUnavailable, "not_ready")
 		return
@@ -398,6 +419,18 @@ func (s *Service) ready(w http.ResponseWriter, _ *http.Request) {
 // its fixed GNAS Source can construct a managed WeCom client. It performs no
 // remote request and exposes no source or credential value.
 func CheckRuntimeSource(cfg Config) error {
+	if cfg.BoundRuntime != nil {
+		store, err := config.NewBoundStore(cfg.InstanceConfigPath, *cfg.BoundRuntime)
+		if err != nil {
+			return err
+		}
+		runtime, err := store.Current()
+		if err != nil {
+			return err
+		}
+		_, err = wecom.NewFromEnvironment(runtime.TenantRoute)
+		return err
+	}
 	if cfg.Runtime != nil {
 		if err := cfg.Runtime.Validate(); err != nil {
 			return err

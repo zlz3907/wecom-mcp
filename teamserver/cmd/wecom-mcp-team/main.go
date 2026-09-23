@@ -19,7 +19,7 @@ func main() {
 	configPath := flag.String("config", "", "absolute fixed-tenant instance configuration path")
 	fleetPath := flag.String("fleet", "", "absolute multi-instance fleet manifest path")
 	gnasFleetRuntimePath := flag.String("gnas-fleet-runtime", "", "absolute local runtime mapping for bindings resolved from GNAS")
-	discoveryPolicy := flag.String("gnas-discovery-policy", "", "absolute shared capability policy; discovers all instances from GNAS without tenant files")
+	discoveryPolicy := flag.String("gnas-discovery-policy", "", "absolute shared capability policy; discovers unmapped GNAS instances; combine with --gnas-fleet-runtime to preserve protected local instances")
 	stateRoot := flag.String("gnas-state-root", "", "existing dedicated absolute state directory for database discovery")
 	gnasFleetRefresh := flag.Duration("gnas-fleet-refresh", 0, "GNAS refresh interval (minimum 5s); discovery defaults to 30s, runtime manifest defaults to disabled")
 	listenAddress := flag.String("listen", "", "listen address; defaults to TEAM_MCP_LISTEN_ADDR or 127.0.0.1:17801")
@@ -46,6 +46,9 @@ func main() {
 			configuredModes++
 		}
 	}
+	if *discoveryPolicy != "" && *gnasFleetRuntimePath != "" {
+		configuredModes--
+	}
 	if configuredModes != 1 {
 		logger.Error("invalid team MCP configuration", "error", "exactly one of --config, --fleet, --gnas-fleet-runtime or --gnas-discovery-policy is required")
 		os.Exit(2)
@@ -55,7 +58,13 @@ func main() {
 	var err error
 	var refreshingFleet *team.RefreshingFleet
 	if *discoveryPolicy != "" {
-		discovery, discoveryErr := team.NewGNASDiscovery(*discoveryPolicy, *stateRoot, *listenAddress)
+		var discovery *team.GNASDiscovery
+		var discoveryErr error
+		if *gnasFleetRuntimePath != "" {
+			discovery, discoveryErr = team.NewGNASHybridDiscovery(*discoveryPolicy, *stateRoot, *gnasFleetRuntimePath, *listenAddress)
+		} else {
+			discovery, discoveryErr = team.NewGNASDiscovery(*discoveryPolicy, *stateRoot, *listenAddress)
+		}
 		if discoveryErr != nil {
 			logger.Error("invalid GNAS discovery configuration", "error", discoveryErr)
 			os.Exit(2)

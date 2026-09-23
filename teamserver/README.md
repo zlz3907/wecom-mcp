@@ -36,6 +36,8 @@ fleet 不保存企业微信 Secret。启动时会回读每个实例配置并验�
 
 新增数据库自动发现模式：`--gnas-discovery-policy /absolute/shared-policy.json --gnas-state-root /absolute/state-root`。共享 policy 仅保存能力白名单，不含任何租户清单、路径、Registry 或 OAuth 客户端。MCP 通过同一 GNAS 服务身份读取 Binding、核验已有 Registry/Z-S00、创建不可变内存实例，并调用配套 `introspectMCPTokenV1`；无需逐租户本地文件或 OAuth Basic 密钥。此模式默认每 30 秒刷新，允许最短 5 秒，不允许关闭刷新，必须配套新版 GNAS。现有能力策略与 AI 执行主体并不在 Binding 契约中，因此当前发现模式只发布查询工具；初始化和业务写入保持关闭，不能直接当作旧写入实例的等价替换。
 
+共享生产使用混合模式：同时传入 `--gnas-fleet-runtime` 和 `--gnas-discovery-policy`，manifest 中已有 Binding 保留原完整工具能力、operator、AI 执行主体及 schema/state 路径，未映射 Binding 动态发现为只读。静态 Source/Registry 不匹配或配置失效时拒绝，绝不降级为 reader；所有实例以 Service JWT 和单 Binding 摘要校验。受保护配置漂移使相应 handler 返回503，下一次完整刷新重新验证。发布、基础设施安装和回滚门禁见 [混合模式生产发布](deploy/production/README.md)。
+
 两种 GNAS 模式均可使用 `--gnas-fleet-refresh 30s`；旧 runtime 模式默认 0，保留启动时加载行为。完整候选成功后原子切换 Host 路由，未变更的 handler 复用；变更前返回 503 并有界排空旧请求，排空最多 10 秒。刷新失败时已有 Host 全部返回 503，未知 Host 为 421，完整成功后恢复。发现模式接受带正确摘要的空数组并撤下全部租户；错误响应、null 和摘要错误绝不当作空集合。`--check-config` 仅首次加载及只读核验，不启动监听或循环。完整根因、接口边界、发布及回滚步骤见 [数据库自动发现候选](deploy/GNAS-FLEET-DISCOVERY.md)。
 
 `zoop` 只决定该实例是否暴露 Zoop 初始化、九表、Z-S00 和记录治理工具。员工目录、受控企业微信 API、单人消息及 `SMART_SHEETS_IDS` bootstrap 属于通用企业微信层。旧单实例模式默认启用 Zoop，保持原工具兼容。

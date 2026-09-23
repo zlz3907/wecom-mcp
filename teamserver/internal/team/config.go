@@ -15,6 +15,7 @@ import (
 )
 
 type Config struct {
+	BoundRuntime                  *instanceconfig.Config
 	Runtime                       *instanceconfig.Config
 	OAuth21ServiceJWT             bool
 	GNASBindingDigest             string
@@ -60,6 +61,7 @@ type Config struct {
 // BindingOverrides supplies per-enterprise values. OAuth credentials, when
 // present, are resolved from the protected process environment by the caller.
 type BindingOverrides struct {
+	BoundRuntime          *instanceconfig.Config
 	Runtime               *instanceconfig.Config
 	OAuth21ServiceJWT     bool
 	GNASBindingDigest     string
@@ -96,6 +98,7 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 	}
 	cfg := Config{
 		Runtime:                       overrides.Runtime,
+		BoundRuntime:                  overrides.BoundRuntime,
 		OAuth21ServiceJWT:             overrides.OAuth21ServiceJWT,
 		GNASBindingDigest:             overrides.GNASBindingDigest,
 		InstanceConfigPath:            instanceConfigPath,
@@ -149,6 +152,14 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 			return Config{}, err
 		}
 	}
+	if cfg.BoundRuntime != nil {
+		if cfg.Runtime != nil || cfg.InstanceConfigPath == "" {
+			return Config{}, fmt.Errorf("bound local runtime requires only a protected file")
+		}
+		if _, err := instanceconfig.NewBoundStore(cfg.InstanceConfigPath, *cfg.BoundRuntime); err != nil {
+			return Config{}, err
+		}
+	}
 	if cfg.OAuth21ServiceJWT {
 		// The discovery service identity must be the same identity that
 		// introspects a token; process-wide authorization overrides cannot
@@ -158,7 +169,7 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 		cfg.AuthorizationServiceAppSecret = os.Getenv("GNAS_APP_SECRET")
 		cfg.OAuth21IntrospectionURL = gnasServiceURL(gnasBaseURL, "/gnas/service/introspectMCPTokenV1")
 		cfg.OAuth21ClientID, cfg.OAuth21ClientSecret = "", ""
-		if cfg.AuthenticationMode != AuthenticationModeOAuth21 || cfg.Runtime == nil || !bindingDigestPattern.MatchString(cfg.GNASBindingDigest) || cfg.AuthorizationTokenEndpoint == "" || cfg.AuthorizationServiceAppID == "" || cfg.AuthorizationServiceAppSecret == "" {
+		if cfg.AuthenticationMode != AuthenticationModeOAuth21 || (cfg.Runtime == nil && cfg.BoundRuntime == nil) || !bindingDigestPattern.MatchString(cfg.GNASBindingDigest) || cfg.AuthorizationTokenEndpoint == "" || cfg.AuthorizationServiceAppID == "" || cfg.AuthorizationServiceAppSecret == "" {
 			return Config{}, fmt.Errorf("GNAS discovery introspection configuration is incomplete")
 		}
 	}

@@ -144,6 +144,10 @@ func load(path string, requireRegistry bool) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("读取实例配置失败: %w", err)
 	}
+	return decodeConfig(data, requireRegistry)
+}
+
+func decodeConfig(data []byte, requireRegistry bool) (Config, error) {
 	var result Config
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -203,14 +207,64 @@ func (c Config) Digest() string {
 // Store re-reads configuration whenever its modification time changes. A bad
 // replacement fails closed rather than silently using an earlier allowlist.
 type Store struct {
-	snapshot *Config
-	path     string
-	mu       sync.Mutex
-	lastMod  int64
-	cached   Config
+	snapshot    *Config
+	boundDigest string
+	path        string
+	mu          sync.Mutex
+	lastMod     int64
+	cached      Config
 }
 
 func NewStore(path string) *Store { return &Store{path: path} }
+
+// NewBoundStore preserves local lifecycle operations while pinning every read
+// to the exact protected configuration checked for this routing generation.
+func NewBoundStore(path string, expected Config) (*Store, error) {
+	if err := expected.Validate(); err != nil {
+		return nil, err
+	}
+	s := &Store{path: path, boundDigest: expected.Digest()}
+	if _, err := s.Current(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Store) loadBound(requireRegistry bool) (Config, error) {
+	before, err := os.Lstat(s.path)
+	if err != nil || !before.Mode().IsRegular() {
+		return Config{}, fmt.Errorf("bound configuration must be a regular file")
+	}
+	file, err := openBoundConfig(s.path)
+	if err != nil {
+		return Config{}, fmt.Errorf("bound configuration unavailable")
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	link, linkErr := os.Lstat(s.path)
+	if err != nil || linkErr != nil || !link.Mode().IsRegular() || !info.Mode().IsRegular() || !os.SameFile(info, link) || info.Size() > 1<<20 {
+		return Config{}, fmt.Errorf("bound configuration must be a bounded regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	if err != nil || len(data) > 1<<20 {
+		return Config{}, fmt.Errorf("bound configuration read failed")
+	}
+	cfg, err := decodeConfig(data, requireRegistry)
+	if err != nil {
+		return Config{}, err
+	}
+	if cfg.Digest() != s.boundDigest {
+		return Config{}, fmt.Errorf("protected instance changed; waiting for a verified fleet refresh")
+	}
+	return cloneConfig(cfg), nil
+}
+
+func (s *Store) loadForUpdate() (Config, error) {
+	if s.boundDigest != "" {
+		return s.loadBound(false)
+	}
+	return LoadBootstrapCandidate(s.path)
+}
 
 // NewSnapshotStore fixes a database-derived instance for the lifetime of one
 // server generation. It has no writable local configuration file.
@@ -237,7 +291,7 @@ func (s *Store) BootstrapCandidate() (Config, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return LoadBootstrapCandidate(s.path)
+	return s.loadForUpdate()
 }
 
 // PersistRegistryDocumentID atomically fills an empty registry_document_id.
@@ -252,7 +306,7 @@ func (s *Store) PersistRegistryDocumentID(documentID string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	current, err := LoadBootstrapCandidate(s.path)
+	current, err := s.loadForUpdate()
 	if err != nil {
 		return err
 	}
@@ -300,6 +354,9 @@ func (s *Store) PersistRegistryDocumentID(documentID string) error {
 	}
 	s.cached = Config{}
 	s.lastMod = 0
+	if s.boundDigest != "" {
+		s.boundDigest = current.Digest()
+	}
 	return nil
 }
 
@@ -327,7 +384,7 @@ func (s *Store) CommitInitialized(commit InitializationCommit) (string, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	current, err := LoadBootstrapCandidate(s.path)
+	current, err := s.loadForUpdate()
 	if err != nil {
 		return "", err
 	}
@@ -387,6 +444,9 @@ func (s *Store) CommitInitialized(commit InitializationCommit) (string, error) {
 	}
 	s.cached = Config{}
 	s.lastMod = 0
+	if s.boundDigest != "" {
+		s.boundDigest = current.Digest()
+	}
 	return backupPath, nil
 }
 
@@ -442,6 +502,9 @@ func (s *Store) Current() (Config, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.boundDigest != "" {
+		return s.loadBound(true)
+	}
 	info, err := os.Stat(s.path)
 	if err != nil {
 		return Config{}, fmt.Errorf("读取实例配置状态失败: %w", err)

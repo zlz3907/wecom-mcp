@@ -40,12 +40,13 @@ type discoveredInstance struct {
 }
 
 type GNASDiscovery struct {
-	policyPath  string
-	stateRoot   string
-	listen      string
-	mu          sync.Mutex
-	instances   map[string]discoveredInstance
-	resolveName func(context.Context, instanceconfig.Config) (string, error)
+	runtimeManifestPath string
+	policyPath          string
+	stateRoot           string
+	listen              string
+	mu                  sync.Mutex
+	instances           map[string]discoveredInstance
+	resolveName         func(context.Context, instanceconfig.Config) (string, error)
 }
 
 func NewGNASDiscovery(policyPath, stateRoot, listen string) (*GNASDiscovery, error) {
@@ -69,6 +70,20 @@ func NewGNASDiscovery(policyPath, stateRoot, listen string) (*GNASDiscovery, err
 	return &GNASDiscovery{policyPath: policyPath, stateRoot: stateRoot, listen: listen, instances: map[string]discoveredInstance{}, resolveName: legacymcp.ResolveDiscoveredInstanceName}, nil
 }
 
+// NewGNASHybridDiscovery keeps explicitly mapped local instances at full
+// capability while discovering unmapped bindings as reader-only instances.
+func NewGNASHybridDiscovery(policyPath, stateRoot, runtimeManifestPath, listen string) (*GNASDiscovery, error) {
+	d, err := NewGNASDiscovery(policyPath, stateRoot, listen)
+	if err != nil {
+		return nil, err
+	}
+	if !filepath.IsAbs(runtimeManifestPath) {
+		return nil, fmt.Errorf("hybrid runtime manifest must be absolute")
+	}
+	d.runtimeManifestPath = runtimeManifestPath
+	return d, nil
+}
+
 func (d *GNASDiscovery) ListenAddress() string { return d.listen }
 
 func (d *GNASDiscovery) Load(ctx context.Context) ([]LoadedFleetBinding, error) {
@@ -82,10 +97,21 @@ func (d *GNASDiscovery) Load(ctx context.Context) ([]LoadedFleetBinding, error) 
 	if err != nil {
 		return nil, err
 	}
-	return d.assemble(ctx, payload, policy)
+	var locals map[string]GNASFleetRuntimeBinding
+	if d.runtimeManifestPath != "" {
+		locals, err = loadGNASFleetRuntimeManifest(d.runtimeManifestPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return d.assembleWithLocals(ctx, payload, policy, locals)
 }
 
 func (d *GNASDiscovery) assemble(ctx context.Context, payload gnasFleetPayload, policy DiscoveryPolicy) ([]LoadedFleetBinding, error) {
+	return d.assembleWithLocals(ctx, payload, policy, nil)
+}
+
+func (d *GNASDiscovery) assembleWithLocals(ctx context.Context, payload gnasFleetPayload, policy DiscoveryPolicy, locals map[string]GNASFleetRuntimeBinding) ([]LoadedFleetBinding, error) {
 	if err := validateGNASFleetPayload(payload); err != nil {
 		return nil, err
 	}
@@ -112,6 +138,14 @@ func (d *GNASDiscovery) assemble(ctx context.Context, payload gnasFleetPayload, 
 	instances := make(map[string]discoveredInstance, len(payload.Bindings))
 	loaded := make([]LoadedFleetBinding, 0, len(payload.Bindings))
 	for _, b := range payload.Bindings {
+		if local, ok := locals[b.BindingID]; ok {
+			binding, err := d.localBinding(b, local)
+			if err != nil {
+				return nil, err
+			}
+			loaded = append(loaded, binding)
+			continue
+		}
 		runtime := d.runtimeFor(b, policy)
 		cached, ok := d.instances[b.BindingID]
 		if !ok || !reflect.DeepEqual(cached.binding, b) {
@@ -144,6 +178,9 @@ func (d *GNASDiscovery) assemble(ctx context.Context, payload gnasFleetPayload, 
 		}, Config: cfg})
 	}
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := validateHybridStorage(loaded); err != nil {
 		return nil, err
 	}
 	d.instances = instances
@@ -187,4 +224,60 @@ func loadDiscoveryPolicy(path string) (DiscoveryPolicy, error) {
 		return DiscoveryPolicy{}, fmt.Errorf("discovery policy must permit Registry reads and contain only supported operations")
 	}
 	return policy, nil
+}
+
+func (d *GNASDiscovery) localBinding(b gnasFleetBinding, local GNASFleetRuntimeBinding) (LoadedFleetBinding, error) {
+	runtime, err := instanceconfig.Load(local.InstanceConfigPath)
+	if err != nil || runtime.TenantRoute != b.Source || runtime.RegistryDocumentID != b.Plugins.Zoop.RegistryDocumentID || runtime.RegistryKey != b.Plugins.Zoop.RegistryKey {
+		return LoadedFleetBinding{}, fmt.Errorf("protected local instance does not match the authoritative Binding")
+	}
+	u, _ := url.Parse(b.PublicResource)
+	cfg, err := LoadConfigForBinding(local.InstanceConfigPath, d.listen, BindingOverrides{
+		BoundRuntime: &runtime, OAuth21ServiceJWT: true, GNASBindingDigest: gnasBindingDigest(b),
+		PublicURL: b.PublicResource, OIDCIssuer: "https://" + u.Host + "/gnas/oauth", AuthorizationTenant: b.BindingID, AuthorizationResource: b.AuthorizationResource, Plugins: []string{"zoop"},
+	})
+	if err != nil {
+		return LoadedFleetBinding{}, fmt.Errorf("hybrid local runtime configuration invalid")
+	}
+	if err := CheckRuntimeSource(cfg); err != nil {
+		return LoadedFleetBinding{}, fmt.Errorf("hybrid local Source configuration invalid")
+	}
+	cfg.TrustedLoopbackProxy = true
+	return LoadedFleetBinding{Binding: FleetBinding{BindingID: b.BindingID, Hosts: []string{u.Hostname()}, PublicURL: b.PublicResource, AuthorizationTenant: b.BindingID, AuthorizationResource: b.AuthorizationResource, Source: b.Source, InstanceConfigPath: local.InstanceConfigPath, Plugins: []string{"zoop"}}, Config: cfg}, nil
+}
+
+// Config, state and schema paths cannot alias any other tenant's artifacts.
+func validateHybridStorage(bindings []LoadedFleetBinding) error {
+	names, paths := map[string]bool{}, map[string]bool{}
+	for _, b := range bindings {
+		runtime := b.Config.Runtime
+		if b.Config.BoundRuntime != nil {
+			runtime = b.Config.BoundRuntime
+		}
+		if runtime == nil || names[runtime.InstanceName] {
+			return fmt.Errorf("hybrid instance name duplicated or missing")
+		}
+		names[runtime.InstanceName] = true
+		for _, p := range []string{b.Config.InstanceConfigPath, runtime.StatePath, runtime.SchemaMirrorPath} {
+			if p == "" {
+				continue
+			}
+			if !filepath.IsAbs(p) || filepath.Clean(p) != p || paths[p] {
+				return fmt.Errorf("hybrid instance storage aliases another artifact")
+			}
+			resolved, err := filepath.EvalSymlinks(p)
+			if os.IsNotExist(err) {
+				parent, parentErr := filepath.EvalSymlinks(filepath.Dir(p))
+				if parentErr != nil {
+					return fmt.Errorf("hybrid storage parent must exist")
+				}
+				resolved, err = filepath.Join(parent, filepath.Base(p)), nil
+			}
+			if err != nil || resolved != p {
+				return fmt.Errorf("hybrid storage must not use symlink aliases")
+			}
+			paths[p] = true
+		}
+	}
+	return nil
 }

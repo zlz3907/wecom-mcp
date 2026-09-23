@@ -53,6 +53,8 @@ jobs:
         with:
           go-version-file: teamserver/go.mod
           cache-dependency-path: teamserver/go.sum
+      - name: Release controller offline tests
+        run: python3 -B -m unittest discover -s deploy/production -p 'test_*.py'
       - name: Verify modules
         run: go mod verify
       - name: Go tests

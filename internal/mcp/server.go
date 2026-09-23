@@ -23,6 +23,7 @@ import (
 var validRoles = map[string]struct{}{"Z-S01": {}, "Z-S02": {}, "Z-S03": {}, "Z-S04": {}, "Z-S05": {}, "Z-S06": {}, "Z-S07": {}, "Z-S08": {}, "Z-S09": {}}
 
 type Server struct {
+	bound               bool
 	discovered          bool
 	store               *config.Store
 	stateMu             sync.Mutex
@@ -36,6 +37,24 @@ type Server struct {
 }
 
 func New(configPath string) *Server { return &Server{store: config.NewStore(configPath)} }
+
+func NewWithBoundConfig(path string, expected config.Config) (*Server, error) {
+	store, err := config.NewBoundStore(path, expected)
+	if err != nil {
+		return nil, err
+	}
+	return &Server{store: store, bound: true}, nil
+}
+
+// CheckBoundRuntime uses the same Store generation as actual tool calls,
+// including legitimate configuration commits performed by that Store.
+func (s *Server) CheckBoundRuntime() error {
+	if !s.bound {
+		return nil
+	}
+	_, err := s.store.Current()
+	return err
+}
 
 func NewWithRuntime(runtime config.Config) (*Server, error) {
 	store, err := config.NewSnapshotStore(runtime)
