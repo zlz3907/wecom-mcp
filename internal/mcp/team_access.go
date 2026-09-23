@@ -181,6 +181,9 @@ func validatedPlugins(plugins []string) (map[string]bool, error) {
 // CallTool lets an additional MCP transport reuse the same fixed-tenant
 // business implementation as stdio without bypassing its validation.
 func (s *Server) CallTool(ctx context.Context, name string, arguments json.RawMessage) (any, error) {
+	if err := s.rejectDiscoveredLifecycle(name); err != nil {
+		return nil, err
+	}
 	access, classified := teamToolAccess[name]
 	if !classified {
 		return nil, fmt.Errorf("未知或未分类工具: %s", name)
@@ -203,6 +206,9 @@ func (s *Server) CallTool(ctx context.Context, name string, arguments json.RawMe
 // argument. The transport must first verify the token's issuer, tenant, audience,
 // expiry and current tool policy. Personnel are resolved only in this instance.
 func (s *Server) CallToolWithOAuthEmployee(ctx context.Context, name string, arguments json.RawMessage, userid string) (any, error) {
+	if err := s.rejectDiscoveredLifecycle(name); err != nil {
+		return nil, err
+	}
 	access, ok := teamToolAccess[name]
 	if !ok || strings.HasPrefix(name, "wecom_identity_binding_") || !validMessageRecipient(userid) || userid != strings.TrimSpace(userid) {
 		return nil, fmt.Errorf("OAuth employee or tool is invalid")

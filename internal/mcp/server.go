@@ -23,6 +23,7 @@ import (
 var validRoles = map[string]struct{}{"Z-S01": {}, "Z-S02": {}, "Z-S03": {}, "Z-S04": {}, "Z-S05": {}, "Z-S06": {}, "Z-S07": {}, "Z-S08": {}, "Z-S09": {}}
 
 type Server struct {
+	discovered          bool
 	store               *config.Store
 	stateMu             sync.Mutex
 	progressMu          sync.Mutex
@@ -35,6 +36,21 @@ type Server struct {
 }
 
 func New(configPath string) *Server { return &Server{store: config.NewStore(configPath)} }
+
+func NewWithRuntime(runtime config.Config) (*Server, error) {
+	store, err := config.NewSnapshotStore(runtime)
+	if err != nil {
+		return nil, err
+	}
+	return &Server{store: store, discovered: true}, nil
+}
+
+func (s *Server) rejectDiscoveredLifecycle(name string) error {
+	if s.discovered && (strings.HasPrefix(name, "wecom_instance_initialize") || name == "wecom_registry_bootstrap") {
+		return fmt.Errorf("database-derived instances cannot bootstrap or initialize assets")
+	}
+	return nil
+}
 
 type request struct {
 	JSONRPC string          `json:"jsonrpc"`

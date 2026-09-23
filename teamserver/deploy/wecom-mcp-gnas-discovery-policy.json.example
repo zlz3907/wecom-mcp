@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "api_whitelist": {
+    "read": ["get_sheet", "get_fields", "get_records", "list_employees"]
+  }
+}

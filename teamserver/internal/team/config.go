@@ -10,9 +10,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	instanceconfig "github.com/zhonglizhi/wecom-mcp-v2/internal/config"
 )
 
 type Config struct {
+	Runtime                       *instanceconfig.Config
+	OAuth21ServiceJWT             bool
+	GNASBindingDigest             string
 	InstanceConfigPath            string
 	Plugins                       []string
 	AuthenticationMode            AuthenticationMode
@@ -55,6 +60,9 @@ type Config struct {
 // BindingOverrides supplies per-enterprise values. OAuth credentials, when
 // present, are resolved from the protected process environment by the caller.
 type BindingOverrides struct {
+	Runtime               *instanceconfig.Config
+	OAuth21ServiceJWT     bool
+	GNASBindingDigest     string
 	PublicURL             string
 	OIDCIssuer            string
 	AuthorizationTenant   string
@@ -87,6 +95,9 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 		authorizationServiceSecret = os.Getenv("GNAS_APP_SECRET")
 	}
 	cfg := Config{
+		Runtime:                       overrides.Runtime,
+		OAuth21ServiceJWT:             overrides.OAuth21ServiceJWT,
+		GNASBindingDigest:             overrides.GNASBindingDigest,
 		InstanceConfigPath:            instanceConfigPath,
 		Plugins:                       append([]string(nil), overrides.Plugins...),
 		AuthenticationMode:            AuthenticationMode(firstNonEmpty(os.Getenv("TEAM_MCP_AUTH_MODE"), string(AuthenticationModeOIDC))),
@@ -130,8 +141,26 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 	if len(cfg.Plugins) == 0 {
 		cfg.Plugins = []string{"zoop"}
 	}
-	if cfg.InstanceConfigPath == "" {
+	if cfg.InstanceConfigPath == "" && cfg.Runtime == nil {
 		return Config{}, fmt.Errorf("--config is required")
+	}
+	if cfg.Runtime != nil {
+		if err := cfg.Runtime.Validate(); err != nil {
+			return Config{}, err
+		}
+	}
+	if cfg.OAuth21ServiceJWT {
+		// The discovery service identity must be the same identity that
+		// introspects a token; process-wide authorization overrides cannot
+		// select a different GNAS application or an arbitrary endpoint.
+		cfg.AuthorizationTokenEndpoint = gnasServiceURL(gnasBaseURL, "/gnas/service/getJwtToken")
+		cfg.AuthorizationServiceAppID = strings.TrimSpace(os.Getenv("GNAS_APP_ID"))
+		cfg.AuthorizationServiceAppSecret = os.Getenv("GNAS_APP_SECRET")
+		cfg.OAuth21IntrospectionURL = gnasServiceURL(gnasBaseURL, "/gnas/service/introspectMCPTokenV1")
+		cfg.OAuth21ClientID, cfg.OAuth21ClientSecret = "", ""
+		if cfg.AuthenticationMode != AuthenticationModeOAuth21 || cfg.Runtime == nil || !bindingDigestPattern.MatchString(cfg.GNASBindingDigest) || cfg.AuthorizationTokenEndpoint == "" || cfg.AuthorizationServiceAppID == "" || cfg.AuthorizationServiceAppSecret == "" {
+			return Config{}, fmt.Errorf("GNAS discovery introspection configuration is incomplete")
+		}
 	}
 	if err := validatePublicURL(cfg.PublicURL, "TEAM_MCP_PUBLIC_URL"); err != nil {
 		return Config{}, err
@@ -198,7 +227,7 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 		if err := validateHTTPSURL(cfg.OAuth21IntrospectionURL, "TEAM_MCP_OAUTH21_INTROSPECTION_URL"); err != nil {
 			return Config{}, err
 		}
-		if cfg.OAuth21ClientID == "" || cfg.OAuth21ClientID != strings.TrimSpace(cfg.OAuth21ClientID) || len(cfg.OAuth21ClientSecret) < 32 || cfg.OAuth21ClientSecret != strings.TrimSpace(cfg.OAuth21ClientSecret) || placeholderValue(cfg.OAuth21ClientSecret) {
+		if !cfg.OAuth21ServiceJWT && (cfg.OAuth21ClientID == "" || cfg.OAuth21ClientID != strings.TrimSpace(cfg.OAuth21ClientID) || len(cfg.OAuth21ClientSecret) < 32 || cfg.OAuth21ClientSecret != strings.TrimSpace(cfg.OAuth21ClientSecret) || placeholderValue(cfg.OAuth21ClientSecret)) {
 			return Config{}, fmt.Errorf("OAuth 2.1 resource server client credentials are invalid")
 		}
 		if cfg.AuthorizationTenant == "" || cfg.AuthorizationTenant != strings.TrimSpace(cfg.AuthorizationTenant) {

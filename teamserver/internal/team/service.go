@@ -68,13 +68,29 @@ func newService(cfg Config, logger *slog.Logger, resolver AuthorizationResolver)
 			return nil, fmt.Errorf("user authorization is enabled but the GNAS resolver adapter is not configured")
 		}
 	}
+	legacy := legacymcp.New(cfg.InstanceConfigPath)
+	if cfg.Runtime != nil {
+		legacy, err = legacymcp.NewWithRuntime(*cfg.Runtime)
+		if err != nil {
+			return nil, err
+		}
+		// Discovery never invents an AI execution identity or initializes
+		// remote assets. Advertise only the operations it can safely serve.
+		readDefinitions := definitions[:0]
+		for _, definition := range definitions {
+			if definition.Access == legacymcp.ToolAccessReader && definition.Name != "wecom_instance_initialize_status" {
+				readDefinitions = append(readDefinitions, definition)
+			}
+		}
+		definitions = readDefinitions
+	}
 	instructions := serverInstructions
 	if cfg.AuthenticationMode == AuthenticationModeOAuth21 {
 		instructions = oauth21ServerInstructions
 	}
 	return &Service{
 		config:                cfg,
-		legacy:                legacymcp.New(cfg.InstanceConfigPath),
+		legacy:                legacy,
 		definitions:           definitions,
 		auditor:               NewAuditor(logger, cfg.AuditHMACKey),
 		logger:                logger,
@@ -122,6 +138,8 @@ func (s *Service) Handler(verifier sdkauth.TokenVerifier) http.Handler {
 			ResourceName:           "Guomai Aite WeCom Team MCP",
 		}
 		mux.Handle("/.well-known/oauth-protected-resource", sdkauth.ProtectedResourceMetadataHandler(metadata))
+		// Resource-specific discovery must match the URL in the challenge.
+		mux.Handle("/.well-known/oauth-protected-resource/mcp", sdkauth.ProtectedResourceMetadataHandler(metadata))
 	}
 	mux.HandleFunc("/healthz", s.health)
 	mux.HandleFunc("/readyz", s.ready)
@@ -380,6 +398,13 @@ func (s *Service) ready(w http.ResponseWriter, _ *http.Request) {
 // its fixed GNAS Source can construct a managed WeCom client. It performs no
 // remote request and exposes no source or credential value.
 func CheckRuntimeSource(cfg Config) error {
+	if cfg.Runtime != nil {
+		if err := cfg.Runtime.Validate(); err != nil {
+			return err
+		}
+		_, err := wecom.NewFromEnvironment(cfg.Runtime.TenantRoute)
+		return err
+	}
 	runtime, err := config.LoadBootstrapCandidate(cfg.InstanceConfigPath)
 	if err != nil {
 		return err

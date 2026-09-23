@@ -69,24 +69,31 @@ func LoadGNASFleet(ctx context.Context, runtimeManifestPath, listenAddress strin
 	if err != nil {
 		return nil, err
 	}
+	payload, err := resolveGNASFleet(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload.Bindings) == 0 {
+		return nil, fmt.Errorf("legacy GNAS runtime fleet requires bindings")
+	}
+	return mergeGNASFleet(payload, runtimeBindings, listenAddress)
+}
+
+func resolveGNASFleet(ctx context.Context) (gnasFleetPayload, error) {
 	baseURL := strings.TrimSpace(os.Getenv("GNAS_BASE_URL"))
 	endpoint := gnasServiceURL(baseURL, "/gnas/service/resolveMCPBindingsV1")
 	tokenEndpoint := gnasServiceURL(baseURL, "/gnas/service/getJwtToken")
 	appID, appSecret := strings.TrimSpace(os.Getenv("GNAS_APP_ID")), os.Getenv("GNAS_APP_SECRET")
 	if endpoint == "" || tokenEndpoint == "" || appID == "" || appSecret == "" {
-		return nil, fmt.Errorf("GNAS MCP binding resolver configuration is incomplete")
+		return gnasFleetPayload{}, fmt.Errorf("GNAS MCP binding resolver configuration is incomplete")
 	}
-	httpClient := &http.Client{Timeout: 5 * time.Second}
+	httpClient := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	provider := &GNASServiceJWTProvider{Endpoint: tokenEndpoint, Client: httpClient, AppID: appID, Secret: appSecret, now: time.Now}
 	token, err := provider.Token(ctx)
 	if err != nil {
-		return nil, err
+		return gnasFleetPayload{}, err
 	}
-	payload, err := fetchGNASFleet(ctx, httpClient, endpoint, token)
-	if err != nil {
-		return nil, err
-	}
-	return mergeGNASFleet(payload, runtimeBindings, listenAddress)
+	return fetchGNASFleet(ctx, httpClient, endpoint, token)
 }
 
 func loadGNASFleetRuntimeManifest(path string) (map[string]GNASFleetRuntimeBinding, error) {
@@ -160,10 +167,11 @@ func fetchGNASFleet(ctx context.Context, client *http.Client, endpoint, token st
 }
 
 func validateGNASFleetPayload(payload gnasFleetPayload) error {
-	if payload.Version != 1 || len(payload.Bindings) == 0 || len(payload.Bindings) > 64 || len(payload.Digest) != 64 {
+	if payload.Version != 1 || payload.Bindings == nil || len(payload.Bindings) > 64 || len(payload.Digest) != 64 {
 		return fmt.Errorf("GNAS MCP binding payload is invalid")
 	}
-	canonicalBindings := append([]gnasFleetBinding(nil), payload.Bindings...)
+	canonicalBindings := make([]gnasFleetBinding, len(payload.Bindings))
+	copy(canonicalBindings, payload.Bindings)
 	sort.Slice(canonicalBindings, func(i, j int) bool { return canonicalBindings[i].BindingID < canonicalBindings[j].BindingID })
 	canonical, err := json.Marshal(struct {
 		Version  int                `json:"version"`
@@ -187,15 +195,17 @@ func mergeGNASFleet(payload gnasFleetPayload, runtimeBindings map[string]GNASFle
 	seenSources := map[string]bool{}
 	seenStates := map[string]bool{}
 	seenSchemas := map[string]bool{}
+	seenBindings := map[string]bool{}
+	seenNames := map[string]bool{}
 	loaded := make([]LoadedFleetBinding, 0, len(payload.Bindings))
 	for _, remote := range payload.Bindings {
 		local := runtimeBindings[remote.BindingID]
 		instancePath := local.InstanceConfigPath
-		if instancePath == "" || !fleetIdentifier.MatchString(remote.BindingID) || !fleetIdentifier.MatchString(remote.AuthorizationResource) || remote.Plugins.Zoop == nil {
+		if instancePath == "" || !fleetIdentifier.MatchString(remote.BindingID) || seenBindings[remote.BindingID] || !fleetIdentifier.MatchString(remote.AuthorizationResource) || remote.Plugins.Zoop == nil {
 			return nil, fmt.Errorf("GNAS binding %q has no exact local runtime mapping", remote.BindingID)
 		}
 		parsed, err := url.Parse(remote.PublicResource)
-		if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		if err != nil || parsed.Scheme != "https" || !fleetHost.MatchString(parsed.Hostname()) || parsed.Port() != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 			return nil, fmt.Errorf("GNAS binding %s public resource is invalid", remote.BindingID)
 		}
 		host := strings.ToLower(parsed.Hostname())
@@ -206,7 +216,7 @@ func mergeGNASFleet(payload gnasFleetPayload, runtimeBindings map[string]GNASFle
 		if err != nil || runtime.TenantRoute != remote.Source || runtime.RegistryDocumentID != remote.Plugins.Zoop.RegistryDocumentID || runtime.RegistryKey != remote.Plugins.Zoop.RegistryKey {
 			return nil, fmt.Errorf("GNAS binding %s does not match its protected local runtime", remote.BindingID)
 		}
-		if seenStates[runtime.StatePath] || runtime.SchemaMirrorPath != "" && seenSchemas[runtime.SchemaMirrorPath] {
+		if seenNames[runtime.InstanceName] || seenStates[filepath.Clean(runtime.StatePath)] || runtime.SchemaMirrorPath != "" && seenSchemas[filepath.Clean(runtime.SchemaMirrorPath)] {
 			return nil, fmt.Errorf("GNAS binding %s reuses local state", remote.BindingID)
 		}
 		binding := FleetBinding{
@@ -226,15 +236,15 @@ func mergeGNASFleet(payload gnasFleetPayload, runtimeBindings map[string]GNASFle
 		cfg.TrustedLoopbackProxy = true
 		seenHosts[host] = true
 		seenSources[remote.Source] = true
-		seenStates[runtime.StatePath] = true
+		seenBindings[remote.BindingID] = true
+		seenNames[runtime.InstanceName] = true
+		seenStates[filepath.Clean(runtime.StatePath)] = true
 		if runtime.SchemaMirrorPath != "" {
-			seenSchemas[runtime.SchemaMirrorPath] = true
+			seenSchemas[filepath.Clean(runtime.SchemaMirrorPath)] = true
 		}
-		delete(runtimeBindings, remote.BindingID)
 		loaded = append(loaded, LoadedFleetBinding{Binding: binding, Config: cfg})
 	}
-	if len(runtimeBindings) != 0 {
-		return nil, fmt.Errorf("local runtime manifest contains bindings absent from GNAS")
-	}
+	// Local entries are runtime dependencies, not authority to enable a route.
+	// A removed remote binding must disappear even while its local assets remain.
 	return loaded, nil
 }

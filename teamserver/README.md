@@ -22,7 +22,7 @@ flowchart TB
 
 ## 多企业单进程模式
 
-原有 `--config` 继续启动一个固定实例。需要让多个企业域名共用同一进程时，改用 `--fleet /absolute/path/fleet.json`；两者必须且只能提供一个。fleet 示例位于 [`../config/fleet.json.example`](../config/fleet.json.example)。每个 binding 明确绑定：
+原有 `--config` 继续启动一个固定实例。需要让多个企业域名共用同一进程时，改用 `--fleet /absolute/path/fleet.json`；启动模式必须四选一（`--config`、`--fleet`、`--gnas-fleet-runtime`、`--gnas-discovery-policy`）。fleet 示例位于 [`../config/fleet.json.example`](../config/fleet.json.example)。每个 binding 明确绑定：
 
 - 一个或多个精确域名；
 - 一个实例配置和独立 `state_path`；
@@ -32,7 +32,11 @@ flowchart TB
 
 fleet 不保存企业微信 Secret。启动时会回读每个实例配置并验证 `source` 与 `tenant_route` 完全一致，同时拒绝复用域名、Source、实例配置、Schema 镜像或状态路径。fleet 强制使用 OAuth 2.1；每个 binding 自动以 `public_url/mcp` 作为独立 audience，并核验自己的 GNAS tenant/resource，共享 Connector API Key 不允许承担多企业隔离。请求只使用原始 HTTP `Host` 选实例，不读取 `X-Forwarded-Host`，未知域名返回 421。因此 fleet 模式下 Nginx 必须保留外部 Host，例如 `proxy_set_header Host $host`；现有单实例部署中固定 upstream Host 的配置不能原样用于 fleet。
 
-生产多企业模式优先使用 `--gnas-fleet-runtime` 而不是完整本地 fleet manifest。GNAS `app_info.config.mcp_bindings` 提供域名、稳定的 `authorization_resource`、Source 和插件绑定；授权资源不从 URL 猜测，因此把既有实例迁到独立域名不会使历史用户授权失效。本地 runtime manifest 保存 `binding_id`、受保护的 `instance_config_path`、每企业独立的 introspection `client_id` 和 `client_secret_env`（仅环境变量名称）。实际密钥由受保护的进程环境提供，且 GNAS 中该 client 必须绑定相同 tenant 与 MCP resource。每个 binding 都必须显式提供凭据引用；缺失或无效时拒绝启动，不回退到全局 `TEAM_MCP_OAUTH21_CLIENT_ID/SECRET`。此模式强制 `TEAM_MCP_AUTH_MODE=oauth21`；旧单实例与本地 `--fleet` 的配置行为保持兼容。MCP 启动时使用 Service JWT 从 GNAS 回读绑定，并强制核对本地 `tenant_route` 与 Zoop Registry；任何漂移都拒绝启动。
+现有生产多企业适配模式是 `--gnas-fleet-runtime`，它仍依赖本地 runtime manifest，**不是仅数据库配置即可自动开通的模式**。GNAS `app_info.config.mcp_bindings` 提供域名、稳定的 `authorization_resource`、Source 和插件绑定；授权资源不从 URL 猜测，因此把既有实例迁到独立域名不会使历史用户授权失效。本地 runtime manifest 保存 `binding_id`、受保护的 `instance_config_path`、每企业独立的 introspection `client_id` 和 `client_secret_env`（仅环境变量名称）。实际密钥由受保护的进程环境提供，且 GNAS 中该 client 必须绑定相同 tenant 与 MCP resource。每个远程 binding 都必须显式提供凭据引用；缺失或无效时拒绝启动，不回退到全局 `TEAM_MCP_OAUTH21_CLIENT_ID/SECRET`。此模式强制 `TEAM_MCP_AUTH_MODE=oauth21`；旧单实例与本地 `--fleet` 的配置行为保持兼容。MCP 启动时使用 Service JWT 从 GNAS 回读绑定，并强制核对本地 `tenant_route` 与 Zoop Registry；任何漂移都拒绝启动。本地条目自身不能启用路由，GNAS 未返回的条目保持未加载。
+
+新增数据库自动发现模式：`--gnas-discovery-policy /absolute/shared-policy.json --gnas-state-root /absolute/state-root`。共享 policy 仅保存能力白名单，不含任何租户清单、路径、Registry 或 OAuth 客户端。MCP 通过同一 GNAS 服务身份读取 Binding、核验已有 Registry/Z-S00、创建不可变内存实例，并调用配套 `introspectMCPTokenV1`；无需逐租户本地文件或 OAuth Basic 密钥。此模式默认每 30 秒刷新，允许最短 5 秒，不允许关闭刷新，必须配套新版 GNAS。现有能力策略与 AI 执行主体并不在 Binding 契约中，因此当前发现模式只发布查询工具；初始化和业务写入保持关闭，不能直接当作旧写入实例的等价替换。
+
+两种 GNAS 模式均可使用 `--gnas-fleet-refresh 30s`；旧 runtime 模式默认 0，保留启动时加载行为。完整候选成功后原子切换 Host 路由，未变更的 handler 复用；变更前返回 503 并有界排空旧请求，排空最多 10 秒。刷新失败时已有 Host 全部返回 503，未知 Host 为 421，完整成功后恢复。发现模式接受带正确摘要的空数组并撤下全部租户；错误响应、null 和摘要错误绝不当作空集合。`--check-config` 仅首次加载及只读核验，不启动监听或循环。完整根因、接口边界、发布及回滚步骤见 [数据库自动发现候选](deploy/GNAS-FLEET-DISCOVERY.md)。
 
 `zoop` 只决定该实例是否暴露 Zoop 初始化、九表、Z-S00 和记录治理工具。员工目录、受控企业微信 API、单人消息及 `SMART_SHEETS_IDS` bootstrap 属于通用企业微信层。旧单实例模式默认启用 Zoop，保持原工具兼容。
 

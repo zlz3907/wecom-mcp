@@ -203,15 +203,38 @@ func (c Config) Digest() string {
 // Store re-reads configuration whenever its modification time changes. A bad
 // replacement fails closed rather than silently using an earlier allowlist.
 type Store struct {
-	path    string
-	mu      sync.Mutex
-	lastMod int64
-	cached  Config
+	snapshot *Config
+	path     string
+	mu       sync.Mutex
+	lastMod  int64
+	cached   Config
 }
 
 func NewStore(path string) *Store { return &Store{path: path} }
 
+// NewSnapshotStore fixes a database-derived instance for the lifetime of one
+// server generation. It has no writable local configuration file.
+func NewSnapshotStore(cfg Config) (*Store, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	copy := cloneConfig(cfg)
+	return &Store{snapshot: &copy}, nil
+}
+
+func cloneConfig(cfg Config) Config {
+	groups := make(map[string][]string, len(cfg.APIWhitelist))
+	for name, operations := range cfg.APIWhitelist {
+		groups[name] = append([]string(nil), operations...)
+	}
+	cfg.APIWhitelist = groups
+	return cfg
+}
+
 func (s *Store) BootstrapCandidate() (Config, error) {
+	if s.snapshot != nil {
+		return Config{}, fmt.Errorf("database-derived instances cannot bootstrap or initialize assets")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return LoadBootstrapCandidate(s.path)
@@ -221,6 +244,9 @@ func (s *Store) BootstrapCandidate() (Config, error) {
 // It never overwrites an existing different target and preserves the config
 // file's permissions.
 func (s *Store) PersistRegistryDocumentID(documentID string) error {
+	if s.snapshot != nil {
+		return fmt.Errorf("database-derived instance configuration is immutable")
+	}
 	if !identifier.MatchString(documentID) {
 		return fmt.Errorf("待写回的 registry_document_id 非法")
 	}
@@ -282,6 +308,9 @@ func (s *Store) PersistRegistryDocumentID(documentID string) error {
 // retained as a protected backup. Credentials are never part of Config and
 // therefore cannot be copied into the backup by this operation.
 func (s *Store) CommitInitialized(commit InitializationCommit) (string, error) {
+	if s.snapshot != nil {
+		return "", fmt.Errorf("database-derived instance configuration is immutable")
+	}
 	if !identifier.MatchString(commit.RegistryDocumentID) || !identifier.MatchString(commit.RegistrySheetID) {
 		return "", fmt.Errorf("待写回的 registry_document_id 非法")
 	}
@@ -408,6 +437,9 @@ func WriteProtectedFileAtomic(path string, data []byte, mode os.FileMode) error 
 }
 
 func (s *Store) Current() (Config, error) {
+	if s.snapshot != nil {
+		return cloneConfig(*s.snapshot), nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	info, err := os.Stat(s.path)

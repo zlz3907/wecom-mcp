@@ -198,18 +198,21 @@ func NewHostRouter(bindings []LoadedFleetBinding, handlers map[string]http.Handl
 }
 
 func (r *HostRouter) ServeHTTP(w http.ResponseWriter, request *http.Request) {
-	host := strings.ToLower(request.Host)
-	if parsed, _, err := net.SplitHostPort(host); err == nil {
-		host = parsed
-	}
-	if !fleetHost.MatchString(host) {
-		http.Error(w, "unknown MCP host", http.StatusMisdirectedRequest)
-		return
-	}
-	handler := r.handlers[host]
+	handler := r.handlerForHost(request.Host)
 	if handler == nil {
 		http.Error(w, "unknown MCP host", http.StatusMisdirectedRequest)
 		return
 	}
 	handler.ServeHTTP(w, request)
+}
+
+func (r *HostRouter) handlerForHost(rawHost string) http.Handler {
+	host := strings.ToLower(rawHost)
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		host = parsed
+	}
+	if !fleetHost.MatchString(host) {
+		return nil
+	}
+	return r.handlers[host]
 }

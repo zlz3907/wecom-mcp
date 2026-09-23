@@ -130,6 +130,8 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"w
 
 业务工具按 `plugins` 显式暴露。目前首个插件 ID 为 `zoop`；不启用它时只保留企业微信通用工具。旧单实例模式默认启用 `zoop`，现有客户端工具列表保持兼容。示例见 `config/fleet.json.example`。
 
+新增 `--gnas-discovery-policy` 数据库发现模式：无需逐租户 fleet/实例 JSON 或 OAuth Basic 密钥，配套新版 GNAS 自动刷新绑定并提供查询工具。旧 `--gnas-fleet-runtime` 仍保留本地映射兼容。新模式的写入限制、发布前置及回滚见 [配置权威、能力边界和迁移方案](teamserver/deploy/GNAS-FLEET-DISCOVERY.md)。
+
 新增企业前，manifest 中的 `source` 必须已经通过 GNAS 受控凭据登记与应用授权流程启用；MCP 不创建、修改或解密 `api_keys_desc` / `app_info`，也不要求运维人员直接编辑 MongoDB。Source 未配置、被禁用或不在服务应用权限内时，实例保持 not ready。
 
 ### Z-S00 在线 Schema Registry
