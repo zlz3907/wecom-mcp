@@ -42,6 +42,8 @@ fleet 不保存企业微信 Secret。启动时会回读每个实例配置并验�
 
 两种 GNAS 模式均可使用 `--gnas-fleet-refresh 30s`；旧 runtime 模式默认 0，保留启动时加载行为。完整候选成功后原子切换 Host 路由，未变更的 handler 复用；变更前返回 503 并有界排空旧请求，排空最多 10 秒。刷新失败时已有 Host 全部返回 503，未知 Host 为 421，完整成功后恢复。发现模式接受带正确摘要的空数组并撤下全部租户；错误响应、null 和摘要错误绝不当作空集合。`--check-config` 仅首次加载及只读核验，不启动监听或循环。完整根因、接口边界、发布及回滚步骤见 [数据库自动发现候选](deploy/GNAS-FLEET-DISCOVERY.md)。
 
+动态发现现在隔离已通过权威及公共配置检查、但 Registry/Z-S00 尚未就绪的 Binding：仅对应 Host 全路径 503，不构建 MCP/OAuth handler，其他已就绪租户可启动。`--check-config` 成功只证明共享配置可加载，不证明每个租户可用；发布仍须逐 Host 核验预期状态。权威、公共配置、受保护 local mapping、存储或服务构建错误仍全局失败关闭。缓存、重试及只读边界见 [未就绪租户隔离](../docs/operations/unready-tenant-isolation.md)。
+
 `zoop` 只决定该实例是否暴露 Zoop 初始化、九表、Z-S00 和记录治理工具。员工目录、受控企业微信 API、单人消息及 `SMART_SHEETS_IDS` bootstrap 属于通用企业微信层。旧单实例模式默认启用 Zoop，保持原工具兼容。
 
 ## WorkBuddy Connector API Key 测试模式

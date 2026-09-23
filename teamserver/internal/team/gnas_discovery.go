@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	instanceconfig "github.com/zhonglizhi/wecom-mcp-v2/internal/config"
 	legacymcp "github.com/zhonglizhi/wecom-mcp-v2/internal/mcp"
@@ -155,6 +156,7 @@ func (d *GNASDiscovery) assembleWithLocals(ctx context.Context, payload gnasFlee
 		seenIDs[b.BindingID], seenHosts[u.Hostname()], seenSources[b.Source] = true, true, true
 	}
 	instances := make(map[string]discoveredInstance, len(payload.Bindings))
+	resolved := d.resolveRegistryNames(ctx, payload.Bindings, policy, locals)
 	loaded := make([]LoadedFleetBinding, 0, len(payload.Bindings))
 	for _, b := range payload.Bindings {
 		if local, ok := locals[b.BindingID]; ok {
@@ -172,15 +174,10 @@ func (d *GNASDiscovery) assembleWithLocals(ctx context.Context, payload gnasFlee
 			continue
 		}
 		runtime := d.runtimeFor(b, policy)
-		cached, ok := d.instances[b.BindingID]
-		if !ok || !reflect.DeepEqual(cached.binding, b) {
-			name, err := d.resolveName(ctx, runtime)
-			if err != nil {
-				return nil, fmt.Errorf("GNAS discovery Registry validation failed")
-			}
-			cached = discoveredInstance{binding: b, name: name}
+		cached, ready := resolved[b.BindingID]
+		if ready {
+			runtime.InstanceName = cached.name
 		}
-		runtime.InstanceName = cached.name
 		u, _ := url.Parse(b.PublicResource)
 		cfg, err := LoadConfigForBinding("", d.listen, BindingOverrides{
 			Runtime: &runtime, OAuth21ServiceJWT: true,
@@ -195,12 +192,14 @@ func (d *GNASDiscovery) assembleWithLocals(ctx context.Context, payload gnasFlee
 			return nil, fmt.Errorf("GNAS discovery Source configuration is invalid")
 		}
 		cfg.TrustedLoopbackProxy = true
-		instances[b.BindingID] = cached
+		if ready {
+			instances[b.BindingID] = cached
+		}
 		loaded = append(loaded, LoadedFleetBinding{Binding: FleetBinding{
 			BindingID: b.BindingID, Hosts: []string{u.Hostname()}, PublicURL: b.PublicResource,
 			AuthorizationTenant: b.BindingID, AuthorizationResource: b.AuthorizationResource,
 			Source: b.Source, Plugins: []string{"zoop"},
-		}, Config: cfg})
+		}, Config: cfg, RegistryUnavailable: !ready})
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -210,6 +209,52 @@ func (d *GNASDiscovery) assembleWithLocals(ctx context.Context, payload gnasFlee
 	}
 	d.instances = instances
 	return loaded, nil
+}
+
+// Probe uncached dynamic bindings independently. Missing business targets or
+// Z-S00 and per-tenant read failures disable only that authoritative Host. The
+// failed probe is never cached, so an externally initialized tenant can recover
+// on the next refresh. No assets or per-tenant files are created here.
+func (d *GNASDiscovery) resolveRegistryNames(ctx context.Context, bindings []gnasFleetBinding, policy DiscoveryPolicy, locals map[string]GNASFleetRuntimeBinding) map[string]discoveredInstance {
+	resolved := make(map[string]discoveredInstance, len(bindings))
+	if d.staticRecoveryURL != "" {
+		return resolved
+	}
+	// Leave budget for configuration checks and atomic publication. The payload
+	// has at most 64 bindings; parallel, bounded probes prevent one slow unready
+	// Registry from consuming every other tenant's discovery opportunity.
+	timeout := 10 * time.Second
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout = min(timeout, time.Until(deadline)/2)
+	}
+	var mu sync.Mutex
+	var probes sync.WaitGroup
+	for _, b := range bindings {
+		if _, mapped := locals[b.BindingID]; mapped {
+			continue
+		}
+		if cached, ok := d.instances[b.BindingID]; ok && reflect.DeepEqual(cached.binding, b) {
+			mu.Lock()
+			resolved[b.BindingID] = cached
+			mu.Unlock()
+			continue
+		}
+		probes.Add(1)
+		go func(b gnasFleetBinding) {
+			defer probes.Done()
+			probeCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			name, err := d.resolveName(probeCtx, d.runtimeFor(b, policy))
+			if err != nil || probeCtx.Err() != nil {
+				return
+			}
+			mu.Lock()
+			resolved[b.BindingID] = discoveredInstance{binding: b, name: name}
+			mu.Unlock()
+		}(b)
+	}
+	probes.Wait()
+	return resolved
 }
 
 func (d *GNASDiscovery) runtimeFor(b gnasFleetBinding, policy DiscoveryPolicy) instanceconfig.Config {
@@ -279,10 +324,12 @@ func validateHybridStorage(bindings []LoadedFleetBinding) error {
 		if b.Config.BoundRuntime != nil {
 			runtime = b.Config.BoundRuntime
 		}
-		if runtime == nil || names[runtime.InstanceName] {
+		if runtime == nil || !b.RegistryUnavailable && names[runtime.InstanceName] {
 			return fmt.Errorf("hybrid instance name duplicated or missing")
 		}
-		names[runtime.InstanceName] = true
+		if !b.RegistryUnavailable {
+			names[runtime.InstanceName] = true
+		}
 		for _, p := range []string{b.Config.InstanceConfigPath, runtime.StatePath, runtime.SchemaMirrorPath} {
 			if p == "" {
 				continue
