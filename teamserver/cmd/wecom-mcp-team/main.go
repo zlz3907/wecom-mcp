@@ -19,25 +19,94 @@ func main() {
 	configPath := flag.String("config", "", "absolute fixed-tenant instance configuration path")
 	fleetPath := flag.String("fleet", "", "absolute multi-instance fleet manifest path")
 	gnasFleetRuntimePath := flag.String("gnas-fleet-runtime", "", "absolute local runtime mapping for bindings resolved from GNAS")
+	discoveryPolicy := flag.String("gnas-discovery-policy", "", "absolute shared capability policy; discovers unmapped GNAS instances; combine with --gnas-fleet-runtime to preserve protected local instances")
+	stateRoot := flag.String("gnas-state-root", "", "existing dedicated absolute state directory for database discovery")
+	gnasFleetRefresh := flag.Duration("gnas-fleet-refresh", 0, "GNAS refresh interval (minimum 5s); discovery defaults to 30s, runtime manifest defaults to disabled")
 	listenAddress := flag.String("listen", "", "listen address; defaults to TEAM_MCP_LISTEN_ADDR or 127.0.0.1:17801")
 	checkConfig := flag.Bool("check-config", false, "validate configuration and initialize local handlers without listening")
 	flag.Parse()
+	refreshExplicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "gnas-fleet-refresh" {
+			refreshExplicit = true
+		}
+	})
+	if *discoveryPolicy != "" && !refreshExplicit {
+		*gnasFleetRefresh = 30 * time.Second
+	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if *gnasFleetRefresh < 0 || *gnasFleetRefresh > 0 && ((*gnasFleetRuntimePath == "" && *discoveryPolicy == "") || *gnasFleetRefresh < 5*time.Second) || *discoveryPolicy != "" && (*stateRoot == "" || *gnasFleetRefresh == 0) || *stateRoot != "" && *discoveryPolicy == "" {
+		logger.Error("invalid GNAS fleet refresh interval or mode")
+		os.Exit(2)
+	}
 	configuredModes := 0
-	for _, value := range []string{*configPath, *fleetPath, *gnasFleetRuntimePath} {
+	for _, value := range []string{*configPath, *fleetPath, *gnasFleetRuntimePath, *discoveryPolicy} {
 		if value != "" {
 			configuredModes++
 		}
 	}
+	if *discoveryPolicy != "" && *gnasFleetRuntimePath != "" {
+		configuredModes--
+	}
 	if configuredModes != 1 {
-		logger.Error("invalid team MCP configuration", "error", "exactly one of --config, --fleet, or --gnas-fleet-runtime is required")
+		logger.Error("invalid team MCP configuration", "error", "exactly one of --config, --fleet, --gnas-fleet-runtime or --gnas-discovery-policy is required")
 		os.Exit(2)
 	}
 	var cfg team.Config
 	var handler http.Handler
 	var err error
-	if *fleetPath != "" || *gnasFleetRuntimePath != "" {
+	var refreshingFleet *team.RefreshingFleet
+	if *discoveryPolicy != "" {
+		var discovery *team.GNASDiscovery
+		var discoveryErr error
+		if *gnasFleetRuntimePath != "" {
+			discovery, discoveryErr = team.NewGNASHybridDiscovery(*discoveryPolicy, *stateRoot, *gnasFleetRuntimePath, *listenAddress)
+		} else {
+			discovery, discoveryErr = team.NewGNASDiscovery(*discoveryPolicy, *stateRoot, *listenAddress)
+		}
+		if discoveryErr != nil {
+			logger.Error("invalid GNAS discovery configuration", "error", discoveryErr)
+			os.Exit(2)
+		}
+		loadContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		refreshingFleet, err = team.NewDiscoveryFleet(loadContext, discovery.ListenAddress(), discovery.Load, func(bindingConfig team.Config) (http.Handler, error) {
+			return bindingHandler(bindingConfig, logger.With("binding_id", bindingConfig.AuthorizationTenant))
+		})
+		cancel()
+		if err != nil {
+			logger.Error("GNAS discovery initialization failed; check resolver, policy and existing Registry readiness")
+			os.Exit(2)
+		}
+		cfg.ListenAddress, cfg.ShutdownTimeout = discovery.ListenAddress(), 20*time.Second
+		handler = refreshingFleet
+		logger.Info("team MCP database discovery configured", "interval", gnasFleetRefresh.String())
+	} else if *gnasFleetRuntimePath != "" && *gnasFleetRefresh > 0 {
+		loadContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		refreshingFleet, err = team.NewRefreshingFleet(loadContext, func(ctx context.Context) ([]team.LoadedFleetBinding, error) {
+			bindings, loadErr := team.LoadGNASFleet(ctx, *gnasFleetRuntimePath, *listenAddress)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			for _, binding := range bindings {
+				if err := team.CheckRuntimeSource(binding.Config); err != nil {
+					return nil, fmt.Errorf("fleet runtime source validation failed")
+				}
+			}
+			return bindings, nil
+		}, func(bindingConfig team.Config) (http.Handler, error) {
+			return bindingHandler(bindingConfig, logger.With("binding_id", bindingConfig.AuthorizationTenant))
+		})
+		cancel()
+		if err != nil {
+			logger.Error("team MCP refreshing fleet initialization failed")
+			os.Exit(2)
+		}
+		cfg.ListenAddress = refreshingFleet.ListenAddress()
+		cfg.ShutdownTimeout = 20 * time.Second
+		handler = refreshingFleet
+		logger.Info("team MCP fleet refresh configured", "interval", gnasFleetRefresh.String())
+	} else if *fleetPath != "" || *gnasFleetRuntimePath != "" {
 		var bindings []team.LoadedFleetBinding
 		var loadErr error
 		if *gnasFleetRuntimePath != "" {
@@ -95,6 +164,19 @@ func main() {
 		logger.Info("team MCP configuration valid")
 		return
 	}
+	signalContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if refreshingFleet != nil {
+		refreshFailed := false
+		go refreshingFleet.Run(signalContext, *gnasFleetRefresh, func(refreshErr error) {
+			if refreshErr != nil {
+				logger.Error("team MCP fleet refresh failed; known hosts unavailable until recovery")
+			} else if refreshFailed {
+				logger.Info("team MCP fleet refresh recovered")
+			}
+			refreshFailed = refreshErr != nil
+		})
+	}
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddress,
@@ -110,8 +192,6 @@ func main() {
 		serverError <- httpServer.ListenAndServe()
 	}()
 
-	signalContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	select {
 	case err := <-serverError:
 		if err != nil && err != http.ErrServerClosed {

@@ -1,0 +1,12 @@
+# Candidate only: install after separate deployment approval.
+# Provision the canonical state directory with the service user's permissions.
+# Keep GNAS_BASE_URL, GNAS_APP_ID, GNAS_APP_SECRET and audit HMAC in the existing
+# protected EnvironmentFile; set TEAM_MCP_AUTH_MODE=oauth21 and
+# GNAS_WECOM_TRANSPORT=managed_executor. Never place secrets in ExecStart.
+# This read-only discovery mode requires the paired GNAS service endpoint.
+[Service]
+ExecStartPre=
+ExecStart=
+ExecStartPre=/home/product/services/mcp/wecom/current/wecom-mcp-team --gnas-discovery-policy /home/product/services/mcp/wecom/config/discovery-policy.json --gnas-state-root /home/product/services/mcp/wecom/state/discovery --listen 127.0.0.1:7702 --check-config
+ExecStart=/home/product/services/mcp/wecom/current/wecom-mcp-team --gnas-discovery-policy /home/product/services/mcp/wecom/config/discovery-policy.json --gnas-state-root /home/product/services/mcp/wecom/state/discovery --listen 127.0.0.1:7702 --gnas-fleet-refresh 30s
+ReadWritePaths=/home/product/services/mcp/wecom/state/discovery

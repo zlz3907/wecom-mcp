@@ -19,8 +19,9 @@ import (
 const oauth21IntrospectionResponseMax = 64 << 10
 
 type OAuth21IntrospectionAuthenticator struct {
-	config Config
-	client *http.Client
+	config   Config
+	client   *http.Client
+	provider ServiceJWTProvider
 }
 
 type oauth21IntrospectionResponse struct {
@@ -38,17 +39,24 @@ type oauth21IntrospectionResponse struct {
 }
 
 func NewOAuth21IntrospectionAuthenticator(cfg Config) (*OAuth21IntrospectionAuthenticator, error) {
-	if cfg.AuthenticationMode != AuthenticationModeOAuth21 || cfg.OAuth21IntrospectionURL == "" || cfg.OAuth21ClientID == "" || len(cfg.OAuth21ClientSecret) < 32 || cfg.OIDCIssuer == "" || cfg.OIDCAudience == "" || cfg.AuthorizationTenant == "" {
+	if cfg.AuthenticationMode != AuthenticationModeOAuth21 || cfg.OAuth21IntrospectionURL == "" || (!cfg.OAuth21ServiceJWT && (cfg.OAuth21ClientID == "" || len(cfg.OAuth21ClientSecret) < 32)) || cfg.OIDCIssuer == "" || cfg.OIDCAudience == "" || cfg.AuthorizationTenant == "" {
 		return nil, fmt.Errorf("OAuth 2.1 introspection authentication is not configured")
 	}
 	timeout := cfg.OIDCHTTPTimeout
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	return &OAuth21IntrospectionAuthenticator{config: cfg, client: &http.Client{
+	a := &OAuth21IntrospectionAuthenticator{config: cfg, client: &http.Client{
 		Timeout:       timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}}, nil
+	}}
+	if cfg.OAuth21ServiceJWT {
+		if !bindingDigestPattern.MatchString(cfg.GNASBindingDigest) || cfg.AuthorizationTokenEndpoint == "" || cfg.AuthorizationServiceAppID == "" || cfg.AuthorizationServiceAppSecret == "" {
+			return nil, fmt.Errorf("GNAS introspection service identity is missing")
+		}
+		a.provider = &GNASServiceJWTProvider{Endpoint: cfg.AuthorizationTokenEndpoint, Client: a.client, AppID: cfg.AuthorizationServiceAppID, Secret: cfg.AuthorizationServiceAppSecret, now: time.Now}
+	}
+	return a, nil
 }
 
 func (a *OAuth21IntrospectionAuthenticator) Verify(ctx context.Context, rawToken string, _ *http.Request) (*sdkauth.TokenInfo, error) {
@@ -64,7 +72,24 @@ func (a *OAuth21IntrospectionAuthenticator) Verify(ctx context.Context, rawToken
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.SetBasicAuth(a.config.OAuth21ClientID, a.config.OAuth21ClientSecret)
-	if introspectionURL, parseErr := url.Parse(a.config.OAuth21IntrospectionURL); parseErr == nil && isLoopbackHost(introspectionURL.Hostname()) {
+	if a.config.OAuth21ServiceJWT {
+		token, tokenErr := a.provider.Token(ctx)
+		if tokenErr != nil {
+			return nil, fmt.Errorf("%w: token verification unavailable", sdkauth.ErrInvalidToken)
+		}
+		body, _ := json.Marshal(struct {
+			BindingID     string `json:"binding_id"`
+			BindingDigest string `json:"binding_digest"`
+			Token         string `json:"token"`
+		}{a.config.AuthorizationTenant, a.config.GNASBindingDigest, rawToken})
+		request, err = http.NewRequestWithContext(ctx, http.MethodPost, a.config.OAuth21IntrospectionURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("%w: token verification unavailable", sdkauth.ErrInvalidToken)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("X-Auth-Type", "service_jwt")
+	} else if introspectionURL, parseErr := url.Parse(a.config.OAuth21IntrospectionURL); parseErr == nil && isLoopbackHost(introspectionURL.Hostname()) {
 		if resourceURL, resourceErr := url.Parse(a.config.OIDCAudience); resourceErr == nil && resourceURL.Host != "" {
 			// GNAS multiplexes tenant-bound OAuth centers by the canonical MCP
 			// resource host. The connection remains on loopback; only the HTTP
@@ -90,7 +115,19 @@ func (a *OAuth21IntrospectionAuthenticator) Verify(ctx context.Context, rawToken
 	}
 	var result oauth21IntrospectionResponse
 	decoder := json.NewDecoder(bytes.NewReader(body))
-	if decoder.Decode(&result) != nil || decoder.Decode(&struct{}{}) != io.EOF || !validOAuth21IntrospectionResponse(result, a.config, time.Now()) {
+	if a.config.OAuth21ServiceJWT {
+		var envelope struct {
+			Code int                          `json:"code"`
+			Data oauth21IntrospectionResponse `json:"data"`
+		}
+		if decoder.Decode(&envelope) != nil || envelope.Code != 200 {
+			return nil, fmt.Errorf("%w: token verification unavailable", sdkauth.ErrInvalidToken)
+		}
+		result = envelope.Data
+	} else if decoder.Decode(&result) != nil {
+		return nil, fmt.Errorf("%w: bearer token rejected", sdkauth.ErrInvalidToken)
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF || !validOAuth21IntrospectionResponse(result, a.config, time.Now()) {
 		return nil, fmt.Errorf("%w: bearer token rejected", sdkauth.ErrInvalidToken)
 	}
 	return &sdkauth.TokenInfo{

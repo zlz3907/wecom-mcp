@@ -1,6 +1,7 @@
 package team
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -155,4 +157,79 @@ func signedGNASFleetPayload(t *testing.T, bindings []gnasFleetBinding) gnasFleet
 	}
 	digest := sha256.Sum256(canonical)
 	return gnasFleetPayload{Version: 1, Digest: hex.EncodeToString(digest[:]), Bindings: bindings}
+}
+
+func TestGNASFleetRefreshReadsAuthorityAndRuntimeAgain(t *testing.T) {
+	setupFleetOAuthEnvironment(t)
+	dir := t.TempDir()
+	manifest := GNASFleetRuntimeManifest{Version: 1}
+	var remote []gnasFleetBinding
+	for _, name := range []string{"a", "b"} {
+		instance := filepath.Join(dir, name+".json")
+		writeJSONFile(t, instance, map[string]any{
+			"version": 1, "instance_name": name, "tenant_route": "source-" + name,
+			"registry_document_id": "doc-" + name, "registry_key": "registry-" + name,
+			"state_path":    filepath.Join(dir, name+"-state.json"),
+			"api_whitelist": map[string]any{"read": []string{"get_records"}},
+		})
+		secretEnv := "TEST_REFRESH_SECRET_" + strings.ToUpper(name)
+		t.Setenv(secretEnv, strings.Repeat(name, 32))
+		manifest.Bindings = append(manifest.Bindings, GNASFleetRuntimeBinding{BindingID: name, InstanceConfigPath: instance, ClientID: "resource-" + name, ClientSecretEnv: secretEnv})
+		remote = append(remote, gnasFleetBinding{BindingID: name, PublicResource: "https://" + name + ".example", AuthorizationResource: "zoop", Source: "source-" + name, Plugins: gnasFleetPlugins{Zoop: &gnasFleetZoopPlugin{RegistryDocumentID: "doc-" + name, RegistryKey: "registry-" + name}}})
+	}
+	path := filepath.Join(dir, "runtime.json")
+	writeJSONFile(t, path, GNASFleetRuntimeManifest{Version: 1, Bindings: manifest.Bindings[:1]})
+	var mu sync.Mutex
+	payload := signedGNASFleetPayload(t, remote[:1])
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/gnas/service/getJwtToken" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]any{"token": "fake-service-token", "app_id": "test-app", "expires_at": time.Now().Add(time.Hour).Unix()}})
+			return
+		}
+		if r.URL.Path != "/gnas/service/resolveMCPBindingsV1" || r.Header.Get("Authorization") != "Bearer fake-service-token" {
+			w.WriteHeader(403)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		_ = json.NewEncoder(w).Encode(gnasFleetEnvelope{Code: 200, Data: payload})
+	}))
+	defer server.Close()
+	t.Setenv("GNAS_BASE_URL", server.URL)
+	t.Setenv("GNAS_APP_ID", "test-app")
+	t.Setenv("GNAS_APP_SECRET", "fake-app-secret")
+	f, err := NewRefreshingFleet(t.Context(), func(ctx context.Context) ([]LoadedFleetBinding, error) {
+		return LoadGNASFleet(ctx, path, "127.0.0.1:17801")
+	}, func(cfg Config) (http.Handler, error) {
+		if cfg.OAuth21ClientID != "resource-"+cfg.AuthorizationTenant || cfg.OAuth21ClientSecret != strings.Repeat(cfg.AuthorizationTenant, 32) {
+			t.Error("wrong tenant introspection credentials")
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	payload = signedGNASFleetPayload(t, remote)
+	mu.Unlock()
+	if err := f.Refresh(t.Context()); err == nil || fleetStatus(f, "a.example") != 503 || fleetStatus(f, "b.example") != 421 {
+		t.Fatal("remote-only new binding silently accepted or old generation still served")
+	}
+	writeJSONFile(t, path, manifest)
+	if err := f.Refresh(t.Context()); err != nil || fleetStatus(f, "a.example") != 204 || fleetStatus(f, "b.example") != 204 {
+		t.Fatal("complete runtime generation did not recover")
+	}
+	mu.Lock()
+	payload = signedGNASFleetPayload(t, remote[1:])
+	mu.Unlock()
+	if err := f.Refresh(t.Context()); err != nil || fleetStatus(f, "a.example") != 421 || fleetStatus(f, "b.example") != 204 {
+		t.Fatal("remote removal required local cleanup or removed tenant remained available")
+	}
+	mu.Lock()
+	payload.Digest = strings.Repeat("0", 64)
+	mu.Unlock()
+	if err := f.Refresh(t.Context()); err == nil || fleetStatus(f, "b.example") != 503 {
+		t.Fatal("corrupt authority digest was accepted")
+	}
 }
