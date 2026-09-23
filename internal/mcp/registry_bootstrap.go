@@ -16,13 +16,15 @@ type wecomRequester interface {
 }
 
 type registryBootstrapState struct {
-	Phase          string `json:"phase"`
-	DocumentID     string `json:"document_id,omitempty"`
-	SheetID        string `json:"sheet_id,omitempty"`
-	ShareURL       string `json:"share_url,omitempty"`
-	OperatorDigest string `json:"operator_digest,omitempty"`
-	StartedAt      string `json:"started_at"`
-	UpdatedAt      string `json:"updated_at"`
+	Phase             string `json:"phase"`
+	DocumentID        string `json:"document_id,omitempty"`
+	SheetID           string `json:"sheet_id,omitempty"`
+	ShareURL          string `json:"share_url,omitempty"`
+	OperatorDigest    string `json:"operator_digest,omitempty"`
+	StartedAt         string `json:"started_at"`
+	UpdatedAt         string `json:"updated_at"`
+	CompletionVersion int    `json:"completion_version,omitempty"`
+	TenantRoute       string `json:"tenant_route,omitempty"`
 }
 
 var registryBootstrapFields = []string{
@@ -64,13 +66,15 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 	if runtime.InstanceName != prelockInstanceName || runtime.TenantRoute != prelockTenantRoute || runtime.StatePath != prelockStatePath {
 		return nil, fmt.Errorf("锁内实例身份、tenant_route 或 state_path 已变化；禁止使用锁外客户端写入")
 	}
-	if runtime.RegistryDocumentID != "" {
-		return map[string]any{
-			"state": "already_configured", "created": false, "config_updated": false,
-			"instance_name": runtime.InstanceName,
-		}, nil
+	configuredBefore := runtime.RegistryDocumentID != ""
+	if runtime.RegistryKey == registrySelfKey {
+		return nil, fmt.Errorf("业务 registry_key 不能使用保留自登记键")
 	}
-	for _, operation := range []string{"list_employees", "create_smartsheet", "get_doc_auth", "get_sheet", "get_fields", "add_fields"} {
+	operatorOperation := "list_employees"
+	if runtime.Allows("get_employee") {
+		operatorOperation = "get_employee"
+	}
+	for _, operation := range []string{operatorOperation, "create_smartsheet", "get_doc_auth", "get_sheet", "get_fields", "add_fields", "update_fields", "delete_fields", "get_records", "add_records", "delete_records"} {
 		if !runtime.Allows(operation) {
 			return nil, fmt.Errorf("SMART_SHEETS_IDS 缺省初始化需要白名单允许 %s", operation)
 		}
@@ -78,7 +82,7 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 	if client == nil {
 		return nil, fmt.Errorf("企业微信客户端未初始化")
 	}
-	if err := verifyBoundOperator(ctx, runtime, client, ""); err != nil {
+	if err := verifyRegistryOperator(ctx, runtime, client); err != nil {
 		return nil, err
 	}
 	operatorDigest := digestValue(runtime.WecomOperatorUserID)
@@ -87,6 +91,12 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 	state, exists, err := loadRegistryBootstrapState(statePath)
 	if err != nil {
 		return nil, err
+	}
+	if configuredBefore && (!exists || state.DocumentID != runtime.RegistryDocumentID) {
+		return nil, fmt.Errorf("既有 Registry 缺少本次创建证明，禁止 bootstrap 自动修复")
+	}
+	if state.TenantRoute != "" && state.TenantRoute != runtime.TenantRoute {
+		return nil, fmt.Errorf("Registry bootstrap 租户不匹配")
 	}
 	createdNow := false
 	if !exists {
@@ -107,6 +117,7 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 			return nil, fmt.Errorf("SMART_SHEETS_IDS 创建回执不完整；本地哨兵已保留，禁止自动重试: %w", err)
 		}
 		state.Phase, state.DocumentID, state.ShareURL = "created", documentID, shareURL
+		state.TenantRoute = runtime.TenantRoute
 		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		if err := saveRegistryBootstrapState(statePath, state); err != nil {
 			return nil, fmt.Errorf("SMART_SHEETS_IDS 已创建但本地状态写入失败；禁止自动重试: %w", err)
@@ -127,9 +138,27 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 		return nil, fmt.Errorf("SMART_SHEETS_IDS 已创建但 business operator 管理员权限未通过精确回读；禁止自动重试创建")
 	}
 
+	sheets, sheetErr := client.Request(ctx, "get_sheet", map[string]any{"docid": state.DocumentID})
+	identities := smartSheetIdentities(sheets)
+	if sheetErr != nil || apiError(sheets) != nil || len(identities) != 1 {
+		return nil, fmt.Errorf("Registry 默认子表不唯一")
+	}
+	if state.SheetID != "" && state.SheetID != identities[0].ID {
+		return nil, fmt.Errorf("Registry 子表与创建状态不一致")
+	}
+	state.SheetID, state.TenantRoute = identities[0].ID, runtime.TenantRoute
+	if err := saveRegistryBootstrapState(statePath, state); err != nil {
+		return nil, err
+	}
+	if err := normalizeOwnedRegistryDefaults(ctx, client, state.DocumentID, state.SheetID, runtime.StatePath+".registry-defaults-backup.json"); err != nil {
+		return nil, err
+	}
 	sheetID, fieldCount, err := ensureRegistryFields(ctx, client, state.DocumentID)
 	if err != nil {
 		return nil, fmt.Errorf("SMART_SHEETS_IDS 已创建但字段核验未完成；将从同一文档恢复，禁止新建第二张: %w", err)
+	}
+	if err := ensureRegistrySelf(ctx, runtime, client, state.DocumentID, sheetID, state.ShareURL, state.StartedAt); err != nil {
+		return nil, err
 	}
 	state.Phase, state.SheetID, state.UpdatedAt = "schema_verified", sheetID, time.Now().UTC().Format(time.RFC3339Nano)
 	if err := saveRegistryBootstrapState(statePath, state); err != nil {
@@ -146,13 +175,21 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 	if err != nil || verifiedSheetID != sheetID || verifiedCount != fieldCount {
 		return nil, fmt.Errorf("registry_document_id 写回后线上字段回读未通过")
 	}
+	if err := ensureRegistrySelf(ctx, persisted, client, state.DocumentID, sheetID, state.ShareURL, state.StartedAt); err != nil {
+		return nil, err
+	}
+	state.CompletionVersion = 1
 	state.Phase, state.UpdatedAt = "verified", time.Now().UTC().Format(time.RFC3339Nano)
 	if err := saveRegistryBootstrapState(statePath, state); err != nil {
 		return nil, err
 	}
+	resultState := "created_configured_readback_verified"
+	if configuredBefore {
+		resultState = "already_configured"
+	}
 	return withOperatorAudit(map[string]any{
-		"state": "created_configured_readback_verified", "created": createdNow,
-		"config_updated": true, "readback_verified": true, "registry_field_count": verifiedCount,
+		"state": resultState, "created": createdNow,
+		"config_updated": !configuredBefore, "readback_verified": true, "self_registered": true, "default_fields_cleaned": true, "registry_field_count": verifiedCount,
 		"instance_name": persisted.InstanceName,
 	}, runtime.WecomOperatorUserID), nil
 }
@@ -201,7 +238,10 @@ func ensureRegistryFields(ctx context.Context, client wecomRequester, documentID
 			return "", 0, fmt.Errorf("字段 %s 新增后未通过回读", title)
 		}
 	}
-	return sheetID, len(registryBootstrapFields), nil
+	if len(verified) != len(registryBootstrapFields) {
+		return "", 0, fmt.Errorf("Registry 包含多余字段")
+	}
+	return sheetID, len(verified), nil
 }
 
 func registryFieldDefinitions(ctx context.Context, client wecomRequester, documentID, sheetID string) (map[string]config.Field, error) {
@@ -272,8 +312,15 @@ func reserveRegistryBootstrapState(path string, state registryBootstrapState) er
 }
 
 func saveRegistryBootstrapState(path string, state registryBootstrapState) error {
-	data, err := json.Marshal(state)
+	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
+		return err
+	}
+	return saveRegistryJSONBytes(path, data)
+}
+
+func saveRegistryJSONBytes(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".registry-bootstrap-*.tmp")
@@ -297,5 +344,39 @@ func saveRegistryBootstrapState(path string, state registryBootstrapState) error
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
+// Exact lookup permits bootstrap when the application can see its administrator
+// but cannot enumerate the root department. Existing allowlists remain compatible.
+func verifyRegistryOperator(ctx context.Context, runtime config.Config, client wecomRequester) error {
+	if !runtime.Allows("get_employee") {
+		return verifyBoundOperator(ctx, runtime, client, "")
+	}
+	if runtime.WecomOperatorUserID == "" {
+		return fmt.Errorf("实例未配置 wecom_operator_userid，远程写入保持关闭")
+	}
+	response, err := client.Request(ctx, "get_employee", map[string]any{"userid": runtime.WecomOperatorUserID})
+	if err != nil || apiError(response) != nil {
+		return fmt.Errorf("当前固定租户管理员账号查询失败")
+	}
+	user, ok := response["result"].(map[string]any)
+	if !ok {
+		user = response
+	}
+	code, validCode := initializeInteger(user["errcode"])
+	userid, _ := user["userid"].(string)
+	status, validStatus := initializeInteger(user["status"])
+	if !validCode || code != 0 || userid != runtime.WecomOperatorUserID || !validStatus || status != 1 {
+		return fmt.Errorf("当前固定租户管理员账号未通过精确身份及启用状态核验")
+	}
+	return nil
 }

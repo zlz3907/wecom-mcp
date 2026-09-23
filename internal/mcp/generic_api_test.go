@@ -81,3 +81,16 @@ func TestEmployeeListStillUsesMCPInstanceWhitelist(t *testing.T) {
 		t.Fatal("denied employee list reached the upstream API")
 	}
 }
+
+func TestGetEmployeeValidationAndProjection(t *testing.T) {
+	if _, err := validateLegacyOperation("get_employee", map[string]any{"userid": "operator@example.invalid"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateLegacyOperation("get_employee", map[string]any{"userid": "operator", "url": "https://other.invalid"}); err == nil {
+		t.Fatal("accepted caller routing")
+	}
+	got := sanitizeLegacyResponse("get_employee", map[string]any{"errcode": 0, "userid": "operator", "status": 1, "mobile": "private", "email": "private", "errmsg": "private", "name": "private"}).(map[string]any)
+	if len(got) != 3 || got["userid"] != "operator" || got["status"] != 1 || got["errcode"] != 0 {
+		t.Fatalf("unexpected projection: %#v", got)
+	}
+}

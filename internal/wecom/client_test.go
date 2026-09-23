@@ -127,3 +127,46 @@ func TestSendAppMessageUsesManagedExecutor(t *testing.T) {
 		t.Fatalf("unexpected managed executor response: %#v", response)
 	}
 }
+
+func TestGetEmployeeUsesFixedRouteAndEncodedUserID(t *testing.T) {
+	for _, managed := range []bool{false, true} {
+		t.Run(strconv.FormatBool(managed), func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/gnas/service/getJwtToken" {
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]any{"token": "fixture-token", "expires_at": time.Now().Add(time.Hour).Unix()}})
+					return
+				}
+				calls++
+				if managed {
+					if r.URL.Path != "/gnas/service/wecomExecute" || r.Method != "POST" || r.Header.Get("X-GNAS-Managed-Source") != "fixed-route" || r.Header.Get("X-GNAS-Upstream-Method") != "GET" || r.Header.Get("X-GNAS-Upstream-Path") != "/cgi-bin/user/get?userid=operator%40example.invalid" {
+						t.Errorf("unexpected managed route")
+					}
+				} else if r.Method != "GET" || r.URL.RequestURI() != "/api/fixed-route/cgi-bin/user/get?userid=operator%40example.invalid" {
+					t.Errorf("unexpected legacy route: %s", r.URL.RequestURI())
+				}
+				body, _ := io.ReadAll(r.Body)
+				if len(body) != 0 {
+					t.Error("GET lookup must have no body")
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "userid": "operator@example.invalid", "status": 1})
+			}))
+			defer server.Close()
+			client := &Client{baseURL: server.URL, appID: "app", appSecret: "fixture", route: "fixed-route", httpClient: server.Client(), managedExecutor: managed}
+			_, err := client.Request(context.Background(), "get_employee", map[string]any{"userid": "operator@example.invalid"})
+			if err != nil || calls != 1 {
+				t.Fatalf("calls=%d err=%v", calls, err)
+			}
+		})
+	}
+}
+
+func TestGetEmployeeRejectsInvalidPayloadBeforeTransport(t *testing.T) {
+	client := &Client{}
+	for _, payload := range []any{nil, map[string]any{}, map[string]any{"userid": ""}, map[string]any{"userid": 1}, map[string]any{"userid": "x&access_token=y"}, map[string]any{"userid": "x\r\ny"}, map[string]any{"userid": strings.Repeat("x", 65)}, map[string]any{"userid": "valid", "source": "other"}} {
+		if _, err := client.Request(context.Background(), "get_employee", payload); err == nil {
+			t.Fatalf("accepted invalid payload: %#v", payload)
+		}
+	}
+}
