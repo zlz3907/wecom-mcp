@@ -17,16 +17,16 @@ import urllib.request
 import urllib.error
 
 ENVIRONMENT = 'zhycit-prod-01/wecom-mcp-gmzoop'
-UNIT = 'wecom-mcp@gmzoop.service'
+UNIT = 'wecom-mcp@sharedzoop.service'
 BASE = Path('/home/product/services/mcp/wecom')
 RELEASES = BASE / 'releases'
 INCOMING = Path('/var/lib/wecom-mcp-release/incoming')
 CONTROL = Path('/var/lib/wecom-mcp-release')
 APPROVALS = Path('/etc/wecom-mcp/release-approvals')
-DROPIN = Path('/etc/systemd/system/wecom-mcp@gmzoop.service.d/zz-managed-release.conf')
+DROPIN = Path('/etc/systemd/system/wecom-mcp@sharedzoop.service.d/zz-managed-release.conf')
 RUNTIME = BASE / 'instances/gmzoop/config/fleet-runtime-20260916.json'
 STATE = BASE / 'state/discovery'
-HOSTS = ('mcp.wesiyu.com', 'mcp.jianpinke.com')
+HOSTS = ('mcp.wesiyu.com', 'mcp.jianpinke.com', 'mcp.rtyouth.com')
 FILES = ('wecom-mcp-team', 'discovery-policy.json', 'service.conf', 'recovery.conf', 'manifest.json')
 RID = re.compile(r'^\d{8}T\d{6}Z-[a-f0-9]{12}$')
 SHA = re.compile(r'^[a-f0-9]{64}$')
@@ -236,10 +236,53 @@ def healthy(path, digest, hosts, legacy=False):
     current = status()
     require(current.get('runtime_verified') is True and current['active'] == 'active' and current['restarts'] == 0 and current['runtime_path'] == path and current['binary_sha256'] == digest, 'runtime mismatch or restart')
     for host in hosts:
-        for endpoint, code in (('/healthz', 200), ('/readyz', 200), ('/mcp', 401), ('/.well-known/oauth-protected-resource' if legacy else '/.well-known/oauth-protected-resource/mcp', 200)):
-            probe(host, endpoint, code)
-        for endpoint, code in (('/healthz', 200), ('/readyz', 200), ('/mcp', 401)):
-            probe(host, endpoint, code, True)
+        try:
+            for endpoint, code in (('/healthz', 200), ('/readyz', 200), ('/mcp', 401), ('/.well-known/oauth-protected-resource' if legacy else '/.well-known/oauth-protected-resource/mcp', 200)):
+                probe(host, endpoint, code)
+            for endpoint, code in (('/healthz', 200), ('/readyz', 200), ('/mcp', 401)):
+                probe(host, endpoint, code, True)
+        except ValueError:
+            # Only the reviewed, tenant-local unavailable route is allowed.
+            # Authority failure and loss of the static tenant remain failures.
+            require(host in HOSTS[1:] and not legacy, 'required static tenant unhealthy')
+            unready(host)
+
+
+def unready(host):
+    for public in (False, True):
+        for endpoint in ('/healthz', '/readyz', '/mcp', '/.well-known/oauth-protected-resource/mcp'):
+            conn = (http.client.HTTPSConnection(host, timeout=5) if public else
+                    http.client.HTTPConnection('127.0.0.1', 7702, timeout=5))
+            try:
+                conn.request('GET', endpoint, headers={'Host': host})
+                response = conn.getresponse()
+                require(response.status == 503 and response.getheader('Cache-Control') == 'no-store'
+                        and response.getheader('WWW-Authenticate') is None
+                        and response.read(128) == b'MCP instance unavailable\n',
+                        'unready tenant isolation contract failed')
+            finally:
+                conn.close()
+
+
+def exec_pending(expected_path):
+    # Type=simple can report MainPID before the systemd child has exec'd.
+    configured = run('systemctl', 'show', UNIT, '-p', 'ExecStart', '--value')
+    require(re.findall(r'path=([^ ;]+)', configured) == [expected_path], 'configured runtime drift during startup')
+    require(run('systemctl', 'show', UNIT, '-p', 'NRestarts', '--value') == '0', 'restart during startup')
+    active = run('systemctl', 'show', UNIT, '-p', 'ActiveState', '--value')
+    if active not in ('activating', 'active'):
+        return False
+    pid = int(run('systemctl', 'show', UNIT, '-p', 'MainPID', '--value'))
+    if pid == 0:
+        return True
+    try:
+        executable = os.path.realpath(os.readlink('/proc/%d/exe' % pid))
+        manager = os.path.realpath(os.readlink('/proc/1/exe'))
+    except FileNotFoundError:
+        return True
+    # The candidate may have completed exec since status() observed the child.
+    return executable == expected_path or executable == manager or (
+        Path(manager).name == 'systemd' and executable == str(Path(manager).with_name('systemd-executor')))
 
 
 def restart_and_verify(path, digest, hosts, legacy=False, expected_config_fingerprint=None):
@@ -248,9 +291,18 @@ def restart_and_verify(path, digest, hosts, legacy=False, expected_config_finger
     config_fingerprint = expected_config_fingerprint or runtime_fingerprint()
     require(runtime_fingerprint() == config_fingerprint, 'approved runtime configuration drift before restart')
     run('systemctl', 'restart', UNIT)
-    deadline = time.monotonic() + 45
+    started = time.monotonic()
+    deadline = started + 45
     while True:
-        current = status()
+        require(unit_fingerprint() == fingerprint and runtime_fingerprint() == config_fingerprint, 'configuration drift during startup')
+        try:
+            current = status()
+        except (ValueError, FileNotFoundError) as error:
+            transient = isinstance(error, FileNotFoundError) or str(error) == 'unexpected runtime path'
+            if transient and time.monotonic() - started < 2 and exec_pending(path):
+                time.sleep(0.1)
+                continue
+            raise
         require(current['runtime_path'] == path and current['binary_sha256'] == digest and current['restarts'] == 0 and current['unit_fingerprint'] == fingerprint and current['runtime_config_fingerprint'] == config_fingerprint, 'unexpected runtime/configuration or restart during startup')
         try:
             healthy(path, digest, hosts, legacy)
@@ -358,9 +410,10 @@ def recovery_health(m):
     recovery_matches(m)
     require(sha(DROPIN) == m['files']['recovery.conf'], 'recovery override drift')
     healthy(str(RELEASES / m['release_id'] / 'wecom-mcp-team'), m['files']['wecom-mcp-team'], HOSTS[:1])
-    for endpoint in ('/healthz', '/readyz', '/mcp', '/.well-known/oauth-protected-resource/mcp'):
-        probe(HOSTS[1], endpoint, 421)
-    probe(HOSTS[1], '/mcp', 421, True)
+    for host in HOSTS[1:]:
+        for endpoint in ('/healthz', '/readyz', '/mcp', '/.well-known/oauth-protected-resource/mcp'):
+            probe(host, endpoint, 421)
+        probe(host, '/mcp', 421, True)
 
 
 def restore(release_id):

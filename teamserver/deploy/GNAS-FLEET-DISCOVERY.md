@@ -2,6 +2,8 @@
 
 日期：2026-09-23。已完成混合模式实现、fake/HTTP/race 验证及生产只读基线检查；配对 GNAS 已合并并暂存候选。未写生产数据库、未修改 Nginx、未切换或重启生产。
 
+后续本地候选已将本文原先的“单租户 Registry/Z-S00 未就绪导致整个发现失败”收窄为对应 Host 503；其余全局权威与配置门禁不变。最新行为、缓存限制及验收范围见 [未就绪租户隔离](../../docs/operations/unready-tenant-isolation.md)。本文原始候选的验证/生产状态不作为后续候选的发布证据。
+
 ## 根因及证据边界
 
 基线 MCP `4cfd3a3` 支持 `--config`、`--fleet`、`--gnas-fleet-runtime`。第三种模式通过 Service JWT 调用 `POST /gnas/service/resolveMCPBindingsV1`，但仍把每个数据库 Binding 与本地 runtime manifest 对接，取实例路径和独立 OAuth introspection 客户端密钥引用。HostRouter 只在启动时构建。不存在“打开已有 DB-only 参数即可解决”的隐藏开关。

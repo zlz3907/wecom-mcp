@@ -72,7 +72,7 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(self.override.read_bytes(), c.recovery_dropin(self.rid))
             self.assertEqual(restart.call_args.args, (str(self.directory/'wecom-mcp-team'), self.m['files']['wecom-mcp-team'], c.HOSTS[:1]))
             self.assertEqual(healthy.call_args.args[2], c.HOSTS[:1])
-            self.assertTrue(all(call.args[0] == c.HOSTS[1] and call.args[2] == 421 for call in probe.call_args_list))
+            self.assertTrue(all(call.args[0] in c.HOSTS[1:] and call.args[2] == 421 for call in probe.call_args_list))
             self.assertTrue((self.control/'rollback'/self.rid/'recovered.json').exists())
 
     def test_failed_recovery_never_records_success(self):

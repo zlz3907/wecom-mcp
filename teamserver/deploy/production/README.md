@@ -4,11 +4,13 @@
 
 ## 固定范围
 
-仅 `zhycit-prod-01/wecom-mcp-gmzoop` 的 `wecom-mcp@gmzoop.service`，固定 SSH 别名 `zhycit.com`。原服务用户/组、环境文件、GNAS、数据库、凭据、Nginx、实例配置、Schema 和 state 保留。只通过受审控制器原子替换 `zz-managed-release.conf`；不修改 current/previous。实际运行版本以 `/proc/PID/exe`、SHA、unit/config 指纹为准。
+逻辑环境为 `zhycit-prod-01/wecom-mcp-gmzoop`；服务改名完成后固定管理 `wecom-mcp@sharedzoop.service`，固定 SSH 别名 `zhycit.com`。原服务用户/组、环境文件、GNAS、数据库、凭据、Nginx、实例配置、Schema 和 state 保留。只通过受审控制器原子替换 `zz-managed-release.conf`；不修改 current/previous。实际运行版本以 `/proc/PID/exe`、SHA、unit/config 指纹为准。
 
 - 主模式：新二进制 + 原 `fleet-runtime-20260916.json` + 共享 discovery policy + 30 秒刷新。原映射国脉完整能力，新租户只读。
 - 恢复模式：**同一路径、同 SHA 的新二进制**和上述参数，再加 `--gnas-static-only https://mcp.wesiyu.com`。runtime manifest 必须恰好一个静态映射，其权威 URL 必须完全匹配。
 - 恢复仅发布国脉，尖品客及其它未映射 Host 为 421；不会新增静态租户映射或删除 DB Binding。
+
+旧名称迁移必须先按 [单一共享服务改名](SHARED_SERVICE_MIGRATION.md) 执行；不可直接升级 controller 或重启旧二进制。动态租户可保持受隔离的未就绪 503，不能据此宣称客户端可用。
 
 ## 为什么不用普通 --fleet
 

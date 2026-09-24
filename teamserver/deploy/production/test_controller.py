@@ -136,3 +136,27 @@ class ControllerTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class StartupExecTests(unittest.TestCase):
+    def test_known_launcher_waits_then_verifies_actual_binary(self):
+        current=dict(runtime_path='/expected',binary_sha256='a'*64,restarts=0,unit_fingerprint='u',runtime_config_fingerprint='r')
+        with patch.object(c,'run'),patch.object(c,'unit_fingerprint',return_value='u'),patch.object(c,'runtime_fingerprint',return_value='r'),patch.object(c,'status',side_effect=[ValueError('unexpected runtime path'),current]),patch.object(c,'exec_pending',return_value=True),patch.object(c,'healthy') as healthy,patch.object(c.time,'monotonic',return_value=0),patch.object(c.time,'sleep') as sleep:
+            c.restart_and_verify('/expected','a'*64,c.HOSTS)
+            sleep.assert_called_once_with(0.1);healthy.assert_called_once()
+
+    def test_foreign_or_overdue_startup_does_not_retry(self):
+        for pending, times in ((False,[0,0]),(True,[0,3])):
+            with self.subTest(pending=pending,times=times),patch.object(c,'run'),patch.object(c,'unit_fingerprint',return_value='u'),patch.object(c,'runtime_fingerprint',return_value='r'),patch.object(c,'status',side_effect=ValueError('unexpected runtime path')),patch.object(c,'exec_pending',return_value=pending),patch.object(c,'healthy') as healthy,patch.object(c.time,'monotonic',side_effect=times),patch.object(c.time,'sleep') as sleep:
+                with self.assertRaisesRegex(ValueError,'unexpected runtime path'):c.restart_and_verify('/expected','a'*64,c.HOSTS)
+                healthy.assert_not_called();sleep.assert_not_called()
+
+    def test_pending_requires_exact_config_and_known_manager_image(self):
+        props={'ExecStart':'{ path=/expected ; argv[]=/expected ; }','NRestarts':'0','ActiveState':'active','MainPID':'123'}
+        def run(*args):return props[args[-2]]
+        with patch.object(c,'run',side_effect=run):
+            for actual, wanted in (('/usr/lib/systemd/systemd',True),('/usr/lib/systemd/systemd-executor',True),('/expected',True),('/foreign',False)):
+                with patch.object(c.os,'readlink',side_effect=lambda p: '/usr/lib/systemd/systemd' if p=='/proc/1/exe' else actual):
+                    self.assertEqual(c.exec_pending('/expected'),wanted)
+            props['ExecStart']='{ path=/foreign ; }'
+            with self.assertRaisesRegex(ValueError,'configured runtime drift'):c.exec_pending('/expected')

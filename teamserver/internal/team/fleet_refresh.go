@@ -94,7 +94,14 @@ func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 		// Reuse unchanged services, including their concurrency limits and
 		// identity state. Polling must not create a new service every interval.
 		handler := f.handlers[id]
-		if handler == nil || !reflect.DeepEqual(f.bindings[id], binding) {
+		if binding.RegistryUnavailable {
+			// An authoritative but unready Host has no MCP/authentication handler,
+			// including metadata and health paths. Never reuse its prior service.
+			handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Cache-Control", "no-store")
+				http.Error(w, "MCP instance unavailable", http.StatusServiceUnavailable)
+			})
+		} else if handler == nil || !reflect.DeepEqual(f.bindings[id], binding) {
 			handler, err = f.build(binding.Config)
 			if err != nil {
 				return fmt.Errorf("fleet binding handler initialization failed")
