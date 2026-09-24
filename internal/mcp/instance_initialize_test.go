@@ -308,6 +308,74 @@ func TestVerifyInitializeConfiguredOperatorExactLookupFailsClosed(t *testing.T) 
 	}
 }
 
+func TestVerifyBoundOperatorUsesExactLookupInWriteCapability(t *testing.T) {
+	for _, group := range []string{schemaMigrationGroup, schemaRegistryGroup} {
+		t.Run(group, func(t *testing.T) {
+			runtime := config.Config{
+				WecomOperatorUserID: "symbolic-admin",
+				APIWhitelist:        map[string][]string{group: {"get_employee"}},
+			}
+			fake := &initializeOperatorLookupFake{response: map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "symbolic-admin", "status": float64(1)}}}
+			if err := verifyBoundOperator(context.Background(), runtime, fake, group); err != nil {
+				t.Fatal(err)
+			}
+			if len(fake.operations) != 1 || fake.operations[0] != "get_employee" {
+				t.Fatalf("write capability did not use exact operator lookup: %#v", fake.operations)
+			}
+		})
+	}
+}
+
+func TestVerifyBoundOperatorExactLookupNeverFallsBack(t *testing.T) {
+	runtime := config.Config{
+		WecomOperatorUserID: "symbolic-admin",
+		APIWhitelist:        map[string][]string{schemaMigrationGroup: {"get_employee", "list_employees"}},
+	}
+	fake := &initializeOperatorLookupFake{response: map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "symbolic-admin", "status": float64(2)}}}
+	if err := verifyBoundOperator(context.Background(), runtime, fake, schemaMigrationGroup); err == nil {
+		t.Fatal("inactive exact operator unexpectedly verified")
+	}
+	if len(fake.operations) != 1 || fake.operations[0] != "get_employee" {
+		t.Fatalf("failed exact lookup fell back to directory enumeration: %#v", fake.operations)
+	}
+}
+
+func TestVerifyBoundOperatorExactLookupDoesNotExpandOtherGroups(t *testing.T) {
+	for _, group := range []string{appMessageCapabilityGroup, "field_codec_lab", "zoop_records_write"} {
+		t.Run(group, func(t *testing.T) {
+			runtime := config.Config{
+				WecomOperatorUserID: "symbolic-admin",
+				APIWhitelist:        map[string][]string{group: {"get_employee"}},
+			}
+			fake := &initializeOperatorLookupFake{response: map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "symbolic-admin", "status": float64(1)}}}
+			if err := verifyBoundOperator(context.Background(), runtime, fake, group); err == nil {
+				t.Fatal("unapproved capability group used exact operator lookup")
+			}
+			if len(fake.operations) != 0 {
+				t.Fatalf("unapproved capability group reached directory operation: %#v", fake.operations)
+			}
+		})
+	}
+}
+
+func TestVerifyBoundOperatorOtherGroupsKeepLegacyDirectoryLookup(t *testing.T) {
+	for _, group := range []string{appMessageCapabilityGroup, "field_codec_lab", "zoop_records_write"} {
+		t.Run(group, func(t *testing.T) {
+			runtime := config.Config{
+				WecomOperatorUserID: "symbolic-admin",
+				APIWhitelist:        map[string][]string{group: {"get_employee", "list_employees"}},
+			}
+			fake := &initializeFakeClient{}
+			if err := verifyBoundOperator(context.Background(), runtime, fake, group); err != nil {
+				t.Fatal(err)
+			}
+			if len(fake.operations) != 1 || fake.operations[0] != "list_employees" {
+				t.Fatalf("legacy write group unexpectedly switched directory contract: %#v", fake.operations)
+			}
+		})
+	}
+}
+
 func TestInstanceInitializeIncompletePaginationHasNoUsablePreview(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
 	fake.registryIncomplete = true

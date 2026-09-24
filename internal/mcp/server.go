@@ -169,13 +169,27 @@ func verifyBoundOperator(ctx context.Context, runtime config.Config, client weco
 	if runtime.WecomOperatorUserID == "" {
 		return fmt.Errorf("实例未配置 wecom_operator_userid，远程写入保持关闭")
 	}
-	if capabilityGroup != "" && !runtime.AllowsInGroup(capabilityGroup, "list_employees") {
-		return fmt.Errorf("%s 专用 capability 未允许 list_employees", capabilityGroup)
+	operatorOperation := "list_employees"
+	if supportsExactBoundOperatorLookup(capabilityGroup) && runtime.AllowsInGroup(capabilityGroup, "get_employee") {
+		operatorOperation = "get_employee"
 	}
-	if _, err := verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID); err != nil {
+	if capabilityGroup != "" && !runtime.AllowsInGroup(capabilityGroup, operatorOperation) {
+		return fmt.Errorf("%s 专用 capability 未允许 %s", capabilityGroup, operatorOperation)
+	}
+	var verifyErr error
+	if operatorOperation == "get_employee" {
+		_, verifyErr = verifyConfiguredOperator(ctx, runtime, client, capabilityGroup)
+	} else {
+		_, verifyErr = verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID)
+	}
+	if verifyErr != nil {
 		return fmt.Errorf("business_operator_userid 未通过当前固定租户员工目录核验")
 	}
 	return nil
+}
+
+func supportsExactBoundOperatorLookup(capabilityGroup string) bool {
+	return capabilityGroup == schemaMigrationGroup || capabilityGroup == schemaRegistryGroup
 }
 
 func (s *Server) boundOperatorWrite(ctx context.Context, runtime config.Config, client wecomRequester, capabilityGroup string, operation func() (any, error)) (any, error) {

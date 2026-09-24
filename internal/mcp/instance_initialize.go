@@ -2047,8 +2047,12 @@ func readInitializeDocumentIdentity(ctx context.Context, client wecomRequester, 
 }
 
 func verifyInitializeConfiguredOperator(ctx context.Context, runtime config.Config, client wecomRequester) (map[string]any, error) {
+	return verifyConfiguredOperator(ctx, runtime, client, instanceInitializeGroup)
+}
+
+func verifyConfiguredOperator(ctx context.Context, runtime config.Config, client wecomRequester, capabilityGroup string) (map[string]any, error) {
 	operatorUserID := runtime.WecomOperatorUserID
-	if runtime.AllowsInGroup(instanceInitializeGroup, "get_employee") {
+	if runtime.AllowsInGroup(capabilityGroup, "get_employee") {
 		response, err := client.Request(ctx, "get_employee", map[string]any{"userid": operatorUserID})
 		if err != nil || apiError(response) != nil {
 			return nil, fmt.Errorf("operator exact lookup unavailable")
