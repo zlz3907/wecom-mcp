@@ -161,6 +161,9 @@ def finish(m, expected, record, recovery=False):
     inactive(SOURCE)
     c.require(prop(SOURCE, 'UnitFileState') == 'disabled', 'source still enabled')
     effective(m)
+    current = c.status()
+    c.require(current['runtime_path'] == str(c.RELEASES / rid / 'wecom-mcp-team')
+              and current['binary_sha256'] == m['files']['wecom-mcp-team'], 'target runtime drift; compensation refused')
     c.require(c.runtime_fingerprint() == m['expected_runtime_config_fingerprint'], 'runtime configuration drift')
     c.require(c.sha(c.DROPIN) in (m['files']['service.conf'], m['files']['recovery.conf']), 'target override changed')
     if recovery:

@@ -141,6 +141,16 @@ class MigrationTests(unittest.TestCase):
             atomic.assert_not_called()
         self.assertEqual(self.calls,[])
 
+    def test_foreign_target_runtime_refuses_compensation_before_write(self):
+        self.source_active = False
+        self.source_enabled = False
+        with patch.object(u,'policy_hash',return_value='policy'),patch.object(c,'status',return_value={
+                'runtime_path':'/releases/foreign/wecom-mcp-team','binary_sha256':'f'*64}),patch.object(c,'atomic') as atomic:
+            with self.assertRaisesRegex(ValueError,'target runtime drift'):
+                u.finish(self.manifest,self.expected,self.control,recovery=True)
+            atomic.assert_not_called()
+        self.assertEqual(self.calls,[])
+
     def test_consumed_receipt_crash_before_install_can_abort_without_restarting(self):
         record=self.control/'unit-migrations'/self.rid;record.mkdir(parents=True)
         (record/'expected.json').write_text(json.dumps(self.expected))
