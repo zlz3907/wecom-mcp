@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -36,10 +37,23 @@ type Operation struct {
 	Kind   string
 }
 
+var employeeUserID = regexp.MustCompile(`^[A-Za-z0-9_.@-]{1,64}$`)
+
+// EmployeeLookupPath validates the complete payload before building a fixed endpoint.
+func EmployeeLookupPath(payload any) (string, error) {
+	object, ok := payload.(map[string]any)
+	userid, valid := object["userid"].(string)
+	if !ok || len(object) != 1 || !valid || !employeeUserID.MatchString(userid) {
+		return "", fmt.Errorf("get_employee 仅接受合法的 userid")
+	}
+	return "/cgi-bin/user/get?" + url.Values{"userid": []string{userid}}.Encode(), nil
+}
+
 // Operations is the complete Enterprise WeCom surface implemented by the
 // legacy MCP. get_sheet is retained as a compatibility alias for its legacy
 // public name get_sheets; both call the same upstream endpoint.
 var Operations = map[string]Operation{
+	"get_employee":         {"GET", "/cgi-bin/user/get", "read"},
 	"list_employees":       {"GET", "/cgi-bin/user/list?department_id=1&fetch_child=1", "read"},
 	"send_app_message":     {"POST", "/cgi-bin/message/send", "write"},
 	"upload_app_media":     {"POST", "/cgi-bin/media/upload", "write"},
@@ -154,6 +168,13 @@ func (c *Client) Request(ctx context.Context, operation string, payload any) (ma
 	definition, ok := Operations[operation]
 	if !ok {
 		return nil, fmt.Errorf("不支持的企业微信 API: %s", operation)
+	}
+	if operation == "get_employee" {
+		var err error
+		definition.Path, err = EmployeeLookupPath(payload)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if operation == "upload_app_media" {
 		return nil, fmt.Errorf("上传企业微信临时素材必须使用受管媒体上传接口")

@@ -82,6 +82,10 @@ func validateLegacyOperation(operation string, payload map[string]any) (map[stri
 	if containsReservedRequestField(payload, false) {
 		return nil, fmt.Errorf("请求不得包含租户、地址或凭据路由字段")
 	}
+	if operation == "get_employee" {
+		_, err := wecom.EmployeeLookupPath(payload)
+		return payload, err
+	}
 	if operation == "list_employees" {
 		if len(payload) != 0 {
 			return nil, fmt.Errorf("list_employees 不接受参数")
@@ -193,6 +197,16 @@ func containsReservedRequestField(value any, recordValues bool) bool {
 }
 
 func sanitizeLegacyResponse(operation string, value any) any {
+	if operation == "get_employee" {
+		user, _ := value.(map[string]any)
+		out := map[string]any{}
+		for _, key := range []string{"errcode", "userid", "status"} {
+			if v, ok := user[key]; ok {
+				out[key] = v
+			}
+		}
+		return out
+	}
 	if operation == "list_employees" {
 		return sanitizeEmployees(value)
 	}

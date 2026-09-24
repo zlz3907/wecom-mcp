@@ -26,6 +26,21 @@ type initializeFakeClient struct {
 	operations         []string
 	documentAuth       map[string]any
 	employeeUserID     string
+	exactEmployee      map[string]any
+}
+
+type initializeOperatorLookupFake struct {
+	response   map[string]any
+	err        error
+	operations []string
+}
+
+func (f *initializeOperatorLookupFake) Request(_ context.Context, operation string, _ any) (map[string]any, error) {
+	f.operations = append(f.operations, operation)
+	if operation != "get_employee" {
+		return nil, fmt.Errorf("unexpected request %s", operation)
+	}
+	return f.response, f.err
 }
 
 func (f *initializeFakeClient) Request(_ context.Context, operation string, payload any) (map[string]any, error) {
@@ -34,6 +49,11 @@ func (f *initializeFakeClient) Request(_ context.Context, operation string, payl
 	documentID, _ := body["docid"].(string)
 	sheetID, _ := body["sheet_id"].(string)
 	switch operation {
+	case "get_employee":
+		if f.exactEmployee != nil {
+			return map[string]any{"result": f.exactEmployee}, nil
+		}
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "symbolic-admin", "status": float64(1)}}, nil
 	case "list_employees":
 		userid := f.employeeUserID
 		if userid == "" {
@@ -181,6 +201,11 @@ func readyInitializeFixture(t *testing.T) (config.Config, *initializeFakeClient)
 		t.Fatal(err)
 	}
 	runtime.SchemaDigest = local.Digest
+	selfValues := map[string]any{}
+	for title, value := range registrySelfValues(runtime, fake.registryDocumentID, "https://example.invalid/registry", "2026-01-01T00:00:00Z", schemaFingerprint(fake.registryFields)) {
+		selfValues["id-"+title] = []any{map[string]any{"text": value}}
+	}
+	fake.activeRows = append(fake.activeRows, map[string]any{"record_id": "registry-self-row", "values": selfValues})
 	return runtime, fake
 }
 
@@ -215,6 +240,139 @@ func TestInstanceInitializeRequiresDedicatedCapabilityGroup(t *testing.T) {
 	}
 	if result.(map[string]any)["state"] != "environment_unavailable" || len(fake.operations) != 0 {
 		t.Fatalf("dedicated capability was bypassed: result=%#v calls=%#v", result, fake.operations)
+	}
+}
+
+func TestInstanceInitializePrefersExactOperatorLookup(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	runtime.APIWhitelist[instanceInitializeGroup] = append(
+		[]string{"get_employee"},
+		runtime.APIWhitelist[instanceInitializeGroup][1:]...,
+	)
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil || result.(map[string]any)["state"] != "ready" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if strings.Contains(strings.Join(fake.operations, ","), "list_employees") || fake.operations[0] != "get_employee" {
+		t.Fatalf("exact lookup was not preferred: %#v", fake.operations)
+	}
+}
+
+func TestInstanceInitializeRejectsInvalidExactOperatorWithoutDirectoryFallback(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	runtime.APIWhitelist[instanceInitializeGroup] = append(
+		[]string{"get_employee"},
+		runtime.APIWhitelist[instanceInitializeGroup][1:]...,
+	)
+	fake.exactEmployee = map[string]any{"errcode": float64(0), "userid": runtime.WecomOperatorUserID, "status": float64(2)}
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := result.(map[string]any)
+	if output["state"] != "conflict" || !strings.Contains(fmt.Sprint(output["conflicts"]), "wecom_operator_not_verified_in_tenant") {
+		t.Fatalf("invalid exact employee was accepted: %#v", output)
+	}
+	if strings.Contains(strings.Join(fake.operations, ","), "list_employees") {
+		t.Fatalf("invalid exact lookup fell back to broader directory enumeration: %#v", fake.operations)
+	}
+}
+
+func TestVerifyInitializeConfiguredOperatorExactLookupFailsClosed(t *testing.T) {
+	runtime := config.Config{
+		WecomOperatorUserID: "symbolic-admin",
+		APIWhitelist:        map[string][]string{instanceInitializeGroup: {"get_employee", "list_employees"}},
+	}
+	tests := []struct {
+		name     string
+		response map[string]any
+		err      error
+	}{
+		{name: "transport error", err: fmt.Errorf("unavailable")},
+		{name: "api error", response: map[string]any{"result": map[string]any{"errcode": float64(40001), "errmsg": "invalid credential"}}},
+		{name: "missing errcode", response: map[string]any{"result": map[string]any{"userid": "symbolic-admin", "status": float64(1)}}},
+		{name: "wrong userid", response: map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "other-admin", "status": float64(1)}}},
+		{name: "missing status", response: map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "symbolic-admin"}}},
+		{name: "inactive", response: map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "symbolic-admin", "status": float64(2)}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &initializeOperatorLookupFake{response: test.response, err: test.err}
+			if _, err := verifyInitializeConfiguredOperator(context.Background(), runtime, fake); err == nil {
+				t.Fatal("invalid exact lookup unexpectedly verified")
+			}
+			if len(fake.operations) != 1 || fake.operations[0] != "get_employee" {
+				t.Fatalf("exact lookup fell back to directory enumeration: %#v", fake.operations)
+			}
+		})
+	}
+}
+
+func TestVerifyBoundOperatorUsesExactLookupInWriteCapability(t *testing.T) {
+	for _, group := range []string{schemaMigrationGroup, schemaRegistryGroup} {
+		t.Run(group, func(t *testing.T) {
+			runtime := config.Config{
+				WecomOperatorUserID: "symbolic-admin",
+				APIWhitelist:        map[string][]string{group: {"get_employee"}},
+			}
+			fake := &initializeOperatorLookupFake{response: map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "symbolic-admin", "status": float64(1)}}}
+			if err := verifyBoundOperator(context.Background(), runtime, fake, group); err != nil {
+				t.Fatal(err)
+			}
+			if len(fake.operations) != 1 || fake.operations[0] != "get_employee" {
+				t.Fatalf("write capability did not use exact operator lookup: %#v", fake.operations)
+			}
+		})
+	}
+}
+
+func TestVerifyBoundOperatorExactLookupNeverFallsBack(t *testing.T) {
+	runtime := config.Config{
+		WecomOperatorUserID: "symbolic-admin",
+		APIWhitelist:        map[string][]string{schemaMigrationGroup: {"get_employee", "list_employees"}},
+	}
+	fake := &initializeOperatorLookupFake{response: map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "symbolic-admin", "status": float64(2)}}}
+	if err := verifyBoundOperator(context.Background(), runtime, fake, schemaMigrationGroup); err == nil {
+		t.Fatal("inactive exact operator unexpectedly verified")
+	}
+	if len(fake.operations) != 1 || fake.operations[0] != "get_employee" {
+		t.Fatalf("failed exact lookup fell back to directory enumeration: %#v", fake.operations)
+	}
+}
+
+func TestVerifyBoundOperatorExactLookupDoesNotExpandOtherGroups(t *testing.T) {
+	for _, group := range []string{appMessageCapabilityGroup, "field_codec_lab", "zoop_records_write"} {
+		t.Run(group, func(t *testing.T) {
+			runtime := config.Config{
+				WecomOperatorUserID: "symbolic-admin",
+				APIWhitelist:        map[string][]string{group: {"get_employee"}},
+			}
+			fake := &initializeOperatorLookupFake{response: map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "symbolic-admin", "status": float64(1)}}}
+			if err := verifyBoundOperator(context.Background(), runtime, fake, group); err == nil {
+				t.Fatal("unapproved capability group used exact operator lookup")
+			}
+			if len(fake.operations) != 0 {
+				t.Fatalf("unapproved capability group reached directory operation: %#v", fake.operations)
+			}
+		})
+	}
+}
+
+func TestVerifyBoundOperatorOtherGroupsKeepLegacyDirectoryLookup(t *testing.T) {
+	for _, group := range []string{appMessageCapabilityGroup, "field_codec_lab", "zoop_records_write"} {
+		t.Run(group, func(t *testing.T) {
+			runtime := config.Config{
+				WecomOperatorUserID: "symbolic-admin",
+				APIWhitelist:        map[string][]string{group: {"get_employee", "list_employees"}},
+			}
+			fake := &initializeFakeClient{}
+			if err := verifyBoundOperator(context.Background(), runtime, fake, group); err != nil {
+				t.Fatal(err)
+			}
+			if len(fake.operations) != 1 || fake.operations[0] != "list_employees" {
+				t.Fatalf("legacy write group unexpectedly switched directory contract: %#v", fake.operations)
+			}
+		})
 	}
 }
 
@@ -979,21 +1137,24 @@ type initializeLifecycleDocument struct {
 }
 
 type initializeLifecycleFake struct {
-	documents         map[string]*initializeLifecycleDocument
-	operations        []string
-	failOnceOperation string
-	failed            bool
-	sequence          int
-	createCount       int
-	deleteCount       int
-	updateFieldCount  int
-	smokeCount        int
-	failFinalResolver bool
-	addRecordCalls    int
-	hideRegistryReads int
-	hideReadsAfterAdd int
-	formulaPayload    map[string]any
-	createPayloads    []map[string]any
+	documents                  map[string]*initializeLifecycleDocument
+	operations                 []string
+	failOnceOperation          string
+	failed                     bool
+	sequence                   int
+	createCount                int
+	deleteCount                int
+	updateFieldCount           int
+	smokeCount                 int
+	failFinalResolver          bool
+	addRecordCalls             int
+	selfAddRecordCalls         int
+	businessCreatedWithoutSelf bool
+	omitCreateURL              bool
+	hideRegistryReads          int
+	hideReadsAfterAdd          int
+	formulaPayload             map[string]any
+	createPayloads             []map[string]any
 }
 
 func (f *initializeLifecycleFake) nextID(prefix string) string {
@@ -1028,11 +1189,16 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 	documentID, _ := body["docid"].(string)
 	sheetID, _ := body["sheet_id"].(string)
 	switch operation {
+	case "get_employee":
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "test-admin", "status": float64(1)}}, nil
 	case "list_employees":
 		return map[string]any{"result": map[string]any{"errcode": float64(0), "userlist": []any{map[string]any{"userid": "test-admin", "status": float64(1)}}}}, nil
 	case "create_smartsheet":
 		f.createPayloads = append(f.createPayloads, body)
 		name, _ := body["doc_name"].(string)
+		if name != "SMART_SHEETS_IDS" && f.selfAddRecordCalls == 0 {
+			f.businessCreatedWithoutSelf = true
+		}
 		id := f.nextID("document")
 		defaultFieldID := f.nextID("default-field")
 		defaultSheet := &initializeLifecycleSheet{
@@ -1040,9 +1206,26 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 			fields:  []any{map[string]any{"field_id": defaultFieldID, "field_title": "默认主字段", "field_type": "FIELD_TYPE_TEXT"}},
 			records: []any{map[string]any{"record_id": f.nextID("empty-record"), "values": map[string]any{defaultFieldID: []any{}}}},
 		}
+		if name == "SMART_SHEETS_IDS" {
+			defaultSheet.fields = nil
+			for _, title := range []string{"文本", "单选", "人员", "数字", "日期"} {
+				field := map[string]any{"field_id": f.nextID("default-field")}
+				for k, v := range registryDefaultFields[title] {
+					field[k] = v
+				}
+				defaultSheet.fields = append(defaultSheet.fields, field)
+			}
+			defaultSheet.records = []any{map[string]any{"record_id": f.nextID("empty-record"), "values": map[string]any{}}}
+		}
 		f.documents[id] = &initializeLifecycleDocument{id: id, name: name, sheets: []*initializeLifecycleSheet{defaultSheet}}
 		f.createCount++
-		return map[string]any{"result": map[string]any{"errcode": float64(0), "docid": id}}, nil
+		result := map[string]any{"errcode": float64(0), "docid": id}
+		if !f.omitCreateURL {
+			result["url"] = "https://example.invalid/" + id
+		}
+		return map[string]any{"result": result}, nil
+	case "get_doc_share_url":
+		return okInitializeResponse("share_url", "https://example.invalid/"+documentID), nil
 	case "get_doc_base_info":
 		document := f.documents[documentID]
 		if document == nil {
@@ -1071,11 +1254,15 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 		}
 		return okInitializeResponse("sheet_list", items), nil
 	case "update_sheet":
+		properties, _ := body["properties"].(map[string]any)
+		sheetID, _ = properties["sheet_id"].(string)
+		if sheetID == "" || body["sheet_id"] != nil {
+			return nil, fmt.Errorf("update_sheet must place sheet_id inside properties")
+		}
 		sheet, err := f.sheet(documentID, sheetID)
 		if err != nil {
 			return nil, err
 		}
-		properties, _ := body["properties"].(map[string]any)
 		sheet.name, _ = properties["title"].(string)
 		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
 	case "add_sheet":
@@ -1164,6 +1351,26 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 			return map[string]any{"result": map[string]any{"errcode": float64(0), "has_more": false, "records": []any{}}}, nil
 		}
 		return map[string]any{"result": map[string]any{"errcode": float64(0), "has_more": false, "records": sheet.records}}, nil
+	case "delete_fields":
+		sheet, err := f.sheet(documentID, sheetID)
+		if err != nil {
+			return nil, err
+		}
+		ids, _ := body["field_ids"].([]string)
+		kept := []any{}
+		for _, raw := range sheet.fields {
+			remove := false
+			for _, id := range ids {
+				if raw.(map[string]any)["field_id"] == id {
+					remove = true
+				}
+			}
+			if !remove {
+				kept = append(kept, raw)
+			}
+		}
+		sheet.fields = kept
+		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
 	case "delete_records":
 		sheet, err := f.sheet(documentID, sheetID)
 		if err != nil {
@@ -1173,16 +1380,31 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 		f.deleteCount++
 		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
 	case "add_records":
-		f.addRecordCalls++
-		if f.hideReadsAfterAdd > 0 {
-			f.hideRegistryReads = f.hideReadsAfterAdd
-			f.hideReadsAfterAdd = 0
-		}
 		sheet, err := f.sheet(documentID, sheetID)
 		if err != nil {
 			return nil, err
 		}
 		items, _ := body["records"].([]any)
+		selfWrite := false
+		for _, itemRaw := range items {
+			item := itemRaw.(map[string]any)
+			values := item["values"].(map[string]any)
+			for _, raw := range sheet.fields {
+				field := raw.(map[string]any)
+				if field["field_title"] == "registry_key" && initializeTextCell(values[field["field_id"].(string)]) == registrySelfKey {
+					selfWrite = true
+				}
+			}
+		}
+		if selfWrite {
+			f.selfAddRecordCalls++
+		} else {
+			f.addRecordCalls++
+			if f.hideReadsAfterAdd > 0 {
+				f.hideRegistryReads = f.hideReadsAfterAdd
+				f.hideReadsAfterAdd = 0
+			}
+		}
 		createdRecords := []any{}
 		for _, itemRaw := range items {
 			item, _ := itemRaw.(map[string]any)
@@ -1190,7 +1412,7 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 			sheet.records = append(sheet.records, record)
 			createdRecords = append(createdRecords, record)
 		}
-		if f.shouldFail(operation) {
+		if !selfWrite && f.shouldFail(operation) {
 			return nil, fmt.Errorf("injected uncertain add_records")
 		}
 		return map[string]any{"result": map[string]any{"errcode": float64(0), "records": createdRecords}}, nil
@@ -1214,7 +1436,7 @@ func syntheticInitializeCatalog() zoopschema.Catalog {
 func initializeLifecycleFixture(t *testing.T) (config.Config, zoopschema.Catalog, *initializeLifecycleFake, *Server, initializeObservation, instanceInitializeJournal) {
 	t.Helper()
 	directory := t.TempDir()
-	operations := []string{"list_employees", "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "create_smartsheet", "grant_doc_readers", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records"}
+	operations := []string{"list_employees", "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "create_smartsheet", "grant_doc_readers", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records", "delete_fields", "get_doc_share_url"}
 	runtime := config.Config{
 		Version: 1, InstanceName: "initialize-test", TenantRoute: "test-route", SchemaAdminUser: "test-admin", WecomOperatorUserID: "test-admin", RegistryKey: "test-registry",
 		SchemaMirrorPath: filepath.Join(directory, "not-yet-created.json"), StatePath: filepath.Join(directory, "state.json"),
@@ -1288,6 +1510,14 @@ func TestRemoteInitializerControlledEndToEnd(t *testing.T) {
 	if fake.createCount != 2 || fake.deleteCount != 10 || fake.updateFieldCount != 10 || fake.smokeCount < 3 {
 		t.Fatalf("unexpected lifecycle evidence: create=%d delete=%d update=%d smoke=%d", fake.createCount, fake.deleteCount, fake.updateFieldCount, fake.smokeCount)
 	}
+	if fake.selfAddRecordCalls != 1 || fake.businessCreatedWithoutSelf {
+		t.Fatalf("Registry self row must be verified before business creation: self_writes=%d business_before_self=%v", fake.selfAddRecordCalls, fake.businessCreatedWithoutSelf)
+	}
+	for _, operation := range fake.operations {
+		if operation == "get_doc_share_url" {
+			t.Fatal("fresh create URL was ignored")
+		}
+	}
 	for _, payload := range fake.createPayloads {
 		admins, ok := payload["admin_users"].([]string)
 		if !ok || len(admins) != 1 || admins[0] != runtime.WecomOperatorUserID {
@@ -1301,6 +1531,42 @@ func TestRemoteInitializerControlledEndToEnd(t *testing.T) {
 	persisted, err := server.store.Current()
 	if err != nil || persisted.RegistryDocumentID == "" || persisted.RegistrySheetID == "" || persisted.InitializedState != "config_committed" {
 		t.Fatalf("initialized config was not committed: %#v err=%v", persisted, err)
+	}
+}
+
+func TestRemoteInitializerApplyUsesExactOperatorLookup(t *testing.T) {
+	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
+	operations := runtime.APIWhitelist[instanceInitializeGroup]
+	for index, operation := range operations {
+		if operation == "list_employees" {
+			operations[index] = "get_employee"
+		}
+	}
+	runtime.APIWhitelist[instanceInitializeGroup] = operations
+	data, err := json.MarshalIndent(runtime, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(filepath.Dir(runtime.StatePath), "instance.json")
+	if err := os.WriteFile(configPath, append(data, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, result, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{}); err != nil {
+		t.Fatal(err)
+	} else if result.(map[string]any)["state"] != "ready" {
+		t.Fatalf("initializer did not reach ready: %#v", result)
+	}
+	if strings.Contains(strings.Join(fake.operations, ","), "list_employees") {
+		t.Fatalf("apply fell back to directory enumeration: %#v", fake.operations)
+	}
+	exactCalls := 0
+	for _, operation := range fake.operations {
+		if operation == "get_employee" {
+			exactCalls++
+		}
+	}
+	if exactCalls < 2 {
+		t.Fatalf("status and apply did not both re-verify exact operator: %#v", fake.operations)
 	}
 }
 
@@ -1418,7 +1684,7 @@ func TestRemoteInitializerNeverRepeatsTemporarilyInvisibleActiveRowWrite(t *test
 		t.Fatalf("active row pending journal did not converge: %#v err=%v", convergedJournal, err)
 	}
 	registry := fake.documents[journal.RegistryDocumentID]
-	if registry == nil || len(registry.sheets[0].records) != 1 {
+	if registry == nil || len(registry.sheets[0].records) != 2 {
 		t.Fatalf("active row recovery formed duplicate rows: %#v", registry)
 	}
 }
@@ -1464,7 +1730,7 @@ func TestInstanceInitializeRegistryRecoveryAllowsVerifiedFormulaWithoutStatusMut
 		t.Fatal(err)
 	}
 	status := result.(map[string]any)
-	if status["state"] != "recovery_required" || status["capability_gap"] != false || status["preview_id"] == "" || len(status["conflicts"].([]string)) != 0 {
+	if status["state"] != "recovery_required" || status["preview_id"] != "" || !strings.Contains(fmt.Sprint(status["conflicts"]), "imported_registry_has_extra_fields") {
 		t.Fatalf("verified formula catalog did not make Registry recovery executable: %#v", status)
 	}
 	applyRaw, _ := json.Marshal(map[string]string{
@@ -1541,25 +1807,20 @@ func TestInstanceInitializeRegistryRecoveryCandidateWithoutJournalDocIDRemainsUn
 		t.Fatal(err)
 	}
 	fake.deleteCount, fake.updateFieldCount = 0, 0
-	status, result, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{"recovery_registry_document_id": registryID})
+	statusRaw, _ := json.Marshal(map[string]string{"recovery_registry_document_id": registryID})
+	statusResult, err := server.instanceInitializeStatus(context.Background(), runtime, fake, nil, statusRaw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status["state"] != "recovery_required" || result.(map[string]any)["state"] != "ready" {
-		t.Fatalf("unowned Registry candidate recovery did not complete: status=%#v result=%#v", status, result)
+	status := statusResult.(map[string]any)
+	if status["preview_id"] != "" || !strings.Contains(fmt.Sprint(status["conflicts"]), "imported_registry_has_extra_fields") {
+		t.Fatalf("unowned Registry with default fields received usable preview: %#v", status)
 	}
-	defaultRecordPreserved := false
-	for _, raw := range original.records {
-		record, _ := raw.(map[string]any)
-		if strings.HasPrefix(fmt.Sprint(record["record_id"]), "empty-record-") {
-			defaultRecordPreserved = true
-		}
-	}
-	if original.name != "默认子表" || !defaultRecordPreserved || original.fields[0].(map[string]any)["field_title"] != "默认主字段" {
+	if original.name != "默认子表" || len(original.fields) != 5 || len(original.records) != 1 || original.fields[0].(map[string]any)["field_title"] != "文本" {
 		t.Fatalf("unowned Registry recovery candidate was cleaned or renamed: %#v", original)
 	}
-	if fake.deleteCount != 9 || fake.updateFieldCount != 9 {
-		t.Fatalf("Registry candidate cleanup escaped current-operation-created business sheets: delete=%d update=%d", fake.deleteCount, fake.updateFieldCount)
+	if fake.deleteCount != 0 || fake.updateFieldCount != 0 || fake.createCount != 1 {
+		t.Fatalf("unowned Registry caused writes: delete=%d update=%d create=%d", fake.deleteCount, fake.updateFieldCount, fake.createCount)
 	}
 }
 
@@ -1577,5 +1838,118 @@ func TestInstanceInitializeFinalSmokeMustUseReloadedConfigResolver(t *testing.T)
 	journal, _, exists, journalErr := loadInstanceInitializeJournal(instanceInitializeJournalPath(runtime))
 	if journalErr != nil || !exists || journal.Phase != "config_committed" {
 		t.Fatalf("Resolver failure did not retain forward-recovery journal: %#v exists=%v err=%v", journal, exists, journalErr)
+	}
+}
+
+func TestInstanceInitializeSelfRegistrationIsRequiredForReady(t *testing.T) {
+	for _, scenario := range []string{"missing", "duplicate", "conflicting", "malformed", "empty_row"} {
+		t.Run(scenario, func(t *testing.T) {
+			runtime, fake := readyInitializeFixture(t)
+			switch scenario {
+			case "missing":
+				fake.activeRows = fake.activeRows[:1]
+			case "duplicate":
+				row := fake.activeRows[1].(map[string]any)
+				fake.activeRows = append(fake.activeRows, map[string]any{"record_id": "duplicate-self", "values": row["values"]})
+			case "conflicting":
+				fake.activeRows[1].(map[string]any)["values"].(map[string]any)["id-docid"] = []any{map[string]any{"text": "wrong-doc"}}
+			case "malformed":
+				fake.activeRows[1] = "malformed"
+			case "empty_row":
+				fake.activeRows = append(fake.activeRows, map[string]any{"record_id": "empty-row", "values": map[string]any{}})
+			}
+			observation := observeInstanceInitialization(context.Background(), runtime, fake, nil, initializeStatusInput{})
+			if observation.State == "ready" {
+				t.Fatalf("%s self registration accepted", scenario)
+			}
+			if scenario == "missing" && !strings.Contains(strings.Join(observation.PlannedOperations, ","), "register_registry_self") {
+				t.Fatalf("missing self row not scheduled: %#v", observation)
+			}
+			for _, operation := range fake.operations {
+				if operation == "add_records" || operation == "delete_fields" {
+					t.Fatal("status wrote remote state")
+				}
+			}
+		})
+	}
+}
+
+func TestRemoteInitializerFetchesRealShareURLWhenCreateOmitsIt(t *testing.T) {
+	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
+	fake.omitCreateURL = true
+	_, result, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.(map[string]any)["state"] != "ready" || fake.businessCreatedWithoutSelf {
+		t.Fatalf("missing URL did not resolve safely: %#v", result)
+	}
+	calls := 0
+	for _, operation := range fake.operations {
+		if operation == "get_doc_share_url" {
+			calls++
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("expected exactly one real share URL read, got %d", calls)
+	}
+}
+
+func TestRemoteInitializerMissingShareURLCapabilityStopsBeforeBusinessCreate(t *testing.T) {
+	runtime, catalog, fake, server, observation, journal := initializeLifecycleFixture(t)
+	fake.omitCreateURL = true
+	filtered := []string{}
+	for _, operation := range runtime.APIWhitelist[instanceInitializeGroup] {
+		if operation != "get_doc_share_url" {
+			filtered = append(filtered, operation)
+		}
+	}
+	runtime.APIWhitelist[instanceInitializeGroup] = filtered
+	_, err := server.applyRemoteInstanceInitialization(context.Background(), runtime, fake, observation, catalog, journal)
+	if err == nil || !strings.Contains(err.Error(), "get_doc_share_url") {
+		t.Fatalf("missing capability accepted: %v", err)
+	}
+	if fake.createCount != 1 || fake.selfAddRecordCalls != 0 || fake.businessCreatedWithoutSelf {
+		t.Fatal("missing Registry URL allowed downstream creation")
+	}
+}
+
+func TestInstanceInitializeStatusRejectsChangedSelfReceiptMetadata(t *testing.T) {
+	for _, title := range registryBootstrapFields {
+		t.Run(title, func(t *testing.T) {
+			runtime, fake := readyInitializeFixture(t)
+			values := fake.activeRows[1].(map[string]any)["values"].(map[string]any)
+			expected := map[string]string{}
+			for _, name := range registryBootstrapFields {
+				expected[name] = initializeTextCell(values["id-"+name])
+			}
+			id := fake.activeRows[1].(map[string]any)["record_id"].(string)
+			journal := registrySelfJournal{DocumentID: fake.registryDocumentID, SheetID: fake.registrySheetID, TenantRoute: runtime.TenantRoute, OperatorDigest: digestValue(runtime.WecomOperatorUserID), Values: expected, RecordID: id}
+			if err := saveRegistryCompletionJSON(runtime.StatePath+".registry-self.json", journal); err != nil {
+				t.Fatal(err)
+			}
+			baseline := observeInstanceInitialization(context.Background(), runtime, fake, nil, initializeStatusInput{})
+			if baseline.State != "ready" {
+				t.Fatalf("baseline not ready: %#v", baseline.Conflicts)
+			}
+			values["id-"+title] = []any{map[string]any{"text": "wrong-nonempty-value"}}
+			observation := observeInstanceInitialization(context.Background(), runtime, fake, nil, initializeStatusInput{})
+			if observation.State == "ready" || observation.Snapshot.RegistrySelfRecordID != "" {
+				t.Fatal("changed receipt metadata reported ready")
+			}
+		})
+	}
+}
+
+func TestInstanceInitializeImportedSelfRequiresCompleteMetadata(t *testing.T) {
+	for _, title := range registryBootstrapFields {
+		t.Run(title, func(t *testing.T) {
+			runtime, fake := readyInitializeFixture(t)
+			delete(fake.activeRows[1].(map[string]any)["values"].(map[string]any), "id-"+title)
+			observation := observeInstanceInitialization(context.Background(), runtime, fake, nil, initializeStatusInput{})
+			if observation.State == "ready" {
+				t.Fatalf("imported self missing %s accepted", title)
+			}
+		})
 	}
 }

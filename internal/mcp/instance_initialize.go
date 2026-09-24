@@ -49,6 +49,8 @@ type instanceInitializeJournal struct {
 	AssetKind                  string            `json:"asset_kind,omitempty"`
 	OperationID                string            `json:"operation_id,omitempty"`
 	RegistryDocumentID         string            `json:"registry_document_id,omitempty"`
+	RegistryShareURL           string            `json:"registry_share_url,omitempty"`
+	RegistryCreatedAt          string            `json:"registry_created_at,omitempty"`
 	BusinessDocumentID         string            `json:"business_document_id,omitempty"`
 	RegistryOwned              bool              `json:"registry_owned_by_create,omitempty"`
 	BusinessOwned              bool              `json:"business_owned_by_create,omitempty"`
@@ -100,6 +102,8 @@ type initializeSnapshot struct {
 	RegistrySheetID          string            `json:"registry_sheet_id"`
 	RegistryFieldCount       int               `json:"registry_field_count"`
 	RegistryFieldsDigest     string            `json:"registry_fields_digest"`
+	RegistrySelfRecordID     string            `json:"registry_self_record_id"`
+	RegistrySelfRowsDigest   string            `json:"registry_self_rows_digest"`
 	RegistryRecordsComplete  bool              `json:"registry_records_complete"`
 	ActiveRegistryCount      int               `json:"active_registry_count"`
 	ActiveRegistryRecordID   string            `json:"active_registry_record_id"`
@@ -493,7 +497,7 @@ func (s *Server) instanceInitializeApply(ctx context.Context, runtime config.Con
 func initializeApplyResult(state string, observation initializeObservation, remoteUpdated, localUpdated bool, backupPath, operatorUserID string) map[string]any {
 	result := map[string]any{
 		"state": state, "instance_name": observation.Snapshot.InstanceName,
-		"registry_verified":        observation.Snapshot.RegistryDocumentID != "" && observation.Snapshot.RegistrySheetID != "",
+		"registry_verified":        observation.Snapshot.RegistryDocumentID != "" && observation.Snapshot.RegistrySheetID != "" && observation.Snapshot.RegistrySelfRecordID != "",
 		"nine_tables_verified":     len(observation.Snapshot.RoleSheetIDs) == 9,
 		"schema_synced":            observation.Snapshot.LocalSchemaDigest != "" || localUpdated,
 		"tools_call_verified":      observation.Snapshot.SmokeVerified,
@@ -599,7 +603,11 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 	if client == nil {
 		return nil, fmt.Errorf("企业微信客户端不可用")
 	}
-	for _, operation := range []string{"list_employees", "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "create_smartsheet", "grant_doc_readers", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records"} {
+	operatorOperation := "list_employees"
+	if runtime.AllowsInGroup(instanceInitializeGroup, "get_employee") {
+		operatorOperation = "get_employee"
+	}
+	for _, operation := range []string{operatorOperation, "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "create_smartsheet", "grant_doc_readers", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records", "delete_fields"} {
 		if !runtime.AllowsInGroup(instanceInitializeGroup, operation) {
 			return nil, fmt.Errorf("实例初始化专用 capability 未允许 %s；initializer 不会自行提升白名单", operation)
 		}
@@ -618,7 +626,7 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 	if err := validateInstanceInitializeJournal(journal); err != nil {
 		return nil, fmt.Errorf("初始化 journal 与当前 operator 或恢复资产不一致；禁止远程读取")
 	}
-	if _, err := verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID); err != nil {
+	if _, err := verifyInitializeConfiguredOperator(ctx, runtime, client); err != nil {
 		return nil, fmt.Errorf("wecom_operator_userid 未通过当前固定租户员工目录核验")
 	}
 	if journal.PendingAdminOp != "" {
@@ -646,6 +654,9 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 		registryID = initializeCreatedDocumentID(created)
 		if registryID != "" {
 			journal.RegistryDocumentID = registryID
+			createResult, _ := created["result"].(map[string]any)
+			journal.RegistryShareURL, _ = createResult["url"].(string)
+			journal.RegistryCreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			journal.RegistryOwned = true
 			journal.Phase, journal.UpdatedAt = "registry_identity_known", time.Now().UTC().Format(time.RFC3339Nano)
 			if saveErr := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); saveErr != nil {
@@ -670,6 +681,26 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 	journal.RegistryDocumentID, journal.Phase, journal.UpdatedAt = registryID, "registry_schema_verified", time.Now().UTC().Format(time.RFC3339Nano)
 	if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
 		return nil, err
+	}
+	// Register the directory itself before any downstream business document create.
+	// A recovery reuses the returned URL; imported documents obtain a real URL only
+	// when their self row is missing and the dedicated read capability is allowed.
+	if journal.RegistryShareURL == "" && observation.Snapshot.RegistrySelfRecordID == "" {
+		if !runtime.AllowsInGroup(instanceInitializeGroup, "get_doc_share_url") {
+			return nil, persistRecovery("registry", "registry_share_url_unavailable", fmt.Errorf("Registry 缺少真实URL且未允许 get_doc_share_url"))
+		}
+		response, shareErr := client.Request(ctx, "get_doc_share_url", map[string]any{"docid": registryID})
+		result, _ := response["result"].(map[string]any)
+		journal.RegistryShareURL, _ = result["share_url"].(string)
+		if shareErr != nil || apiError(response) != nil || journal.RegistryShareURL == "" {
+			return nil, persistRecovery("registry", "registry_share_url_unavailable", fmt.Errorf("Registry 真实URL回读失败"))
+		}
+		if err := saveInstanceInitializeJournal(instanceInitializeJournalPath(runtime), journal); err != nil {
+			return nil, err
+		}
+	}
+	if err := ensureRegistrySelf(ctx, runtime, client, registryID, registrySheetID, journal.RegistryShareURL, journal.RegistryCreatedAt); err != nil {
+		return nil, persistRecovery("registry", "registry_self_registration_unconfirmed", err)
 	}
 	registryFields, err := registryFieldDefinitions(ctx, client, registryID, registrySheetID)
 	if err != nil {
@@ -842,11 +873,7 @@ func reconcileInitializeRegistry(ctx context.Context, client wecomRequester, doc
 		return "", fmt.Errorf("Registry 智能子表不唯一")
 	}
 	if ownedByOperation {
-		expected := map[string]string{}
-		for _, title := range registryBootstrapFields {
-			expected[title] = "FIELD_TYPE_TEXT"
-		}
-		if err := normalizeOwnedInitializeSheetContract(ctx, client, documentID, sheets[0].ID, "registry_key", expected); err != nil {
+		if err := normalizeOwnedRegistryDefaults(ctx, client, documentID, sheets[0].ID, journalPath+".registry-defaults.backup.json"); err != nil {
 			return "", err
 		}
 	}
@@ -882,7 +909,7 @@ func reconcileInitializeRegistry(ctx context.Context, client wecomRequester, doc
 		}
 	}
 	verified, err := registryFieldDefinitions(ctx, client, documentID, sheets[0].ID)
-	if err != nil || len(verified) < len(registryBootstrapFields) {
+	if err != nil || len(verified) != len(registryBootstrapFields) {
 		return "", fmt.Errorf("Registry 字段回读未通过")
 	}
 	if journal.PendingFieldRole == "REGISTRY" {
@@ -1057,7 +1084,7 @@ func initializeCreatedSheetID(response map[string]any) string {
 }
 
 func renameInitializeSheetAndVerify(ctx context.Context, client wecomRequester, documentID, sheetID, title string) error {
-	result, err := client.Request(ctx, "update_sheet", map[string]any{"docid": documentID, "sheet_id": sheetID, "properties": map[string]any{"title": title}})
+	result, err := client.Request(ctx, "update_sheet", map[string]any{"docid": documentID, "properties": map[string]any{"sheet_id": sheetID, "title": title}})
 	if err != nil || apiError(result) != nil {
 		return fmt.Errorf("默认子表改名失败")
 	}
@@ -1519,7 +1546,11 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	}
 	snapshot.BusinessOwnedByJournal = journalExists && journal.BusinessOwned && journal.BusinessDocumentID != "" && journal.BusinessDocumentID == businessRecoveryDocumentID
 	capabilityMissing := false
-	for _, operation := range []string{"list_employees", "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records"} {
+	operatorOperation := "list_employees"
+	if runtime.AllowsInGroup(instanceInitializeGroup, "get_employee") {
+		operatorOperation = "get_employee"
+	}
+	for _, operation := range []string{operatorOperation, "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records"} {
 		if !runtime.AllowsInGroup(instanceInitializeGroup, operation) {
 			observation.Conflicts = append(observation.Conflicts, "instance_initialize_capability_missing:"+operation)
 			capabilityMissing = true
@@ -1530,7 +1561,7 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 		observation.Conflicts = append(observation.Conflicts, "wecom_operator_userid_missing")
 	}
 	if len(observation.Conflicts) == 0 && !operatorMissing && !(registryDocumentID == "" && registryRecoveryAllowed) && !capabilityMissing && clientErr == nil && client != nil {
-		directoryEvidence, err := verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID)
+		directoryEvidence, err := verifyInitializeConfiguredOperator(ctx, runtime, client)
 		if err != nil {
 			observation.Conflicts = append(observation.Conflicts, "wecom_operator_not_verified_in_tenant")
 			observation.State = "conflict"
@@ -1614,7 +1645,15 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	if runtime.RegistrySheetID != "" && runtime.RegistrySheetID != registrySheetID {
 		observation.Conflicts = append(observation.Conflicts, "config_registry_sheet_id_conflict")
 	}
-	fields, err := registryFieldDefinitions(ctx, client, registryDocumentID, registrySheetID)
+	rawRegistryFields, err := registryRawFields(ctx, client, registryDocumentID, registrySheetID)
+	fields := map[string]config.Field{}
+	if err == nil {
+		for _, raw := range rawRegistryFields {
+			f := raw.(map[string]any)
+			title := f["field_title"].(string)
+			fields[title] = config.Field{Title: title, ID: f["field_id"].(string), Type: f["field_type"].(string)}
+		}
+	}
 	if err != nil {
 		observation.Conflicts = append(observation.Conflicts, "registry_fields_unreadable")
 		observation.Snapshot = snapshot
@@ -1631,6 +1670,13 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 		}
 		if field.Type != "FIELD_TYPE_TEXT" {
 			observation.Conflicts = append(observation.Conflicts, "registry_field_type_conflict:"+title)
+		}
+	}
+	if len(fields)+missingRegistryFields > len(registryBootstrapFields) {
+		if snapshot.RegistryOwnedByJournal {
+			observation.PlannedOperations = append(observation.PlannedOperations, "normalize_owned_registry_defaults")
+		} else {
+			observation.Conflicts = append(observation.Conflicts, "imported_registry_has_extra_fields")
 		}
 	}
 	if missingRegistryFields > 0 {
@@ -1663,6 +1709,40 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 		observation.Conflicts = append(observation.Conflicts, "registry_pagination_incomplete")
 		observation.Snapshot = snapshot
 		return finalizeInitializeObservation(observation)
+	}
+	// The self row is a separate reserved key and never selects the business doc.
+	if len(fields) == len(registryBootstrapFields) {
+		validRows := true
+		seen := map[string]bool{}
+		for _, raw := range records {
+			r, ok := raw.(map[string]any)
+			id, _ := r["record_id"].(string)
+			_, valuesOK := r["values"].(map[string]any)
+			if !ok || !valuesOK || !initializeIdentifier.MatchString(id) || seen[id] {
+				validRows = false
+				break
+			}
+			seen[id] = true
+			if initializeRecordValuesEmpty(r["values"].(map[string]any)) {
+				observation.Conflicts = append(observation.Conflicts, "registry_empty_rows_remaining")
+			}
+		}
+		if !validRows {
+			observation.Conflicts = append(observation.Conflicts, "registry_records_malformed")
+		} else {
+			selfID, selfErr := inspectRegistrySelf(records, fields, runtime, registryDocumentID, schemaFingerprint(rawRegistryFields))
+			if selfErr == nil && selfID != "" {
+				selfErr = verifyRegistrySelfEvidence(records, fields, runtime, registryDocumentID, snapshot.RegistrySheetID, selfID, "", "")
+			}
+			if selfErr != nil {
+				observation.Conflicts = append(observation.Conflicts, "registry_self_registration_conflict")
+			} else if selfID == "" {
+				observation.PlannedOperations = append(observation.PlannedOperations, "register_registry_self")
+			} else {
+				snapshot.RegistrySelfRecordID = selfID
+			}
+			snapshot.RegistrySelfRowsDigest = digestValue(records)
+		}
 	}
 	keyID, docID, lifecycleID := fields["registry_key"].ID, fields["docid"].ID, fields["lifecycle_status"].ID
 	activeRowDigests := []string{}
@@ -1904,6 +1984,7 @@ func publicInitializeObservation(observation initializeObservation) map[string]a
 		"registry_document_resolved": observation.Snapshot.RegistryDocumentID != "",
 		"registry_sheet_resolved":    observation.Snapshot.RegistrySheetID != "",
 		"registry_field_count":       observation.Snapshot.RegistryFieldCount,
+		"registry_self_registered":   observation.Snapshot.RegistrySelfRecordID != "",
 		"registry_records_complete":  observation.Snapshot.RegistryRecordsComplete,
 		"active_registry_row_count":  observation.Snapshot.ActiveRegistryCount,
 		"business_document_resolved": observation.Snapshot.BusinessDocumentID != "",
@@ -1963,6 +2044,32 @@ func readInitializeDocumentIdentity(ctx context.Context, client wecomRequester, 
 	}
 	managementProof["configured_operator_is_admin"] = initializeDocumentMemberHasAuth(authResult, operatorUserID, 7)
 	return map[string]any{"doc_type": docType, "name_digest": digestValue(name), "expected_name_matched": expectedName == "" || name == expectedName}, managementProof, nil
+}
+
+func verifyInitializeConfiguredOperator(ctx context.Context, runtime config.Config, client wecomRequester) (map[string]any, error) {
+	return verifyConfiguredOperator(ctx, runtime, client, instanceInitializeGroup)
+}
+
+func verifyConfiguredOperator(ctx context.Context, runtime config.Config, client wecomRequester, capabilityGroup string) (map[string]any, error) {
+	operatorUserID := runtime.WecomOperatorUserID
+	if runtime.AllowsInGroup(capabilityGroup, "get_employee") {
+		response, err := client.Request(ctx, "get_employee", map[string]any{"userid": operatorUserID})
+		if err != nil || apiError(response) != nil {
+			return nil, fmt.Errorf("operator exact lookup unavailable")
+		}
+		user, _ := response["result"].(map[string]any)
+		if user == nil {
+			user = response
+		}
+		code, validCode := initializeInteger(user["errcode"])
+		userid, _ := user["userid"].(string)
+		status, validStatus := initializeInteger(user["status"])
+		if !validCode || code != 0 || userid != operatorUserID || !validStatus || status != 1 {
+			return nil, fmt.Errorf("configured operator is not an active exact tenant employee")
+		}
+		return map[string]any{"operator_userid_digest": digestValue(operatorUserID), "unique_employee_match": true, "lookup": "exact"}, nil
+	}
+	return verifyInitializeOperatorEmployee(ctx, client, operatorUserID)
 }
 
 func verifyInitializeOperatorEmployee(ctx context.Context, client wecomRequester, operatorUserID string) (map[string]any, error) {

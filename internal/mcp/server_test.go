@@ -351,10 +351,10 @@ func TestCreateDocumentKeepsUpstreamDocIDAndURL(t *testing.T) {
 
 func TestLegacyOperationsAreExposedWithoutCompatibilityAlias(t *testing.T) {
 	operations := legacyOperations()
-	if len(operations) != 8 {
-		t.Fatalf("got %d legacy read operations, want 8", len(operations))
+	if len(operations) != 9 {
+		t.Fatalf("got %d legacy read operations, want 9", len(operations))
 	}
-	for _, required := range []string{"list_employees", "get_doc_base_info", "get_views", "get_records"} {
+	for _, required := range []string{"get_employee", "list_employees", "get_doc_base_info", "get_views", "get_records"} {
 		found := false
 		for _, operation := range operations {
 			if operation == required {

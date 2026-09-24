@@ -98,7 +98,7 @@ var tools = []tool{
 	{"wecom_instance_initialize", "首次初始化统一入口。action=status 执行只读 dry-run；action=apply 复用同一工具提交未过期 preview。Zoop 创建目录仅开放已完成真实能力探针并具备完整逻辑依赖的字段；未知字段类型继续失败关闭。", instanceInitializeFacadeToolSchema()},
 	{"wecom_instance_initialize_status", "只读观察当前固定租户的 Registry、九张 Zoop 表、本地 Schema 与初始化 journal，返回可审计 dry-run 和短期 preview_id；不修改线上或本地状态。恢复 ID 仅可绑定已有 uncertain sentinel，不是任意导入入口。", instanceInitializeStatusToolSchema()},
 	{"wecom_instance_initialize_apply", "校验短期 dry-run 与固定 Owner 授权，按 durable journal 幂等协调 Registry、Zoop 九表、唯一 active row、Schema generation、配置备份与 Z-S01 只读 smoke；不清理导入文档的既有内容，创建结果不确定时失败关闭。", instanceInitializeApplyToolSchema()},
-	{"wecom_registry_bootstrap", "仅在当前固定租户实例缺少 registry_document_id 时，显式创建 SMART_SHEETS_IDS、建立标准文本字段、回读核验并原子写回本地配置。创建前写入本地哨兵；状态不确定时失败关闭且不会重复创建。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"owner_authorization"}, "properties": map[string]any{"owner_authorization": map[string]any{"const": "create_and_persist_default_registry"}}}},
+	{"wecom_registry_bootstrap", "在当前固定租户创建或恢复本初始化器拥有的 SMART_SHEETS_IDS：清理已确认空白默认模板、保留20个标准字段、登记自身并完整回读，原子写回本地配置。已有文档也须核验；状态不确定时保留哨兵且不重复创建。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"owner_authorization"}, "properties": map[string]any{"owner_authorization": map[string]any{"const": "create_and_persist_default_registry"}}}},
 	{"wecom_schema_status", "读取当前本地 Schema 镜像状态。可按 target_role 返回字段标题、真实 field_id、类型、选项与关联元数据；不会读取或修改企业微信线上字段。", schemaStatusToolSchema()},
 	{"wecom_schema_probe", "只读回查当前固定租户的九张 Zoop 表线上字段，并与本地机器 Schema 镜像比较。不会写入企业微信或更新本地镜像。", map[string]any{"type": "object", "additionalProperties": false}},
 	{"wecom_schema_sync", "仅在 Owner 明确授权后，从当前固定企业微信实例只读回查九张 Zoop 表字段，并覆盖本地机器可读 Schema 镜像。不会修改企业微信数据或结构。", map[string]any{"type": "object", "additionalProperties": false, "required": []string{"owner_authorization"}, "properties": map[string]any{"owner_authorization": map[string]any{"const": "online_to_local_schema_dictionary"}}}},
@@ -204,13 +204,27 @@ func verifyBoundOperator(ctx context.Context, runtime config.Config, client weco
 	if runtime.WecomOperatorUserID == "" {
 		return fmt.Errorf("实例未配置 wecom_operator_userid，远程写入保持关闭")
 	}
-	if capabilityGroup != "" && !runtime.AllowsInGroup(capabilityGroup, "list_employees") {
-		return fmt.Errorf("%s 专用 capability 未允许 list_employees", capabilityGroup)
+	operatorOperation := "list_employees"
+	if supportsExactBoundOperatorLookup(capabilityGroup) && runtime.AllowsInGroup(capabilityGroup, "get_employee") {
+		operatorOperation = "get_employee"
 	}
-	if _, err := verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID); err != nil {
+	if capabilityGroup != "" && !runtime.AllowsInGroup(capabilityGroup, operatorOperation) {
+		return fmt.Errorf("%s 专用 capability 未允许 %s", capabilityGroup, operatorOperation)
+	}
+	var verifyErr error
+	if operatorOperation == "get_employee" {
+		_, verifyErr = verifyConfiguredOperator(ctx, runtime, client, capabilityGroup)
+	} else {
+		_, verifyErr = verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID)
+	}
+	if verifyErr != nil {
 		return fmt.Errorf("business_operator_userid 未通过当前固定租户员工目录核验")
 	}
 	return nil
+}
+
+func supportsExactBoundOperatorLookup(capabilityGroup string) bool {
+	return capabilityGroup == schemaMigrationGroup || capabilityGroup == schemaRegistryGroup
 }
 
 func (s *Server) boundOperatorWrite(ctx context.Context, runtime config.Config, client wecomRequester, capabilityGroup string, operation func() (any, error)) (any, error) {
@@ -252,9 +266,6 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 		}
 		if err := verifyOAuthInstanceSnapshot(ctx, runtime); err != nil {
 			return nil, err
-		}
-		if runtime.RegistryDocumentID != "" {
-			return s.bootstrapRegistry(ctx, runtime, nil, raw)
 		}
 		client, err := wecom.NewFromEnvironment(runtime.TenantRoute)
 		if err != nil {

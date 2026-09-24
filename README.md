@@ -83,7 +83,7 @@ cp config/zoop_wecom_zhycit.json.example config/zoop_wecom_zhycit.local.json
 
 - 将 `tenant_route`、`registry_key` 填为你自己的受管服务路由和登记键。
 - 将 `schema_admin_user` 填为运行 MCP 的完整本机系统身份，将 `wecom_operator_userid` 填为当前固定租户中真实、在职且唯一匹配的企业微信 userid；两者不是同一种身份。
-- 将 `registry_document_id` 填为已有登记表的文档 ID；留空时只能先由 MCP 客户端显式调用 `wecom_registry_bootstrap` 创建并写回登记表，普通查询不能使用空值。
+- 将 `registry_document_id` 填为已有登记表的文档 ID；留空时只能先由 MCP 客户端显式调用 `wecom_registry_bootstrap` 创建并写回登记表，普通查询不能使用空值。初始化成功还必须满足[Registry 完成契约](REGISTRY_INITIALIZATION_CONTRACT.md)：标准字段恰好20个、默认空内容已清理、索引表自身已唯一登记并回读；已有 docid 不代表初始化完成。
 - 将 `schema_mirror_path` 改为已有 Schema 镜像文件的绝对路径。
 - 将 `state_path` 改为本机可写位置的绝对路径。
 
