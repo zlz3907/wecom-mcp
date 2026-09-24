@@ -30,7 +30,7 @@ class MigrationTests(unittest.TestCase):
         self.controller = self.root / 'controller'; self.controller.write_bytes(b'old controller')
         self.target = self.root / c.UNIT
         self.dropin = self.root / (c.UNIT + '.d') / 'zz-managed-release.conf'
-        self.current = dict(runtime_verified=True, active='active', restarts=0, main_pid=789,
+        self.current = dict(runtime_verified=True, active='active', restarts=0, main_pid=2147483647,
                             runtime_path='/releases/old/wecom-mcp-team', binary_sha256='b'*64,
                             unit_fingerprint='c'*64, runtime_config_fingerprint='d'*64)
         for name, data in [('service.conf', b'hybrid'), ('recovery.conf', b'static'), ('wecom-mcp-team', b'new binary')]:
@@ -40,7 +40,7 @@ class MigrationTests(unittest.TestCase):
         self.manifest = dict(release_id=self.rid, expected_runtime_config_fingerprint='d'*64,
             files={n:c.sha(self.directory/n) for n in ('service.conf','recovery.conf','wecom-mcp-team')})
         self.expected = {'expected_'+k: self.current[k] for k in ('runtime_path','binary_sha256','unit_fingerprint','runtime_config_fingerprint')}
-        self.expected.update(expected_main_pid=789, target_unit_sha256=c.sha(self.here/c.UNIT),
+        self.expected.update(expected_main_pid=2147483647, target_unit_sha256=c.sha(self.here/c.UNIT),
             controller_sha256=c.sha(self.here/'mcp_release_controller.py'), previous_controller_sha256=c.sha(self.controller),
             source_policy_sha256='policy')
         self.manifest.update({k:v for k,v in self.expected.items() if k.startswith('expected_')})
@@ -71,7 +71,7 @@ class MigrationTests(unittest.TestCase):
 
     def prop(self, unit, name):
         if name == 'ActiveState': return 'active' if (self.source_active if unit == u.SOURCE else self.target_active) else 'inactive'
-        if name == 'MainPID': return '789' if unit == u.SOURCE and self.source_active else '0'
+        if name == 'MainPID': return '2147483647' if unit == u.SOURCE and self.source_active else '0'
         if name == 'UnitFileState': return 'enabled' if unit == u.SOURCE and self.source_enabled else 'disabled'
         raise AssertionError(name)
 
