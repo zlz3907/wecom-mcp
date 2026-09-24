@@ -603,7 +603,11 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 	if client == nil {
 		return nil, fmt.Errorf("企业微信客户端不可用")
 	}
-	for _, operation := range []string{"list_employees", "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "create_smartsheet", "grant_doc_readers", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records", "delete_fields"} {
+	operatorOperation := "list_employees"
+	if runtime.AllowsInGroup(instanceInitializeGroup, "get_employee") {
+		operatorOperation = "get_employee"
+	}
+	for _, operation := range []string{operatorOperation, "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "create_smartsheet", "grant_doc_readers", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records", "delete_fields"} {
 		if !runtime.AllowsInGroup(instanceInitializeGroup, operation) {
 			return nil, fmt.Errorf("实例初始化专用 capability 未允许 %s；initializer 不会自行提升白名单", operation)
 		}
@@ -622,7 +626,7 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 	if err := validateInstanceInitializeJournal(journal); err != nil {
 		return nil, fmt.Errorf("初始化 journal 与当前 operator 或恢复资产不一致；禁止远程读取")
 	}
-	if _, err := verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID); err != nil {
+	if _, err := verifyInitializeConfiguredOperator(ctx, runtime, client); err != nil {
 		return nil, fmt.Errorf("wecom_operator_userid 未通过当前固定租户员工目录核验")
 	}
 	if journal.PendingAdminOp != "" {
@@ -1542,7 +1546,11 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	}
 	snapshot.BusinessOwnedByJournal = journalExists && journal.BusinessOwned && journal.BusinessDocumentID != "" && journal.BusinessDocumentID == businessRecoveryDocumentID
 	capabilityMissing := false
-	for _, operation := range []string{"list_employees", "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records"} {
+	operatorOperation := "list_employees"
+	if runtime.AllowsInGroup(instanceInitializeGroup, "get_employee") {
+		operatorOperation = "get_employee"
+	}
+	for _, operation := range []string{operatorOperation, "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records"} {
 		if !runtime.AllowsInGroup(instanceInitializeGroup, operation) {
 			observation.Conflicts = append(observation.Conflicts, "instance_initialize_capability_missing:"+operation)
 			capabilityMissing = true
@@ -1553,7 +1561,7 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 		observation.Conflicts = append(observation.Conflicts, "wecom_operator_userid_missing")
 	}
 	if len(observation.Conflicts) == 0 && !operatorMissing && !(registryDocumentID == "" && registryRecoveryAllowed) && !capabilityMissing && clientErr == nil && client != nil {
-		directoryEvidence, err := verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID)
+		directoryEvidence, err := verifyInitializeConfiguredOperator(ctx, runtime, client)
 		if err != nil {
 			observation.Conflicts = append(observation.Conflicts, "wecom_operator_not_verified_in_tenant")
 			observation.State = "conflict"
@@ -2036,6 +2044,28 @@ func readInitializeDocumentIdentity(ctx context.Context, client wecomRequester, 
 	}
 	managementProof["configured_operator_is_admin"] = initializeDocumentMemberHasAuth(authResult, operatorUserID, 7)
 	return map[string]any{"doc_type": docType, "name_digest": digestValue(name), "expected_name_matched": expectedName == "" || name == expectedName}, managementProof, nil
+}
+
+func verifyInitializeConfiguredOperator(ctx context.Context, runtime config.Config, client wecomRequester) (map[string]any, error) {
+	operatorUserID := runtime.WecomOperatorUserID
+	if runtime.AllowsInGroup(instanceInitializeGroup, "get_employee") {
+		response, err := client.Request(ctx, "get_employee", map[string]any{"userid": operatorUserID})
+		if err != nil || apiError(response) != nil {
+			return nil, fmt.Errorf("operator exact lookup unavailable")
+		}
+		user, _ := response["result"].(map[string]any)
+		if user == nil {
+			user = response
+		}
+		code, validCode := initializeInteger(user["errcode"])
+		userid, _ := user["userid"].(string)
+		status, validStatus := initializeInteger(user["status"])
+		if !validCode || code != 0 || userid != operatorUserID || !validStatus || status != 1 {
+			return nil, fmt.Errorf("configured operator is not an active exact tenant employee")
+		}
+		return map[string]any{"operator_userid_digest": digestValue(operatorUserID), "unique_employee_match": true, "lookup": "exact"}, nil
+	}
+	return verifyInitializeOperatorEmployee(ctx, client, operatorUserID)
 }
 
 func verifyInitializeOperatorEmployee(ctx context.Context, client wecomRequester, operatorUserID string) (map[string]any, error) {

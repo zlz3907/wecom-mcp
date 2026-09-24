@@ -26,6 +26,21 @@ type initializeFakeClient struct {
 	operations         []string
 	documentAuth       map[string]any
 	employeeUserID     string
+	exactEmployee      map[string]any
+}
+
+type initializeOperatorLookupFake struct {
+	response   map[string]any
+	err        error
+	operations []string
+}
+
+func (f *initializeOperatorLookupFake) Request(_ context.Context, operation string, _ any) (map[string]any, error) {
+	f.operations = append(f.operations, operation)
+	if operation != "get_employee" {
+		return nil, fmt.Errorf("unexpected request %s", operation)
+	}
+	return f.response, f.err
 }
 
 func (f *initializeFakeClient) Request(_ context.Context, operation string, payload any) (map[string]any, error) {
@@ -34,6 +49,11 @@ func (f *initializeFakeClient) Request(_ context.Context, operation string, payl
 	documentID, _ := body["docid"].(string)
 	sheetID, _ := body["sheet_id"].(string)
 	switch operation {
+	case "get_employee":
+		if f.exactEmployee != nil {
+			return map[string]any{"result": f.exactEmployee}, nil
+		}
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "symbolic-admin", "status": float64(1)}}, nil
 	case "list_employees":
 		userid := f.employeeUserID
 		if userid == "" {
@@ -220,6 +240,71 @@ func TestInstanceInitializeRequiresDedicatedCapabilityGroup(t *testing.T) {
 	}
 	if result.(map[string]any)["state"] != "environment_unavailable" || len(fake.operations) != 0 {
 		t.Fatalf("dedicated capability was bypassed: result=%#v calls=%#v", result, fake.operations)
+	}
+}
+
+func TestInstanceInitializePrefersExactOperatorLookup(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	runtime.APIWhitelist[instanceInitializeGroup] = append(
+		[]string{"get_employee"},
+		runtime.APIWhitelist[instanceInitializeGroup][1:]...,
+	)
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil || result.(map[string]any)["state"] != "ready" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if strings.Contains(strings.Join(fake.operations, ","), "list_employees") || fake.operations[0] != "get_employee" {
+		t.Fatalf("exact lookup was not preferred: %#v", fake.operations)
+	}
+}
+
+func TestInstanceInitializeRejectsInvalidExactOperatorWithoutDirectoryFallback(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	runtime.APIWhitelist[instanceInitializeGroup] = append(
+		[]string{"get_employee"},
+		runtime.APIWhitelist[instanceInitializeGroup][1:]...,
+	)
+	fake.exactEmployee = map[string]any{"errcode": float64(0), "userid": runtime.WecomOperatorUserID, "status": float64(2)}
+	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := result.(map[string]any)
+	if output["state"] != "conflict" || !strings.Contains(fmt.Sprint(output["conflicts"]), "wecom_operator_not_verified_in_tenant") {
+		t.Fatalf("invalid exact employee was accepted: %#v", output)
+	}
+	if strings.Contains(strings.Join(fake.operations, ","), "list_employees") {
+		t.Fatalf("invalid exact lookup fell back to broader directory enumeration: %#v", fake.operations)
+	}
+}
+
+func TestVerifyInitializeConfiguredOperatorExactLookupFailsClosed(t *testing.T) {
+	runtime := config.Config{
+		WecomOperatorUserID: "symbolic-admin",
+		APIWhitelist:        map[string][]string{instanceInitializeGroup: {"get_employee", "list_employees"}},
+	}
+	tests := []struct {
+		name     string
+		response map[string]any
+		err      error
+	}{
+		{name: "transport error", err: fmt.Errorf("unavailable")},
+		{name: "api error", response: map[string]any{"result": map[string]any{"errcode": float64(40001), "errmsg": "invalid credential"}}},
+		{name: "missing errcode", response: map[string]any{"result": map[string]any{"userid": "symbolic-admin", "status": float64(1)}}},
+		{name: "wrong userid", response: map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "other-admin", "status": float64(1)}}},
+		{name: "missing status", response: map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "symbolic-admin"}}},
+		{name: "inactive", response: map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "symbolic-admin", "status": float64(2)}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &initializeOperatorLookupFake{response: test.response, err: test.err}
+			if _, err := verifyInitializeConfiguredOperator(context.Background(), runtime, fake); err == nil {
+				t.Fatal("invalid exact lookup unexpectedly verified")
+			}
+			if len(fake.operations) != 1 || fake.operations[0] != "get_employee" {
+				t.Fatalf("exact lookup fell back to directory enumeration: %#v", fake.operations)
+			}
+		})
 	}
 }
 
@@ -1036,6 +1121,8 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 	documentID, _ := body["docid"].(string)
 	sheetID, _ := body["sheet_id"].(string)
 	switch operation {
+	case "get_employee":
+		return map[string]any{"result": map[string]any{"errcode": float64(0), "userid": "test-admin", "status": float64(1)}}, nil
 	case "list_employees":
 		return map[string]any{"result": map[string]any{"errcode": float64(0), "userlist": []any{map[string]any{"userid": "test-admin", "status": float64(1)}}}}, nil
 	case "create_smartsheet":
@@ -1372,6 +1459,42 @@ func TestRemoteInitializerControlledEndToEnd(t *testing.T) {
 	persisted, err := server.store.Current()
 	if err != nil || persisted.RegistryDocumentID == "" || persisted.RegistrySheetID == "" || persisted.InitializedState != "config_committed" {
 		t.Fatalf("initialized config was not committed: %#v err=%v", persisted, err)
+	}
+}
+
+func TestRemoteInitializerApplyUsesExactOperatorLookup(t *testing.T) {
+	runtime, _, fake, server, _, _ := initializeLifecycleFixture(t)
+	operations := runtime.APIWhitelist[instanceInitializeGroup]
+	for index, operation := range operations {
+		if operation == "list_employees" {
+			operations[index] = "get_employee"
+		}
+	}
+	runtime.APIWhitelist[instanceInitializeGroup] = operations
+	data, err := json.MarshalIndent(runtime, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(filepath.Dir(runtime.StatePath), "instance.json")
+	if err := os.WriteFile(configPath, append(data, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, result, err := publicInitializeStatusAndApply(t, server, runtime, fake, map[string]string{}); err != nil {
+		t.Fatal(err)
+	} else if result.(map[string]any)["state"] != "ready" {
+		t.Fatalf("initializer did not reach ready: %#v", result)
+	}
+	if strings.Contains(strings.Join(fake.operations, ","), "list_employees") {
+		t.Fatalf("apply fell back to directory enumeration: %#v", fake.operations)
+	}
+	exactCalls := 0
+	for _, operation := range fake.operations {
+		if operation == "get_employee" {
+			exactCalls++
+		}
+	}
+	if exactCalls < 2 {
+		t.Fatalf("status and apply did not both re-verify exact operator: %#v", fake.operations)
 	}
 }
 
