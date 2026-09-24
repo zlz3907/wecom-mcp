@@ -35,3 +35,9 @@ python3 -I migrate-shared-service.py apply RELEASE ISSUED_APPROVAL_ID
   - 源已停止且完整目标配置存在：`recover-check RELEASE` 输出恢复 receipt 字段；管理员签发 action=`recover-shared-migration` 的新 receipt 后执行 `recover RELEASE ISSUED_APPROVAL_ID`，仅启动新 binary 的静态模式。
   - 不匹配上述条件，或 `.new` 文件/未知额外文件/源或目标身份漂移：失败关闭，保留 journal 与文件，由管理员审查后处理；不猜测应删除或覆盖的内容。
 - 恢复后执行 `observe-recovery RELEASE`。正常模式与恢复模式均需五分钟观察。真实员工 MCP 调用与 Owner 验收另列；此迁移不能替代它们。
+
+## 已启动目标的受控续行
+
+Linux `Type=simple` 在 systemd 子进程执行候选 binary 之前就可能返回。启动验证只在头两秒允许 PID 尚未建立/已消失、systemd 自身/其 executor，且配置 ExecStart、重启次数、unit/runtime 指纹完全匹配时短暂等待；外来 executable、错误 SHA 和其他配置错误仍拒绝。
+
+若迁移已停止源服务、启动同版本静态目标，但尚未完成 controller/enable/journal 收尾，可使用 `complete-shared-migration.py check RELEASE` 输出续行精确字段。它核验原已消费批准、原 journal、当前候选 PID/模式、配置和 listener；同提交 CI 的 `completion-provenance.json` 绑定四个脚本/unit 文件 SHA。使用 action=`complete-shared-migration` 的新一次性批准执行 `apply RELEASE APPROVAL`，复用同一不可变候选恢复 hybrid，失败仅恢复同一新二进制 static。原 journal 和原批准保留，续行记录独立追加；不伪装为首次迁移成功。管理员在会话中对已展示候选明确批准后，可由执行代理代为记录其真实批准及原话，不能把代理的技术判断记成人类批准。

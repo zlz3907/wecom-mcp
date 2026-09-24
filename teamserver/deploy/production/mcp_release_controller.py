@@ -264,15 +264,45 @@ def unready(host):
                 conn.close()
 
 
+def exec_pending(expected_path):
+    # Type=simple can report MainPID before the systemd child has exec'd.
+    configured = run('systemctl', 'show', UNIT, '-p', 'ExecStart', '--value')
+    require(re.findall(r'path=([^ ;]+)', configured) == [expected_path], 'configured runtime drift during startup')
+    require(run('systemctl', 'show', UNIT, '-p', 'NRestarts', '--value') == '0', 'restart during startup')
+    active = run('systemctl', 'show', UNIT, '-p', 'ActiveState', '--value')
+    if active not in ('activating', 'active'):
+        return False
+    pid = int(run('systemctl', 'show', UNIT, '-p', 'MainPID', '--value'))
+    if pid == 0:
+        return True
+    try:
+        executable = os.path.realpath(os.readlink('/proc/%d/exe' % pid))
+        manager = os.path.realpath(os.readlink('/proc/1/exe'))
+    except FileNotFoundError:
+        return True
+    # The candidate may have completed exec since status() observed the child.
+    return executable == expected_path or executable == manager or (
+        Path(manager).name == 'systemd' and executable == str(Path(manager).with_name('systemd-executor')))
+
+
 def restart_and_verify(path, digest, hosts, legacy=False, expected_config_fingerprint=None):
     run('systemctl', 'daemon-reload')
     fingerprint = unit_fingerprint()
     config_fingerprint = expected_config_fingerprint or runtime_fingerprint()
     require(runtime_fingerprint() == config_fingerprint, 'approved runtime configuration drift before restart')
     run('systemctl', 'restart', UNIT)
-    deadline = time.monotonic() + 45
+    started = time.monotonic()
+    deadline = started + 45
     while True:
-        current = status()
+        require(unit_fingerprint() == fingerprint and runtime_fingerprint() == config_fingerprint, 'configuration drift during startup')
+        try:
+            current = status()
+        except (ValueError, FileNotFoundError) as error:
+            transient = isinstance(error, FileNotFoundError) or str(error) == 'unexpected runtime path'
+            if transient and time.monotonic() - started < 2 and exec_pending(path):
+                time.sleep(0.1)
+                continue
+            raise
         require(current['runtime_path'] == path and current['binary_sha256'] == digest and current['restarts'] == 0 and current['unit_fingerprint'] == fingerprint and current['runtime_config_fingerprint'] == config_fingerprint, 'unexpected runtime/configuration or restart during startup')
         try:
             healthy(path, digest, hosts, legacy)
