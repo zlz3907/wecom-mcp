@@ -1084,7 +1084,7 @@ func initializeCreatedSheetID(response map[string]any) string {
 }
 
 func renameInitializeSheetAndVerify(ctx context.Context, client wecomRequester, documentID, sheetID, title string) error {
-	result, err := client.Request(ctx, "update_sheet", map[string]any{"docid": documentID, "sheet_id": sheetID, "properties": map[string]any{"title": title}})
+	result, err := client.Request(ctx, "update_sheet", map[string]any{"docid": documentID, "properties": map[string]any{"sheet_id": sheetID, "title": title}})
 	if err != nil || apiError(result) != nil {
 		return fmt.Errorf("默认子表改名失败")
 	}

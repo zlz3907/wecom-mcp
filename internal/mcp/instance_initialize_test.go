@@ -1186,11 +1186,15 @@ func (f *initializeLifecycleFake) Request(_ context.Context, operation string, p
 		}
 		return okInitializeResponse("sheet_list", items), nil
 	case "update_sheet":
+		properties, _ := body["properties"].(map[string]any)
+		sheetID, _ = properties["sheet_id"].(string)
+		if sheetID == "" || body["sheet_id"] != nil {
+			return nil, fmt.Errorf("update_sheet must place sheet_id inside properties")
+		}
 		sheet, err := f.sheet(documentID, sheetID)
 		if err != nil {
 			return nil, err
 		}
-		properties, _ := body["properties"].(map[string]any)
 		sheet.name, _ = properties["title"].(string)
 		return map[string]any{"result": map[string]any{"errcode": float64(0)}}, nil
 	case "add_sheet":
