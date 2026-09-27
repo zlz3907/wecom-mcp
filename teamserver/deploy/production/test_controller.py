@@ -26,11 +26,11 @@ class ControllerTests(unittest.TestCase):
         for key, value in [('runtime_verified',False),('runtime_path','/releases/stale/bin'),('binary_sha256','c'*64),('unit_fingerprint','d'*64),('runtime_config_fingerprint','f'*64),('restarts',1),('active','failed')]:
             self.assertFalse(c.baseline_matches(dict(current, **{key:value}), expected))
 
-    def test_service_template_preserves_static_and_adds_dynamic(self):
+    def test_service_template_uses_database_discovery_only(self):
         raw = c.dropin('20260923T080000Z-'+'a'*12).decode()
-        self.assertIn('--gnas-fleet-runtime ', raw)
         self.assertIn('--gnas-discovery-policy ', raw)
         self.assertIn('--gnas-state-root ', raw)
+        self.assertNotIn('--gnas-fleet-runtime ', raw)
         self.assertNotIn('Environment=', raw)
         self.assertNotIn('nginx', raw)
         with self.assertRaises(ValueError):
@@ -69,10 +69,10 @@ class ControllerTests(unittest.TestCase):
         control=self.root/'control';(control/'rollback').mkdir(parents=True)
         state=self.root/'state';state.mkdir()
         override=self.root/'service.conf'
-        m={'ci_url':'https://ci.example/run','release_id':rid,'expected_runtime_path':str(previous),'expected_binary_sha256':c.sha(previous),'expected_unit_fingerprint':'b'*64,'expected_runtime_config_fingerprint':'e'*64,'expected_unmanaged_unit_fingerprint':'f'*64,'recovery_mode':'same-version-static','recovery_hosts':list(c.HOSTS[:1]),'expected_gnas_release_id':'gnas','expected_gnas_binary_sha256':'c'*64,'files':{'wecom-mcp-team':'d'*64,'recovery.conf':'f'*64}}
+        m={'ci_url':'https://ci.example/run','release_id':rid,'expected_runtime_path':str(previous),'expected_binary_sha256':c.sha(previous),'expected_unit_fingerprint':'b'*64,'expected_runtime_config_fingerprint':'e'*64,'expected_unmanaged_unit_fingerprint':'f'*64,'recovery_mode':'database-only','recovery_hosts':list(c.HOSTS),'expected_gnas_release_id':'gnas','expected_gnas_binary_sha256':'c'*64,'files':{'wecom-mcp-team':'d'*64,'recovery.conf':'f'*64}}
         original=c.regular
         with patch.object(c,'RELEASES',releases),patch.object(c,'CONTROL',control),patch.object(c,'STATE',state),patch.object(c,'DROPIN',override),patch.object(c,'verify',return_value=m),patch.object(c,'status'),patch.object(c,'baseline_matches',return_value=True),patch.object(c,'check_gnas'),patch.object(c,'healthy'),patch.object(c,'regular',side_effect=lambda p,root=False:original(p,False)),patch.object(c,'check_approval'),patch.object(c,'preflight_recovery'),patch.object(c,'recovery_matches'),patch.object(c,'approval'),patch.object(c,'restart_and_verify',side_effect=ValueError('test failure')),patch.object(c,'restore') as restore:
-            with self.assertRaisesRegex(ValueError,'same-version static recovery completed'):c.deploy(rid,'APR-20260923T080000Z-testonly')
+            with self.assertRaisesRegex(ValueError,'same-version database-only recovery completed'):c.deploy(rid,'APR-20260923T080000Z-testonly')
             restore.assert_called_once_with(rid)
             self.assertTrue((control/'rollback'/rid/'baseline.json').exists())
 
@@ -104,7 +104,8 @@ class ControllerTests(unittest.TestCase):
             args=run.call_args.args
             self.assertEqual(args[0],'systemd-run')
             self.assertIn(str(c.RELEASES/rid/'wecom-mcp-team'),args)
-            self.assertIn('--gnas-static-only',args)
+            self.assertNotIn('--gnas-static-only',args)
+            self.assertNotIn('--gnas-fleet-runtime',args)
             self.assertNotIn('--fleet',args)
             self.assertEqual(args[-1],'--check-config')
             self.assertIn('--property=StandardOutput=null',args)

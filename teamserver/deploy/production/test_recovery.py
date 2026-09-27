@@ -40,7 +40,7 @@ class RecoveryTests(unittest.TestCase):
                       expected_binary_sha256='c'*64, expected_unit_fingerprint='d'*64,
                       expected_runtime_config_fingerprint='e'*64, expected_unmanaged_unit_fingerprint='f'*64,
                       expected_gnas_release_id='20260923T070000Z-'+'b'*12, expected_gnas_binary_sha256='1'*64,
-                      recovery_mode='same-version-static', recovery_hosts=list(c.HOSTS[:1]))
+                      recovery_mode='database-only', recovery_hosts=list(c.HOSTS))
         self.seal()
 
     def seal(self):
@@ -50,7 +50,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_recovery_artifact_cannot_select_old_binary_or_looser_mode(self):
         c.verify(self.directory, self.rid)
-        for data in (b'[Service]\nExecStart=/old/binary\n', c.dropin(self.rid), c.recovery_dropin(self.rid).replace(b'--gnas-static-only', b'--fleet')):
+        for data in (b'[Service]\nExecStart=/old/binary\n', c.recovery_dropin(self.rid).replace(b'--gnas-discovery-policy', b'--fleet')):
             (self.directory/'recovery.conf').write_bytes(data)
             self.seal()  # Even a self-consistent re-hash cannot authorize arbitrary args.
             with self.assertRaisesRegex(ValueError, 'recovery arguments'):
@@ -66,13 +66,13 @@ class RecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'CI evidence'):c.stage(self.rid)
             status.assert_not_called()
 
-    def test_restore_uses_same_binary_and_rejects_discovery_host(self):
+    def test_restore_uses_same_binary_and_keeps_database_hosts(self):
         with patch.object(c, 'recovery_matches'), patch.object(c, 'restart_and_verify') as restart, patch.object(c, 'healthy') as healthy, patch.object(c, 'probe') as probe, patch.object(c, 'unit_fingerprint', return_value='unit'):
             c.restore(self.rid)
             self.assertEqual(self.override.read_bytes(), c.recovery_dropin(self.rid))
-            self.assertEqual(restart.call_args.args, (str(self.directory/'wecom-mcp-team'), self.m['files']['wecom-mcp-team'], c.HOSTS[:1]))
-            self.assertEqual(healthy.call_args.args[2], c.HOSTS[:1])
-            self.assertTrue(all(call.args[0] in c.HOSTS[1:] and call.args[2] == 421 for call in probe.call_args_list))
+            self.assertEqual(restart.call_args.args, (str(self.directory/'wecom-mcp-team'), self.m['files']['wecom-mcp-team'], c.HOSTS))
+            self.assertEqual(healthy.call_args.args[2], c.HOSTS)
+            probe.assert_not_called()
             self.assertTrue((self.control/'rollback'/self.rid/'recovered.json').exists())
 
     def test_failed_recovery_never_records_success(self):
@@ -92,7 +92,7 @@ class RecoveryTests(unittest.TestCase):
         self.override.write_bytes(c.dropin(self.rid))
         current = dict(runtime_path=str(self.directory/'wecom-mcp-team'), binary_sha256=self.m['files']['wecom-mcp-team'], unit_fingerprint='u', active='failed', runtime_verified=False)
         with patch.object(c,'status',return_value=current), patch.object(c,'check_approval') as check, patch.object(c,'approval') as approval, patch.object(c,'preflight_recovery'), patch.object(c,'restore') as restore:
-            self.assertEqual(c.rollback(self.rid,'approval')['state'],'recovered_static')
+            self.assertEqual(c.rollback(self.rid,'approval')['state'],'recovered_database_only')
             fields=check.call_args.args[2]
             self.assertEqual(fields['recovery_sha256'],self.m['files']['recovery.conf'])
             self.assertEqual(fields['binary_sha256'],self.m['files']['wecom-mcp-team'])

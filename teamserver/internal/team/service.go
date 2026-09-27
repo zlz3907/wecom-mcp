@@ -84,10 +84,13 @@ func newService(cfg Config, logger *slog.Logger, resolver AuthorizationResolver)
 			return nil, err
 		}
 		// Discovery never invents an AI execution identity or initializes
-		// remote assets. Advertise only the operations it can safely serve.
+		// remote assets. Advertise every reader it can safely serve. In
+		// particular, the read-only initialization status endpoint is part of
+		// the shared GNAS employee-tool contract; omitting it makes otherwise
+		// valid database-discovered bindings fail closed during authorization.
 		readDefinitions := definitions[:0]
 		for _, definition := range definitions {
-			if definition.Access == legacymcp.ToolAccessReader && definition.Name != "wecom_instance_initialize_status" {
+			if definition.Access == legacymcp.ToolAccessReader {
 				readDefinitions = append(readDefinitions, definition)
 			}
 		}

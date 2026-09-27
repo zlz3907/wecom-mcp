@@ -24,6 +24,8 @@ INCOMING = Path('/var/lib/wecom-mcp-release/incoming')
 CONTROL = Path('/var/lib/wecom-mcp-release')
 APPROVALS = Path('/etc/wecom-mcp/release-approvals')
 DROPIN = Path('/etc/systemd/system/wecom-mcp@sharedzoop.service.d/zz-managed-release.conf')
+# Retained only for the historical migration helper; the active controller
+# never reads or passes this retired tenant manifest to the service.
 RUNTIME = BASE / 'instances/gmzoop/config/fleet-runtime-20260916.json'
 STATE = BASE / 'state/discovery'
 HOSTS = ('mcp.wesiyu.com', 'mcp.jianpinke.com', 'mcp.rtyouth.com')
@@ -84,25 +86,19 @@ def unit_fingerprint(exclude_managed=False):
 
 
 def runtime_fingerprint():
-    # These files contain references/capability policy, never environment secrets.
-    manifest = read_json(RUNTIME)
-    require(manifest.get('version') == 1 and isinstance(manifest.get('bindings'), list) and 0 < len(manifest['bindings']) <= 64, 'invalid protected runtime mapping')
-    pairs = [[str(RUNTIME), sha(RUNTIME)]]
-    seen = set()
-    for binding in manifest['bindings']:
-        path = Path(binding.get('instance_config_path', ''))
-        require(path.is_absolute() and path.suffix == '.json' and str(path).startswith(str(BASE / 'instances') + '/') and path not in seen, 'invalid protected instance reference')
-        data = read_json(path)
-        require(data.get('version') == 1 and data.get('tenant_route') and data.get('registry_document_id'), 'invalid protected static instance')
-        seen.add(path)
-        pairs.append([str(path), sha(path)])
-    return hashlib.sha256(json.dumps(sorted(pairs), separators=(',', ':')).encode()).hexdigest()
+    # DB discovery owns tenant bindings, Registry coordinates and capability
+    # routing. The local state root is only a dedicated cache/journal boundary;
+    # its contents are mutable runtime state and must not become a static
+    # tenant configuration fingerprint.
+    require(STATE.is_dir() and STATE.resolve() == STATE, 'discovery state root not provisioned')
+    return hashlib.sha256(json.dumps({'mode': 'database-only', 'state_root': str(STATE)}, separators=(',', ':')).encode()).hexdigest()
 
 
 def recovery_dropin(release_id):
     require(RID.fullmatch(release_id), 'invalid release ID')
-    # Reuse the exact hybrid template and narrow it to the single approved URL.
-    return dropin(release_id).replace(b' --listen ', (' --gnas-static-only https://' + HOSTS[0] + ' --listen ').encode())
+    # Recovery stays on the same database-only binary and routing contract.
+    # There is no retired local tenant mapping to fall back to.
+    return dropin(release_id)
 
 
 def recovery_matches(m):
@@ -130,8 +126,8 @@ def status():
 
 def dropin(release_id):
     require(RID.fullmatch(release_id), 'invalid release ID')
-    args = '%s --gnas-fleet-runtime %s --gnas-discovery-policy %s --gnas-state-root %s --listen 127.0.0.1:7702' % (
-        RELEASES / release_id / 'wecom-mcp-team', RUNTIME, RELEASES / release_id / 'discovery-policy.json', STATE)
+    args = '%s --gnas-discovery-policy %s --gnas-state-root %s --listen 127.0.0.1:7702' % (
+        RELEASES / release_id / 'wecom-mcp-team', RELEASES / release_id / 'discovery-policy.json', STATE)
     return ('[Service]\nExecStartPre=\nExecStart=\nExecStartPre=' + args + ' --check-config\nExecStart=' + args +
             ' --gnas-fleet-refresh 30s\nReadWritePaths=' + str(STATE) + '\n').encode()
 
@@ -152,7 +148,7 @@ def verify(directory, release_id):
         require(SHA.fullmatch(digest) and sha(directory / name) == digest, 'artifact digest mismatch')
     require((directory / 'service.conf').read_bytes() == dropin(release_id), 'unexpected service arguments')
     require((directory / 'recovery.conf').read_bytes() == recovery_dropin(release_id), 'unexpected recovery arguments')
-    require(m.get('recovery_mode') == 'same-version-static' and m.get('recovery_hosts') == list(HOSTS[:1]), 'recovery scope missing')
+    require(m.get('recovery_mode') == 'database-only' and m.get('recovery_hosts') == list(HOSTS), 'recovery scope missing')
     require(SHA.fullmatch(m.get('expected_unmanaged_unit_fingerprint', '')), 'recovery baseline missing')
     policy = read_json(directory / 'discovery-policy.json', True)
     require(set(policy) == {'version', 'api_whitelist'} and policy['version'] == 1, 'unexpected discovery policy')
@@ -358,9 +354,9 @@ def preflight_recovery(release_id):
         '--property=NoNewPrivileges=yes', '--property=PrivateTmp=yes',
         '--property=ReadWritePaths=' + str(BASE / 'instances/gmzoop/data'),
         '--property=StandardOutput=null', '--property=StandardError=null',
-        str(RELEASES / release_id / 'wecom-mcp-team'), '--gnas-fleet-runtime', str(RUNTIME),
+        str(RELEASES / release_id / 'wecom-mcp-team'),
         '--gnas-discovery-policy', str(RELEASES / release_id / 'discovery-policy.json'),
-        '--gnas-state-root', str(STATE), '--gnas-static-only', 'https://' + HOSTS[0],
+        '--gnas-state-root', str(STATE),
         '--listen', '127.0.0.1:7702', '--check-config')
     recovery_matches(m)
     return {'state': 'recovery_preflight_passed', 'release_id': release_id, 'service_restarted': False}
@@ -402,18 +398,14 @@ def deploy(release_id, approval_id):
         atomic(record / 'deployed.json', json.dumps({'unit_fingerprint': unit_fingerprint(), 'runtime_config_fingerprint': runtime_fingerprint()}).encode(), 0o400)
     except Exception:
         restore(release_id)
-        raise ValueError('deploy failed; approved same-version static recovery completed')
+        raise ValueError('deploy failed; approved same-version database-only recovery completed')
     return {'state': 'deployed', 'release_id': release_id, 'observation_complete': False}
 
 
 def recovery_health(m):
     recovery_matches(m)
     require(sha(DROPIN) == m['files']['recovery.conf'], 'recovery override drift')
-    healthy(str(RELEASES / m['release_id'] / 'wecom-mcp-team'), m['files']['wecom-mcp-team'], HOSTS[:1])
-    for host in HOSTS[1:]:
-        for endpoint in ('/healthz', '/readyz', '/mcp', '/.well-known/oauth-protected-resource/mcp'):
-            probe(host, endpoint, 421)
-        probe(host, '/mcp', 421, True)
+    healthy(str(RELEASES / m['release_id'] / 'wecom-mcp-team'), m['files']['wecom-mcp-team'], HOSTS)
 
 
 def restore(release_id):
@@ -422,7 +414,7 @@ def restore(release_id):
     recovery_matches(m)
     # Both the binary and the exact recovery override are immutable artifacts.
     atomic(DROPIN, (directory / 'recovery.conf').read_bytes())
-    restart_and_verify(str(directory / 'wecom-mcp-team'), m['files']['wecom-mcp-team'], HOSTS[:1], expected_config_fingerprint=m['expected_runtime_config_fingerprint'])
+    restart_and_verify(str(directory / 'wecom-mcp-team'), m['files']['wecom-mcp-team'], HOSTS, expected_config_fingerprint=m['expected_runtime_config_fingerprint'])
     recovery_health(m)
     atomic(CONTROL / 'rollback' / release_id / 'recovered.json', json.dumps({'unit_fingerprint': unit_fingerprint(), 'recovery_mode': m['recovery_mode']}).encode(), 0o400)
 
@@ -441,7 +433,7 @@ def rollback(release_id, approval_id):
     require(status() == current, 'recovery source changed during preflight')
     approval(approval_id, 'rollback', expected)
     restore(release_id)
-    return {'state': 'recovered_static', 'release_id': release_id, 'observation_complete': False}
+    return {'state': 'recovered_database_only', 'release_id': release_id, 'observation_complete': False}
 
 
 def observe(release_id, recovery=False):
@@ -453,7 +445,7 @@ def observe(release_id, recovery=False):
         if recovery:
             recovery_health(m)
         else:
-            require(sha(DROPIN) == m['files']['service.conf'], 'hybrid override drift')
+            require(sha(DROPIN) == m['files']['service.conf'], 'database-only override drift')
             healthy(str(RELEASES / release_id / 'wecom-mcp-team'), m['files']['wecom-mcp-team'], HOSTS)
         print(json.dumps({'state': 'observing', 'sample': index + 1, 'total': 11}), flush=True)
         if index < 10:

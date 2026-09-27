@@ -59,7 +59,8 @@ func TestHybridVerifierHTTPToolsAndConfigDrift(t *testing.T) {
 	static, dynamic := newServer(false), newServer(true)
 	staticTools, dynamicTools := listTools(t, static.URL, "test-verified"), listTools(t, dynamic.URL, "test-verified")
 	for _, name := range []string{"wecom_record_apply", "wecom_send_app_message", "wecom_schema_migration_apply", "wecom_instance_initialize", "wecom_instance_initialize_status"} {
-		if !staticTools[name] || dynamicTools[name] {
+		wantDynamic := name == "wecom_instance_initialize_status"
+		if !staticTools[name] || dynamicTools[name] != wantDynamic {
 			t.Fatalf("tool catalog isolation failed: %s static=%v dynamic=%v", name, staticTools[name], dynamicTools[name])
 		}
 	}
