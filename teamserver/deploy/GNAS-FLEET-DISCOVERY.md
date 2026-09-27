@@ -55,7 +55,7 @@ GNAS 还把 Binding/企业元数据指纹绑定到现有不透明授权状态和
 
 ### 混合模式保留已有能力
 
-同时使用 `--gnas-fleet-runtime` 与 `--gnas-discovery-policy`：一次完整 GNAS payload 决定租户路由，已映射 Binding 使用受保护本地配置，保留原完整写入、消息、初始化、schema 管理工具，以及 operator/AI 执行主体、schema/state 路径；未映射实例从 Registry/Z-S00 发现，只发布 reader 工具。两者均使用单 Binding digest 的 Service JWT 认证和员工实时权限。
+同时使用 `--gnas-fleet-runtime` 与 `--gnas-discovery-policy`：一次完整 GNAS payload 决定租户路由，已映射 Binding 使用受保护本地配置，未映射 Binding 从 Registry/Z-S00 发现运行时配置。两类 Binding 均发布完整 MCP 工具目录；实际调用仍由员工实时权限、角色边界和各自 runtime capability 白名单共同限制。两者均使用单 Binding digest 的 Service JWT 认证。
 
 静态配置绑定完整内容摘要，每次 Store 读取与工具执行重新校验，外部漂移立即拒绝；合法内部初始化写回在同 Store 更新摘要。静态文件缺失、Source/Registry 不符时拒绝，不自动降为只读。重复 ID/Host/Source、实例名或存储路径冲突、symlink 别名全部拒绝。DB 删除静态或动态 Binding 均撤路由。单项错误使完整 refresh 失败，已知 Host503、未知421，成功后原子恢复；不把旧权限持续服务称为恢复。
 

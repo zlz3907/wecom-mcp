@@ -72,8 +72,9 @@ func NewGNASDiscovery(policyPath, stateRoot, listen string) (*GNASDiscovery, err
 	return &GNASDiscovery{policyPath: policyPath, stateRoot: stateRoot, listen: listen, instances: map[string]discoveredInstance{}, resolveName: legacymcp.ResolveDiscoveredInstanceName}, nil
 }
 
-// NewGNASHybridDiscovery keeps explicitly mapped local instances at full
-// capability while discovering unmapped bindings as reader-only instances.
+// NewGNASHybridDiscovery keeps explicitly mapped local instances and
+// database-discovered bindings on the same complete MCP tool catalog. Runtime
+// capability checks remain enforced by the discovered instance configuration.
 func NewGNASHybridDiscovery(policyPath, stateRoot, runtimeManifestPath, listen string) (*GNASDiscovery, error) {
 	d, err := NewGNASDiscovery(policyPath, stateRoot, listen)
 	if err != nil {
