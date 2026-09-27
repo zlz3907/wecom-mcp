@@ -23,17 +23,18 @@ import (
 var validRoles = map[string]struct{}{"Z-S01": {}, "Z-S02": {}, "Z-S03": {}, "Z-S04": {}, "Z-S05": {}, "Z-S06": {}, "Z-S07": {}, "Z-S08": {}, "Z-S09": {}}
 
 type Server struct {
-	bound               bool
-	discovered          bool
-	store               *config.Store
-	stateMu             sync.Mutex
-	progressMu          sync.Mutex
-	schemaRegistryMu    sync.Mutex
-	previewMu           sync.Mutex
-	previews            map[string]initializePreview
-	initializeCatalog   func() (zoopschema.Catalog, error)
-	initializeLocalUser func() (string, error)
-	identityCandidate   func(context.Context, config.Config, wecomRequester, string) (verifiedIdentity, error)
+	bound                bool
+	discovered           bool
+	store                *config.Store
+	stateMu              sync.Mutex
+	personnelBootstrapMu sync.Mutex
+	progressMu           sync.Mutex
+	schemaRegistryMu     sync.Mutex
+	previewMu            sync.Mutex
+	previews             map[string]initializePreview
+	initializeCatalog    func() (zoopschema.Catalog, error)
+	initializeLocalUser  func() (string, error)
+	identityCandidate    func(context.Context, config.Config, wecomRequester, string) (verifiedIdentity, error)
 }
 
 func New(configPath string) *Server { return &Server{store: config.NewStore(configPath)} }

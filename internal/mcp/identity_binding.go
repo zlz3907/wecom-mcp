@@ -587,6 +587,60 @@ func resolvePersonnelIdentity(ctx context.Context, runtime config.Config, client
 	return identity, nil
 }
 
+// initialPersonnelSubjectBootstrapCandidate permits exactly one controlled
+// first Z-S09 personnel row when the table is provably empty. The normal
+// identity resolver cannot be used for that first row because it deliberately
+// requires the row to exist before it establishes identity.
+func initialPersonnelSubjectBootstrapCandidate(ctx context.Context, runtime config.Config, client wecomRequester, raw json.RawMessage, userid string) (bool, error) {
+	var input struct {
+		TargetRole string `json:"target_role"`
+		Operation  string `json:"operation"`
+		Records    []struct {
+			Values map[string]any `json:"values"`
+		} `json:"records"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil || input.TargetRole != "Z-S09" || input.Operation != "add_records" || len(input.Records) != 1 {
+		return false, nil
+	}
+	values := input.Records[0].Values
+	if !identityCellContainsUserID(values["企业微信成员或责任人"], userid) || !inputCellContainsText(values["主体类型"], "人员主体") || !inputCellContainsText(values["主体状态"], "启用") {
+		return false, nil
+	}
+	if !runtime.Allows("get_records") {
+		return false, fmt.Errorf("实例白名单未允许读取 Z-S09 主体，拒绝首次登记")
+	}
+	snapshot, err := loadRuntimeSchema(ctx, runtime, client)
+	if err != nil {
+		return false, err
+	}
+	memberField, memberOK := snapshot.Schema.Roles["Z-S09"]["企业微信成员或责任人"]
+	typeField, typeOK := snapshot.Schema.Roles["Z-S09"]["主体类型"]
+	statusField, statusOK := snapshot.Schema.Roles["Z-S09"]["主体状态"]
+	if !memberOK || !typeOK || !statusOK || memberField.ID == "" || typeField.ID == "" || statusField.ID == "" {
+		return false, fmt.Errorf("Z-S09 首次登记所需字段不完整")
+	}
+	target, err := wecom.ResolveTarget(ctx, client, runtime.RegistryDocumentID, runtime.RegistryKey, "Z-S09", runtime.Allows)
+	if err != nil {
+		return false, err
+	}
+	response, err := client.Request(ctx, "get_records", map[string]any{
+		"docid": target.DocumentID, "sheet_id": target.SheetID,
+		"key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID", "limit": 200,
+		"field_ids": []string{memberField.ID, typeField.ID, statusField.ID},
+	})
+	if err != nil || apiError(response) != nil || recordSetMayBeIncomplete(response, 200) {
+		return false, fmt.Errorf("无法确认 Z-S09 为空，拒绝首次登记")
+	}
+	return len(recordsFrom(response)) == 0, nil
+}
+
+func inputCellContainsText(value any, expected string) bool {
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text) == expected
+	}
+	return identityCellContainsText(value, expected)
+}
+
 func resolveUniquePersonnelSubjectRecordID(records []any, userid, memberFieldID, typeFieldID, statusFieldID string) (string, error) {
 	matches := make([]string, 0, 1)
 	for _, rawRecord := range records {
@@ -673,6 +727,9 @@ func verifiedExecutionSubjectFromContext(ctx context.Context) (verifiedExecution
 func businessActorUserID(ctx context.Context, runtime config.Config) string {
 	if identity, ok := verifiedIdentityFromContext(ctx); ok {
 		return identity.UserID
+	}
+	if userid, ok := ctx.Value(bootstrapActorContextKey{}).(string); ok && userid != "" {
+		return userid
 	}
 	return runtime.WecomOperatorUserID
 }

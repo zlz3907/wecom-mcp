@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -248,6 +250,53 @@ func TestIdentityCellContainsOnlyExplicitText(t *testing.T) {
 	cell := []any{map[string]any{"id": "option-one", "text": "人员主体"}}
 	if !identityCellContainsText(cell, "人员主体") || identityCellContainsText(cell, "option-one") || identityCellContainsText(map[string]any{"name": "人员主体"}, "人员主体") {
 		t.Fatal("select text matching widened beyond explicit text")
+	}
+}
+
+func TestInitialPersonnelSubjectBootstrapOnlyAllowsMatchingRowOnEmptyTable(t *testing.T) {
+	dir := t.TempDir()
+	schemaPath := filepath.Join(dir, "schema.md")
+	schema := ""
+	for i := 1; i <= 8; i++ {
+		schema += fmt.Sprintf("## Z-S0%d｜表\n| 测试 | field | FIELD_TYPE_TEXT |\n", i)
+	}
+	schema += "## Z-S09｜表\n| 企业微信成员或责任人 | member | FIELD_TYPE_USER |\n| 主体类型 | type | FIELD_TYPE_SINGLE_SELECT |\n| 主体状态 | status | FIELD_TYPE_SINGLE_SELECT |\n"
+	if err := os.WriteFile(schemaPath, []byte(schema), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runtime := config.Config{
+		SchemaMirrorPath: schemaPath, SchemaSource: "local_compatibility",
+		RegistryDocumentID: "registry", RegistryKey: "instance-key",
+		APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}},
+	}
+	args := map[string]any{
+		"target_role": "Z-S09", "operation": "add_records",
+		"records": []any{map[string]any{"values": map[string]any{
+			"企业微信成员或责任人": []any{map[string]any{"user_id": "employee-one"}},
+			"主体类型":       "人员主体",
+			"主体状态":       "启用",
+		}}},
+	}
+	raw, _ := json.Marshal(args)
+	for _, tc := range []struct {
+		name   string
+		rows   []any
+		userid string
+		want   bool
+	}{
+		{name: "empty table and current employee", userid: "employee-one", want: true},
+		{name: "non-empty table", rows: []any{identitySubjectRecord("existing", "employee-one", "人员主体", "启用")}, userid: "employee-one", want: false},
+		{name: "different employee", userid: "employee-two", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate, err := initialPersonnelSubjectBootstrapCandidate(context.Background(), runtime, &oauthPersonnelFake{records: tc.rows}, raw, tc.userid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if candidate != tc.want {
+				t.Fatalf("candidate=%v want %v", candidate, tc.want)
+			}
+		})
 	}
 }
 
