@@ -3,8 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -253,88 +251,23 @@ func TestIdentityCellContainsOnlyExplicitText(t *testing.T) {
 	}
 }
 
-func TestInitialPersonnelSubjectBootstrapOnlyAllowsValidRowsOnEmptyTable(t *testing.T) {
-	dir := t.TempDir()
-	schemaPath := filepath.Join(dir, "schema.md")
-	schema := ""
-	for i := 1; i <= 8; i++ {
-		schema += fmt.Sprintf("## Z-S0%d｜表\n| 测试 | field | FIELD_TYPE_TEXT |\n", i)
-	}
-	schema += "## Z-S09｜表\n| 企业微信成员或责任人 | member | FIELD_TYPE_USER |\n| 主体类型 | type | FIELD_TYPE_SINGLE_SELECT |\n| 主体状态 | status | FIELD_TYPE_SINGLE_SELECT |\n"
-	if err := os.WriteFile(schemaPath, []byte(schema), 0600); err != nil {
-		t.Fatal(err)
-	}
-	runtime := config.Config{
-		SchemaMirrorPath: schemaPath, SchemaSource: "local_compatibility",
-		RegistryDocumentID: "registry", RegistryKey: "instance-key",
-		APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}},
-	}
-	args := map[string]any{
-		"target_role": "Z-S09", "operation": "add_records",
-		"records": []any{map[string]any{"values": map[string]any{
-			"企业微信成员或责任人": []any{map[string]any{"user_id": "employee-one"}},
-			"主体类型":       "人员主体",
-			"主体状态":       "启用",
-		}}},
-	}
-	raw, _ := json.Marshal(args)
-	for _, tc := range []struct {
-		name   string
-		rows   []any
-		userid string
-		want   bool
-	}{
-		{name: "empty table and current employee", userid: "employee-one", want: true},
-		{name: "non-empty table", rows: []any{identitySubjectRecord("existing", "employee-one", "人员主体", "启用")}, userid: "employee-one", want: false},
-		{name: "different employee", userid: "employee-two", want: true},
+func TestPersonnelSubjectAddRecordsDoesNotRequireExistingIdentity(t *testing.T) {
+	for _, raw := range []string{
+		`{"target_role":"Z-S09","operation":"add_records","records":[{"values":{}}]}`,
+		`{"target_role":"Z-S09","operation":"add_records","records":[{"values":{"主体类型":"人员主体","主体状态":"启用"}}]}`,
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			candidate, err := initialPersonnelSubjectBootstrapCandidate(context.Background(), runtime, &oauthPersonnelFake{records: tc.rows}, raw, tc.userid)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if candidate != tc.want {
-				t.Fatalf("candidate=%v want %v", candidate, tc.want)
-			}
-		})
+		if !isPersonnelSubjectAddRecords(json.RawMessage(raw)) {
+			t.Fatalf("Z-S09 add_records was not recognized: %s", raw)
+		}
 	}
-}
-
-func TestInitialPersonnelSubjectBootstrapAllowsControlledBatchOnEmptyTable(t *testing.T) {
-	runtime := config.Config{
-		SchemaMirrorPath: filepath.Join(t.TempDir(), "schema.md"), SchemaSource: "local_compatibility",
-		RegistryDocumentID: "registry", RegistryKey: "instance-key",
-		APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}},
-	}
-	content := ""
-	for i := 1; i <= 8; i++ {
-		content += fmt.Sprintf("## Z-S0%d｜表\n| 测试 | field | FIELD_TYPE_TEXT |\n", i)
-	}
-	content += "## Z-S09｜表\n| 企业微信成员或责任人 | member | FIELD_TYPE_USER |\n| 主体类型 | type | FIELD_TYPE_SINGLE_SELECT |\n| 主体状态 | status | FIELD_TYPE_SINGLE_SELECT |\n"
-	if err := os.WriteFile(runtime.SchemaMirrorPath, []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
-	args := map[string]any{
-		"target_role": "Z-S09", "operation": "add_records",
-		"records": []any{
-			map[string]any{"values": map[string]any{
-				"企业微信成员或责任人": []any{map[string]any{"user_id": "employee-one"}},
-				"主体类型":       "人员主体", "主体状态": "启用",
-			}},
-			map[string]any{"values": map[string]any{
-				"企业微信成员或责任人": []any{map[string]any{"user_id": "employee-two"}},
-				"主体类型":       "人员主体", "主体状态": "停用",
-			}},
-		},
-	}
-	raw, _ := json.Marshal(args)
-	candidate, err := initialPersonnelSubjectBootstrapCandidate(context.Background(), runtime, &oauthPersonnelFake{}, raw, "employee-one")
-	if err != nil || !candidate {
-		t.Fatalf("controlled personnel batch was not accepted: candidate=%v err=%v", candidate, err)
-	}
-	other, err := initialPersonnelSubjectBootstrapCandidate(context.Background(), runtime, &oauthPersonnelFake{}, raw, "employee-three")
-	if err != nil || !other {
-		t.Fatalf("valid batch was rejected for a different caller: candidate=%v err=%v", other, err)
+	for _, raw := range []string{
+		`{"target_role":"Z-S09","operation":"update_records","records":[{"values":{}}]}`,
+		`{"target_role":"Z-S08","operation":"add_records","records":[{"values":{}}]}`,
+		`{"target_role":"Z-S09","operation":"add_records","records":[]}`,
+	} {
+		if isPersonnelSubjectAddRecords(json.RawMessage(raw)) {
+			t.Fatalf("non-registration request was recognized: %s", raw)
+		}
 	}
 }
 

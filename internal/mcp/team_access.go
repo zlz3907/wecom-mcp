@@ -229,22 +229,13 @@ func (s *Server) CallToolWithOAuthEmployee(ctx context.Context, name string, arg
 	if err != nil {
 		return nil, err
 	}
-	bootstrap, err := initialPersonnelSubjectBootstrapCandidate(ctx, runtime, client, arguments, userid)
-	if err != nil {
-		return nil, err
-	}
-	if bootstrap {
-		// Recheck while holding the process-local gate. A second concurrent
-		// first-registration request must not observe the same empty snapshot.
+	if isPersonnelSubjectAddRecords(arguments) {
+		// Z-S09 registration is governed by the Enterprise WeCom API and the
+		// normal schema/write validation. It must not depend on an existing
+		// Z-S09 identity row, including during initialization.
 		s.personnelBootstrapMu.Lock()
 		defer s.personnelBootstrapMu.Unlock()
-		bootstrap, err = initialPersonnelSubjectBootstrapCandidate(ctx, runtime, client, arguments, userid)
-		if err != nil {
-			return nil, err
-		}
-		if bootstrap {
-			return s.callWithBootstrapIdentity(ctx, runtime, name, arguments, userid)
-		}
+		return s.callWithBootstrapIdentity(ctx, runtime, name, arguments, userid)
 	}
 	identity, err := resolvePersonnelIdentity(ctx, runtime, client, verifiedIdentity{UserID: userid})
 	if err != nil {
@@ -257,13 +248,8 @@ func (s *Server) CallToolWithOAuthEmployee(ctx context.Context, name string, arg
 type bootstrapActorContextKey struct{}
 
 func (s *Server) callWithBootstrapIdentity(ctx context.Context, runtime config.Config, name string, arguments json.RawMessage, userid string) (any, error) {
-	executionSubject, err := configuredAIExecutionSubject(runtime)
-	if err != nil {
-		return nil, err
-	}
 	ctx = context.WithValue(ctx, oauthInstanceDigestKey{}, runtime.Digest())
 	ctx = context.WithValue(ctx, bootstrapActorContextKey{}, userid)
-	ctx = context.WithValue(ctx, verifiedExecutionSubjectContextKey{}, executionSubject)
 	value, err := s.call(ctx, name, arguments)
 	if err != nil {
 		return nil, err
