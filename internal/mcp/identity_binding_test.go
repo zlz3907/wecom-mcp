@@ -300,6 +300,44 @@ func TestInitialPersonnelSubjectBootstrapOnlyAllowsMatchingRowOnEmptyTable(t *te
 	}
 }
 
+func TestInitialPersonnelSubjectBootstrapAllowsControlledBatchOnEmptyTable(t *testing.T) {
+	runtime := config.Config{
+		SchemaMirrorPath: filepath.Join(t.TempDir(), "schema.md"), SchemaSource: "local_compatibility",
+		RegistryDocumentID: "registry", RegistryKey: "instance-key",
+		APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}},
+	}
+	content := ""
+	for i := 1; i <= 8; i++ {
+		content += fmt.Sprintf("## Z-S0%d｜表\n| 测试 | field | FIELD_TYPE_TEXT |\n", i)
+	}
+	content += "## Z-S09｜表\n| 企业微信成员或责任人 | member | FIELD_TYPE_USER |\n| 主体类型 | type | FIELD_TYPE_SINGLE_SELECT |\n| 主体状态 | status | FIELD_TYPE_SINGLE_SELECT |\n"
+	if err := os.WriteFile(runtime.SchemaMirrorPath, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{
+		"target_role": "Z-S09", "operation": "add_records",
+		"records": []any{
+			map[string]any{"values": map[string]any{
+				"企业微信成员或责任人": []any{map[string]any{"user_id": "employee-one"}},
+				"主体类型":       "人员主体", "主体状态": "启用",
+			}},
+			map[string]any{"values": map[string]any{
+				"企业微信成员或责任人": []any{map[string]any{"user_id": "employee-two"}},
+				"主体类型":       "人员主体", "主体状态": "停用",
+			}},
+		},
+	}
+	raw, _ := json.Marshal(args)
+	candidate, err := initialPersonnelSubjectBootstrapCandidate(context.Background(), runtime, &oauthPersonnelFake{}, raw, "employee-one")
+	if err != nil || !candidate {
+		t.Fatalf("controlled personnel batch was not accepted: candidate=%v err=%v", candidate, err)
+	}
+	other, err := initialPersonnelSubjectBootstrapCandidate(context.Background(), runtime, &oauthPersonnelFake{}, raw, "employee-three")
+	if err != nil || other {
+		t.Fatalf("batch without current employee was accepted: candidate=%v err=%v", other, err)
+	}
+}
+
 func identitySubjectRecord(recordID, userid, subjectType, status string) map[string]any {
 	return map[string]any{
 		"record_id": recordID,

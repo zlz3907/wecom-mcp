@@ -587,9 +587,9 @@ func resolvePersonnelIdentity(ctx context.Context, runtime config.Config, client
 	return identity, nil
 }
 
-// initialPersonnelSubjectBootstrapCandidate permits exactly one controlled
-// first Z-S09 personnel row when the table is provably empty. The normal
-// identity resolver cannot be used for that first row because it deliberately
+// initialPersonnelSubjectBootstrapCandidate permits a controlled first Z-S09
+// personnel batch when the table is provably empty. The normal identity
+// resolver cannot be used for that first batch because it deliberately
 // requires the row to exist before it establishes identity.
 func initialPersonnelSubjectBootstrapCandidate(ctx context.Context, runtime config.Config, client wecomRequester, raw json.RawMessage, userid string) (bool, error) {
 	var input struct {
@@ -599,11 +599,20 @@ func initialPersonnelSubjectBootstrapCandidate(ctx context.Context, runtime conf
 			Values map[string]any `json:"values"`
 		} `json:"records"`
 	}
-	if err := json.Unmarshal(raw, &input); err != nil || input.TargetRole != "Z-S09" || input.Operation != "add_records" || len(input.Records) != 1 {
+	if err := json.Unmarshal(raw, &input); err != nil || input.TargetRole != "Z-S09" || input.Operation != "add_records" || len(input.Records) == 0 {
 		return false, nil
 	}
-	values := input.Records[0].Values
-	if !identityCellContainsUserID(values["企业微信成员或责任人"], userid) || !inputCellContainsText(values["主体类型"], "人员主体") || !inputCellContainsText(values["主体状态"], "启用") {
+	currentUserPresent := false
+	for _, record := range input.Records {
+		values := record.Values
+		if !inputCellContainsText(values["主体类型"], "人员主体") || !validPersonnelBootstrapStatus(values["主体状态"]) || !identityCellHasAnyUserID(values["企业微信成员或责任人"]) {
+			return false, nil
+		}
+		if identityCellContainsUserID(values["企业微信成员或责任人"], userid) {
+			currentUserPresent = true
+		}
+	}
+	if !currentUserPresent {
 		return false, nil
 	}
 	if !runtime.Allows("get_records") {
@@ -632,6 +641,34 @@ func initialPersonnelSubjectBootstrapCandidate(ctx context.Context, runtime conf
 		return false, fmt.Errorf("无法确认 Z-S09 为空，拒绝首次登记")
 	}
 	return len(recordsFrom(response)) == 0, nil
+}
+
+func validPersonnelBootstrapStatus(value any) bool {
+	return inputCellContainsText(value, "启用") || inputCellContainsText(value, "停用")
+}
+
+func identityCellHasAnyUserID(value any) bool {
+	switch current := value.(type) {
+	case map[string]any:
+		for key, child := range current {
+			normalized := strings.ToLower(strings.NewReplacer("-", "", "_", "").Replace(strings.TrimSpace(key)))
+			if normalized == "userid" {
+				if text, ok := child.(string); ok && validMessageRecipient(strings.TrimSpace(text)) {
+					return true
+				}
+			}
+			if identityCellHasAnyUserID(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range current {
+			if identityCellHasAnyUserID(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func inputCellContainsText(value any, expected string) bool {
