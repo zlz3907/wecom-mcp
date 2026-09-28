@@ -44,7 +44,7 @@ func TestSendApplicationMessageUsesManagedIdentityAndCompletesReceipt(t *testing
 		WecomOperatorUserID: "operator",
 		StatePath:           filepath.Join(t.TempDir(), "state.json"),
 		APIWhitelist: map[string][]string{
-			appMessageCapabilityGroup: {"list_employees", "send_app_message"},
+			"default": {"list_employees", "send_app_message"},
 		},
 	}
 	server := &Server{}
@@ -74,7 +74,7 @@ func TestSendApplicationMessageRejectsInactiveRecipientBeforeReservation(t *test
 		WecomOperatorUserID: "operator",
 		StatePath:           filepath.Join(t.TempDir(), "state.json"),
 		APIWhitelist: map[string][]string{
-			appMessageCapabilityGroup: {"list_employees", "send_app_message"},
+			"default": {"list_employees", "send_app_message"},
 		},
 	}
 	server := &Server{}
@@ -90,7 +90,7 @@ func TestSendApplicationMessageRejectsBroadcastRecipient(t *testing.T) {
 		WecomOperatorUserID: "operator",
 		StatePath:           filepath.Join(t.TempDir(), "state.json"),
 		APIWhitelist: map[string][]string{
-			appMessageCapabilityGroup: {"list_employees", "send_app_message"},
+			"default": {"list_employees", "send_app_message"},
 		},
 	}
 	server := &Server{}
@@ -136,7 +136,7 @@ func TestSendApplicationMessageReleasesDefinitiveFailureForSafeRetry(t *testing.
 		WecomOperatorUserID: "operator",
 		StatePath:           filepath.Join(t.TempDir(), "state.json"),
 		APIWhitelist: map[string][]string{
-			appMessageCapabilityGroup: {"list_employees", "send_app_message"},
+			"default": {"list_employees", "send_app_message"},
 		},
 	}
 	server := &Server{}
@@ -169,7 +169,7 @@ func TestSendApplicationMessageKeepsPendingForInconclusiveReceipt(t *testing.T) 
 		WecomOperatorUserID: "operator",
 		StatePath:           filepath.Join(t.TempDir(), "state.json"),
 		APIWhitelist: map[string][]string{
-			appMessageCapabilityGroup: {"list_employees", "send_app_message"},
+			"default": {"list_employees", "send_app_message"},
 		},
 	}
 	server := &Server{}
@@ -204,7 +204,7 @@ func TestSendApplicationMessageKeepsPendingForContradictoryPartialRecipientRecei
 				WecomOperatorUserID: "operator",
 				StatePath:           filepath.Join(t.TempDir(), "state.json"),
 				APIWhitelist: map[string][]string{
-					appMessageCapabilityGroup: {"list_employees", "send_app_message"},
+					"default": {"list_employees", "send_app_message"},
 				},
 			}
 			server := &Server{}

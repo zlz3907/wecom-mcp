@@ -51,11 +51,11 @@ func (s *Server) sendApplicationMediaMessage(ctx context.Context, runtime config
 	if _, err := hex.DecodeString(input.ContentSHA256); err != nil {
 		return nil, fmt.Errorf("content_sha256 必须是小写 SHA-256")
 	}
-	if err := verifyBoundOperator(ctx, runtime, client, appMessageCapabilityGroup); err != nil {
+	if err := verifyBoundOperator(ctx, runtime, client, ""); err != nil {
 		return nil, err
 	}
-	if !runtime.AllowsInGroup(appMessageCapabilityGroup, "upload_app_media") || !runtime.AllowsInGroup(appMessageCapabilityGroup, "send_app_message") {
-		return nil, fmt.Errorf("app_message 专用 capability 未允许媒体上传与发送")
+	if !runtime.Allows("upload_app_media") || !runtime.Allows("send_app_message") {
+		return nil, fmt.Errorf("实例白名单未允许媒体上传或发送")
 	}
 	if _, err := verifyInitializeOperatorEmployee(ctx, client, input.RecipientUserID); err != nil {
 		return nil, fmt.Errorf("recipient_userid 未在当前固定租户员工目录中唯一启用")

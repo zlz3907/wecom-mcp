@@ -32,7 +32,7 @@ func identityBindingFixture(t *testing.T) (*Server, config.Config, *identityBind
 		StatePath:                  filepath.Join(t.TempDir(), "state.json"),
 		AIExecutionSubjectRecordID: "subject-ai",
 		APIWhitelist: map[string][]string{
-			appMessageCapabilityGroup: {"list_employees", "send_app_message"},
+			"default": {"list_employees", "send_app_message"},
 		},
 	}
 	server := &Server{identityCandidate: func(_ context.Context, _ config.Config, _ wecomRequester, name string) (verifiedIdentity, error) {

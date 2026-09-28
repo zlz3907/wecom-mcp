@@ -48,7 +48,7 @@ func TestSendApplicationMediaMessageUploadsAndSendsToOneEnabledUser(t *testing.T
 		WecomOperatorUserID: "operator",
 		StatePath:           filepath.Join(t.TempDir(), "state.json"),
 		APIWhitelist: map[string][]string{
-			appMessageCapabilityGroup: {"list_employees", "upload_app_media", "send_app_message"},
+			"default": {"list_employees", "upload_app_media", "send_app_message"},
 		},
 	}
 	input, _ := json.Marshal(map[string]string{
@@ -78,7 +78,7 @@ func TestSendApplicationMediaMessageUploadsAndSendsToOneEnabledUser(t *testing.T
 
 func TestSendApplicationMediaMessageRejectsBroadcastAndHashMismatchBeforeUpload(t *testing.T) {
 	fake := &appMediaMessageFake{}
-	runtime := config.Config{StatePath: filepath.Join(t.TempDir(), "state.json"), APIWhitelist: map[string][]string{appMessageCapabilityGroup: {"list_employees", "upload_app_media", "send_app_message"}}}
+	runtime := config.Config{StatePath: filepath.Join(t.TempDir(), "state.json"), APIWhitelist: map[string][]string{"default": {"list_employees", "upload_app_media", "send_app_message"}}}
 	for _, recipient := range []string{"@all", "@ALL"} {
 		input, _ := json.Marshal(map[string]string{"recipient_userid": recipient, "media_type": "file", "filename": "probe.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("content")), "content_sha256": hex.EncodeToString(make([]byte, 32)), "idempotency_key": "media-message-reject-" + recipient})
 		if _, err := (&Server{}).sendApplicationMediaMessage(context.Background(), runtime, fake, input); err == nil {

@@ -227,8 +227,8 @@ func buildSchemaMigrationPlan(ctx context.Context, runtime config.Config, client
 		return schemaMigrationPlan{}, fmt.Errorf("未知或未登记的 Schema 迁移")
 	}
 	for _, operation := range []string{"get_sheet", "get_fields", "get_records", "add_sheet", "add_fields", "update_fields"} {
-		if !runtime.AllowsInGroup(schemaMigrationGroup, operation) {
-			return schemaMigrationPlan{}, fmt.Errorf("Schema 迁移白名单未允许 %s", operation)
+		if !runtime.Allows(operation) {
+			return schemaMigrationPlan{}, fmt.Errorf("实例白名单未允许 %s", operation)
 		}
 	}
 	s07, err := wecom.ResolveTarget(ctx, client, runtime.RegistryDocumentID, runtime.RegistryKey, "Z-S07", runtime.Allows)

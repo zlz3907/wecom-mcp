@@ -155,8 +155,8 @@ func (s *Server) startIdentityBinding(ctx context.Context, runtime config.Config
 	if input.Name == "" || len([]byte(input.Name)) > 128 || len(input.IdempotencyKey) < 16 || len(input.IdempotencyKey) > 256 {
 		return nil, fmt.Errorf("姓名或 idempotency_key 无效")
 	}
-	if !runtime.AllowsInGroup(appMessageCapabilityGroup, "list_employees") || !runtime.AllowsInGroup(appMessageCapabilityGroup, "send_app_message") {
-		return nil, fmt.Errorf("app_message 专用 capability 未完整启用身份验证")
+	if !runtime.Allows("list_employees") || !runtime.Allows("send_app_message") {
+		return nil, fmt.Errorf("实例白名单未允许身份验证所需的员工查询或应用消息发送")
 	}
 	secret, err := identityBindingSecret()
 	if err != nil {

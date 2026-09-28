@@ -47,8 +47,8 @@ func schemaRegistryMigrationFields() []schemaMigrationField {
 
 func buildSchemaRegistryMigrationPlan(ctx context.Context, runtime config.Config, client *wecom.Client) (schemaRegistryMigrationPlan, error) {
 	for _, operation := range []string{"get_sheet", "get_fields", "get_records", "add_sheet", "add_fields", "update_fields"} {
-		if !runtime.AllowsInGroup(schemaMigrationGroup, operation) {
-			return schemaRegistryMigrationPlan{}, fmt.Errorf("Schema 迁移白名单未允许 %s", operation)
+		if !runtime.Allows(operation) {
+			return schemaRegistryMigrationPlan{}, fmt.Errorf("实例白名单未允许 %s", operation)
 		}
 	}
 	anchor, err := wecom.ResolveTarget(ctx, client, runtime.RegistryDocumentID, runtime.RegistryKey, "Z-S01", runtime.Allows)

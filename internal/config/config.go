@@ -180,9 +180,9 @@ func (c Config) Allows(operation string) bool {
 	return false
 }
 
-// AllowsInGroup keeps privileged operations scoped to their named capability.
-// A schema migration must not become callable through a generic API merely
-// because another allowlist group contains the same upstream operation.
+// AllowsInGroup is retained for configuration compatibility and diagnostics.
+// Runtime MCP handlers use Allows so an operation is not denied merely because
+// the discovery policy placed it in a different group name.
 func (c Config) AllowsInGroup(group, operation string) bool {
 	for _, allowed := range c.APIWhitelist[group] {
 		if allowed == operation {
