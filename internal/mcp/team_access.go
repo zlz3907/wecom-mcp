@@ -272,12 +272,11 @@ func verifyOAuthInstanceSnapshot(ctx context.Context, runtime config.Config) err
 }
 
 func (s *Server) callWithVerifiedIdentity(ctx context.Context, runtime config.Config, name string, cleaned json.RawMessage, identity verifiedIdentity) (any, error) {
-	executionSubject, err := configuredAIExecutionSubject(runtime)
-	if err != nil {
-		return nil, err
-	}
+	executionSubject, hasExecutionSubject := configuredAIExecutionSubject(runtime)
 	ctx = context.WithValue(ctx, verifiedIdentityContextKey{}, identity)
-	ctx = context.WithValue(ctx, verifiedExecutionSubjectContextKey{}, executionSubject)
+	if hasExecutionSubject {
+		ctx = context.WithValue(ctx, verifiedExecutionSubjectContextKey{}, executionSubject)
+	}
 	value, err := s.call(ctx, name, cleaned)
 	if err != nil {
 		return nil, err
@@ -291,7 +290,9 @@ func (s *Server) callWithVerifiedIdentity(ctx context.Context, runtime config.Co
 		output["verified_initiator_userid"] = identity.UserID
 		output["verified_initiator_name"] = identity.DisplayName
 		output["verified_initiator_subject_record_id"] = identity.SubjectRecordID
-		output["verified_execution_subject_record_id"] = executionSubject.RecordID
+		if hasExecutionSubject {
+			output["verified_execution_subject_record_id"] = executionSubject.RecordID
+		}
 		output["identity_binding_verified"] = true
 	}
 	return value, nil

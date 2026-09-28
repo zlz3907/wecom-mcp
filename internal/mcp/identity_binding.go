@@ -680,11 +680,12 @@ func verifiedIdentityFromContext(ctx context.Context) (verifiedIdentity, bool) {
 	return identity, ok && identity.UserID != "" && identity.SubjectRecordID != ""
 }
 
-func configuredAIExecutionSubject(runtime config.Config) (verifiedExecutionSubject, error) {
-	if runtime.AIExecutionSubjectRecordID == "" {
-		return verifiedExecutionSubject{}, fmt.Errorf("实例未配置 ai_execution_subject_record_id，团队写入保持关闭")
+func configuredAIExecutionSubject(runtime config.Config) (verifiedExecutionSubject, bool) {
+	recordID := strings.TrimSpace(runtime.AIExecutionSubjectRecordID)
+	if recordID == "" {
+		return verifiedExecutionSubject{}, false
 	}
-	return verifiedExecutionSubject{RecordID: runtime.AIExecutionSubjectRecordID}, nil
+	return verifiedExecutionSubject{RecordID: recordID}, true
 }
 
 func verifiedExecutionSubjectFromContext(ctx context.Context) (verifiedExecutionSubject, bool) {

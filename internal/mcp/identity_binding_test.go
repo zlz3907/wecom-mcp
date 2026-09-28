@@ -194,13 +194,13 @@ func TestVerifiedActorReferenceIsInjectedAndCannotBeSpoofed(t *testing.T) {
 	}
 }
 
-func TestConfiguredAIExecutionSubjectFailsClosed(t *testing.T) {
-	if _, err := configuredAIExecutionSubject(config.Config{}); err == nil {
-		t.Fatal("missing configured AI execution subject was accepted")
+func TestConfiguredAIExecutionSubjectIsOptional(t *testing.T) {
+	if subject, ok := configuredAIExecutionSubject(config.Config{}); ok || subject.RecordID != "" {
+		t.Fatalf("missing AI execution subject should be optional: %#v ok=%v", subject, ok)
 	}
-	subject, err := configuredAIExecutionSubject(config.Config{AIExecutionSubjectRecordID: "subject-ai"})
-	if err != nil || subject.RecordID != "subject-ai" {
-		t.Fatalf("configured AI execution subject not resolved: %#v err=%v", subject, err)
+	subject, ok := configuredAIExecutionSubject(config.Config{AIExecutionSubjectRecordID: " subject-ai "})
+	if !ok || subject.RecordID != "subject-ai" {
+		t.Fatalf("configured AI execution subject not resolved: %#v ok=%v", subject, ok)
 	}
 }
 
