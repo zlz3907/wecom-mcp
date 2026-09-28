@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -947,7 +948,17 @@ func compileRecords(schema config.Schema, input applyInput) ([]map[string]any, e
 					return nil, fmt.Errorf("字段 %s 必须是数字", title)
 				}
 				values[field.ID] = value
-			case "FIELD_TYPE_DATE_TIME", "FIELD_TYPE_PHONE_NUMBER", "FIELD_TYPE_EMAIL", "FIELD_TYPE_BARCODE":
+			case "FIELD_TYPE_DATE_TIME":
+				text, ok := value.(string)
+				if !ok {
+					return nil, fmt.Errorf("字段 %s 必须是日期时间字符串", title)
+				}
+				normalized, err := normalizeDateTimeValue(text)
+				if err != nil {
+					return nil, fmt.Errorf("字段 %s: %w", title, err)
+				}
+				values[field.ID] = normalized
+			case "FIELD_TYPE_PHONE_NUMBER", "FIELD_TYPE_EMAIL", "FIELD_TYPE_BARCODE":
 				if _, ok := value.(string); !ok {
 					return nil, fmt.Errorf("字段 %s 必须是字符串", title)
 				}
@@ -974,6 +985,51 @@ func compileRecords(schema config.Schema, input applyInput) ([]map[string]any, e
 		result = append(result, item)
 	}
 	return result, nil
+}
+
+// normalizeDateTimeValue converts the human-friendly date forms commonly
+// produced by terminals into the millisecond timestamp required by the
+// Enterprise WeCom Smart Sheet API. Existing second/millisecond timestamps are
+// preserved in normalized millisecond form.
+func normalizeDateTimeValue(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("日期时间不能为空")
+	}
+	if number, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if number < 0 {
+			return "", fmt.Errorf("日期时间不能是负数")
+		}
+		// Unix seconds are still frequently emitted by clients; the Smart
+		// Sheet contract requires milliseconds.
+		if number < 100000000000 {
+			number *= 1000
+		}
+		return strconv.FormatInt(number, 10), nil
+	}
+
+	shanghai := time.FixedZone("Asia/Shanghai", 8*60*60)
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02",
+		"2006/01/02 15:04:05",
+		"2006/01/02 15:04",
+		"2006/01/02",
+	} {
+		var parsed time.Time
+		var err error
+		if layout == time.RFC3339Nano {
+			parsed, err = time.Parse(layout, value)
+		} else {
+			parsed, err = time.ParseInLocation(layout, value, shanghai)
+		}
+		if err == nil {
+			return strconv.FormatInt(parsed.UnixMilli(), 10), nil
+		}
+	}
+	return "", fmt.Errorf("日期时间必须是毫秒时间戳，或 YYYY-MM-DD[ HH:mm[:ss]] / RFC3339 格式")
 }
 
 func compileReferenceValue(title string, value any) ([]any, error) {

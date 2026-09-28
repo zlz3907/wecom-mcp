@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/config"
 )
@@ -393,6 +395,41 @@ func TestCompileRecordsUsesVerifiedFieldCodecShapes(t *testing.T) {
 	}
 	if _, ok := got[0]["values"].(map[string]any)["select"].([]any); !ok {
 		t.Fatal("select codec was not preserved")
+	}
+}
+
+func TestCompileRecordsNormalizesDateTimeForSmartSheet(t *testing.T) {
+	schema := config.Schema{Roles: map[string]map[string]config.Field{"Z-S09": {
+		"最后观察时间": {Title: "最后观察时间", ID: "observed-at", Type: "FIELD_TYPE_DATE_TIME"},
+	}}}
+	input := applyInput{TargetRole: "Z-S09", Operation: "add_records", Records: []recordInput{{Values: map[string]any{
+		"最后观察时间": "2026-09-28 14:30:00",
+	}}}}
+	got, err := compileRecords(schema, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strconv.FormatInt(time.Date(2026, 9, 28, 14, 30, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60)).UnixMilli(), 10)
+	if got[0]["values"].(map[string]any)["observed-at"] != want {
+		t.Fatalf("date codec=%#v, want %s", got, want)
+	}
+
+	input.Records[0].Values["最后观察时间"] = "1786204800000"
+	got, err = compileRecords(schema, input)
+	if err != nil || got[0]["values"].(map[string]any)["observed-at"] != "1786204800000" {
+		t.Fatalf("millisecond timestamp was not preserved: got=%#v err=%v", got, err)
+	}
+}
+
+func TestCompileRecordsRejectsInvalidDateTime(t *testing.T) {
+	schema := config.Schema{Roles: map[string]map[string]config.Field{"Z-S09": {
+		"最后观察时间": {Title: "最后观察时间", ID: "observed-at", Type: "FIELD_TYPE_DATE_TIME"},
+	}}}
+	_, err := compileRecords(schema, applyInput{TargetRole: "Z-S09", Operation: "add_records", Records: []recordInput{{Values: map[string]any{
+		"最后观察时间": "not-a-date",
+	}}}})
+	if err == nil || !strings.Contains(err.Error(), "日期时间必须是毫秒时间戳") {
+		t.Fatalf("invalid date was accepted: %v", err)
 	}
 }
 
