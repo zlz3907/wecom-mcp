@@ -59,7 +59,7 @@ func TestHybridVerifierHTTPToolsAndConfigDrift(t *testing.T) {
 	static, dynamic := newServer(false), newServer(true)
 	staticTools, dynamicTools := listTools(t, static.URL, "test-verified"), listTools(t, dynamic.URL, "test-verified")
 	for _, name := range []string{"wecom_record_apply", "wecom_send_app_message", "wecom_schema_migration_apply", "wecom_instance_initialize", "wecom_instance_initialize_status"} {
-		if !staticTools[name] || dynamicTools[name] {
+		if !staticTools[name] || !dynamicTools[name] {
 			t.Fatalf("tool catalog isolation failed: %s static=%v dynamic=%v", name, staticTools[name], dynamicTools[name])
 		}
 	}
@@ -91,7 +91,7 @@ func TestHybridVerifierHTTPToolsAndConfigDrift(t *testing.T) {
 		t.Fatalf("changed local instance tools/list status=%d", response.StatusCode)
 	}
 	if !listTools(t, dynamic.URL, "test-verified")["wecom_record_query"] {
-		t.Fatal("static drift disrupted dynamic reader")
+		t.Fatal("static drift disrupted dynamic tool catalog")
 	}
 	writeJSONFile(t, path, runtime)
 	checkGet(static, "/readyz", 200)

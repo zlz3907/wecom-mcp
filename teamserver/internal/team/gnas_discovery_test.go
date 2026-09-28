@@ -68,8 +68,9 @@ func TestGNASDiscoveryDerivesInstancesWithoutTenantFiles(t *testing.T) {
 	}
 	bad := binding("c")
 	bad.Plugins.Zoop.RegistryDocumentID = "unavailable"
-	if _, err := load(b, bad); err == nil {
-		t.Fatal("incomplete registry accepted")
+	partial, err := load(b, bad)
+	if err != nil || len(partial) != 2 || partial[0].RegistryUnavailable || !partial[1].RegistryUnavailable {
+		t.Fatal("incomplete Registry did not isolate its authoritative Host")
 	}
 	if len(d.instances) != 1 {
 		t.Fatal("partial candidate published")

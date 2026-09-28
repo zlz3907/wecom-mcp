@@ -84,7 +84,7 @@ func TestOAuthEmployeeWriteEndToEnd(t *testing.T) {
 					writes++
 					response = map[string]any{"errcode": 0, "msgid": "fake-message"}
 				} else if r.URL.Path == "/api/fixture-source/cgi-bin/user/list" {
-					response = map[string]any{"userlist": []any{map[string]any{"userid": "application-operator", "status": 1}, map[string]any{"userid": "recipient-one", "status": 1}}}
+					response = map[string]any{"userlist": []any{map[string]any{"userid": "application-operator", "status": 1}, map[string]any{"userid": "employee-one", "status": 1}, map[string]any{"userid": "recipient-one", "status": 1}}}
 				} else {
 					operation := ""
 					for _, op := range []string{"get_sheet", "get_fields", "get_records"} {

@@ -47,7 +47,7 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 			if err := os.WriteFile(schemaPath, []byte(schema), 0600); err != nil {
 				t.Fatal(err)
 			}
-			runtime := config.Config{Version: 1, InstanceName: "fixture-instance", TenantRoute: "fixture-source", RegistryDocumentID: "registry", RegistryKey: "fixture-key", SchemaMirrorPath: schemaPath, SchemaSource: "local_compatibility", StatePath: filepath.Join(dir, "state.json"), WecomOperatorUserID: "application-operator", AIExecutionSubjectRecordID: "ai-subject", APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}, "zoop_records_write": {"list_employees", "add_records"}}}
+			runtime := config.Config{Version: 1, InstanceName: "fixture-instance", TenantRoute: "fixture-source", RegistryDocumentID: "registry", RegistryKey: "fixture-key", SchemaMirrorPath: schemaPath, SchemaSource: "local_compatibility", StatePath: filepath.Join(dir, "state.json"), WecomOperatorUserID: "application-operator", AIExecutionSubjectRecordID: "ai-subject", APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}, "directory": {"list_employees"}, "zoop_records_write": {"add_records"}}}
 			encoded, _ := json.Marshal(runtime)
 			if err := os.WriteFile(cfg.InstanceConfigPath, encoded, 0600); err != nil {
 				t.Fatal(err)
@@ -105,7 +105,10 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 						return nil, fmt.Errorf("unexpected managed operation")
 					}
 					if op == "list_employees" {
-						out = map[string]any{"userlist": []any{map[string]any{"userid": "application-operator", "status": 1}}}
+						out = map[string]any{"userlist": []any{
+							map[string]any{"userid": "application-operator", "status": 1},
+							map[string]any{"userid": "employee-one", "status": 1},
+						}}
 						break
 					}
 					var p map[string]any

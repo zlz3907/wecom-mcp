@@ -66,7 +66,7 @@ func TestHybridFleetPreservesStaticToolsAndRemovesDeletedAuthority(t *testing.T)
 			names[def.Name] = true
 		}
 		for _, name := range []string{"wecom_record_apply", "wecom_send_app_message", "wecom_schema_migration_apply", "wecom_instance_initialize"} {
-			if names[name] != (index == 0) {
+			if !names[name] {
 				t.Fatalf("index=%d capability=%s available=%v", index, name, names[name])
 			}
 		}

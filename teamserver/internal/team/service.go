@@ -83,15 +83,11 @@ func newService(cfg Config, logger *slog.Logger, resolver AuthorizationResolver)
 		if err != nil {
 			return nil, err
 		}
-		// Discovery never invents an AI execution identity or initializes
-		// remote assets. Advertise only the operations it can safely serve.
-		readDefinitions := definitions[:0]
-		for _, definition := range definitions {
-			if definition.Access == legacymcp.ToolAccessReader && definition.Name != "wecom_instance_initialize_status" {
-				readDefinitions = append(readDefinitions, definition)
-			}
-		}
-		definitions = readDefinitions
+		// Database discovery supplies the tenant/runtime configuration, not a
+		// reduced MCP contract. Keep the complete OAuth tool catalog visible so
+		// GNAS admin/operator policies can be evaluated without failing closed
+		// on an "unknown MCP tool". The authorization middleware still filters
+		// tools/list and tools/call by the current role and effective_tools.
 	}
 	instructions := serverInstructions
 	if cfg.AuthenticationMode == AuthenticationModeOAuth21 {

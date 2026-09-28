@@ -503,6 +503,10 @@ func (s *Server) updateSchemaRegistry(ctx context.Context, runtime config.Config
 	if input.ExpectedActiveGeneration != "none" && !initializeSHA256Digest.MatchString(input.ExpectedActiveGeneration) {
 		return nil, fmt.Errorf("expected_active_generation 必须是 none 或 64 位摘要")
 	}
+	runtime, err := runtimeWithBusinessActor(ctx, runtime)
+	if err != nil {
+		return nil, err
+	}
 	if err := verifySchemaAdmin(runtime); err != nil {
 		return nil, err
 	}

@@ -16,6 +16,10 @@ type appMessageFake struct {
 	receipt   map[string]any
 }
 
+func operatorContext(userid string) context.Context {
+	return context.WithValue(context.Background(), bootstrapActorContextKey{}, userid)
+}
+
 func (f *appMessageFake) Request(_ context.Context, operation string, payload any) (map[string]any, error) {
 	switch operation {
 	case "list_employees":
@@ -44,7 +48,7 @@ func TestSendApplicationMessageUsesManagedIdentityAndCompletesReceipt(t *testing
 		},
 	}
 	server := &Server{}
-	result, err := server.sendApplicationMessage(context.Background(), runtime, fake, json.RawMessage(`{"recipient_userid":"recipient","text":"hello","idempotency_key":"message-key-00001"}`))
+	result, err := server.sendApplicationMessage(operatorContext("operator"), runtime, fake, json.RawMessage(`{"recipient_userid":"recipient","text":"hello","idempotency_key":"message-key-00001"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +78,7 @@ func TestSendApplicationMessageRejectsInactiveRecipientBeforeReservation(t *test
 		},
 	}
 	server := &Server{}
-	_, err := server.sendApplicationMessage(context.Background(), runtime, fake, json.RawMessage(`{"recipient_userid":"recipient","text":"hello","idempotency_key":"message-key-00002"}`))
+	_, err := server.sendApplicationMessage(operatorContext("operator"), runtime, fake, json.RawMessage(`{"recipient_userid":"recipient","text":"hello","idempotency_key":"message-key-00002"}`))
 	if err == nil || fake.payload != nil {
 		t.Fatalf("inactive recipient reached message send: payload=%#v err=%v", fake.payload, err)
 	}
@@ -99,7 +103,7 @@ func TestSendApplicationMessageRejectsBroadcastRecipient(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := server.sendApplicationMessage(context.Background(), runtime, fake, input); err == nil {
+		if _, err := server.sendApplicationMessage(operatorContext("operator"), runtime, fake, input); err == nil {
 			t.Fatalf("broadcast recipient accepted: %q", recipient)
 		}
 	}
@@ -137,7 +141,7 @@ func TestSendApplicationMessageReleasesDefinitiveFailureForSafeRetry(t *testing.
 	}
 	server := &Server{}
 	raw := json.RawMessage(`{"recipient_userid":"recipient","text":"hello","idempotency_key":"message-key-definitive-0001"}`)
-	if _, err := server.sendApplicationMessage(context.Background(), runtime, fake, raw); err == nil || !strings.Contains(err.Error(), "幂等键已释放") {
+	if _, err := server.sendApplicationMessage(operatorContext("operator"), runtime, fake, raw); err == nil || !strings.Contains(err.Error(), "幂等键已释放") {
 		t.Fatalf("definitive failure was not reported safely: %v", err)
 	}
 	state, err := loadState(runtime.StatePath)
@@ -148,7 +152,7 @@ func TestSendApplicationMessageReleasesDefinitiveFailureForSafeRetry(t *testing.
 		t.Fatalf("definitive failure kept a pending reservation: %#v", state)
 	}
 	fake.receipt = nil
-	if result, err := server.sendApplicationMessage(context.Background(), runtime, fake, raw); err != nil || result.(map[string]any)["state"] != "sent" {
+	if result, err := server.sendApplicationMessage(operatorContext("operator"), runtime, fake, raw); err != nil || result.(map[string]any)["state"] != "sent" {
 		t.Fatalf("same-key safe retry failed: result=%#v err=%v", result, err)
 	}
 }
@@ -170,14 +174,14 @@ func TestSendApplicationMessageKeepsPendingForInconclusiveReceipt(t *testing.T) 
 	}
 	server := &Server{}
 	raw := json.RawMessage(`{"recipient_userid":"recipient","text":"hello","idempotency_key":"message-key-uncertain-0001"}`)
-	if _, err := server.sendApplicationMessage(context.Background(), runtime, fake, raw); err == nil || !strings.Contains(err.Error(), "保留幂等状态") {
+	if _, err := server.sendApplicationMessage(operatorContext("operator"), runtime, fake, raw); err == nil || !strings.Contains(err.Error(), "保留幂等状态") {
 		t.Fatalf("inconclusive failure was not retained: %v", err)
 	}
 	state, err := loadState(runtime.StatePath)
 	if err != nil || state.Entries["message-key-uncertain-0001"].Status != "pending" {
 		t.Fatalf("inconclusive failure lost reservation: %#v err=%v", state, err)
 	}
-	if _, err := server.sendApplicationMessage(context.Background(), runtime, fake, raw); err == nil || !strings.Contains(err.Error(), "禁止盲目重试") {
+	if _, err := server.sendApplicationMessage(operatorContext("operator"), runtime, fake, raw); err == nil || !strings.Contains(err.Error(), "禁止盲目重试") {
 		t.Fatalf("pending reservation allowed a blind retry: %v", err)
 	}
 }
@@ -205,7 +209,7 @@ func TestSendApplicationMessageKeepsPendingForContradictoryPartialRecipientRecei
 			}
 			server := &Server{}
 			raw := json.RawMessage(`{"recipient_userid":"recipient","text":"hello","idempotency_key":"message-key-contradictory-0001"}`)
-			if _, err := server.sendApplicationMessage(context.Background(), runtime, fake, raw); err == nil || !strings.Contains(err.Error(), "保留幂等状态") {
+			if _, err := server.sendApplicationMessage(operatorContext("operator"), runtime, fake, raw); err == nil || !strings.Contains(err.Error(), "保留幂等状态") {
 				t.Fatalf("contradictory receipt was not retained as uncertain: %v", err)
 			}
 			state, err := loadState(runtime.StatePath)

@@ -2,6 +2,8 @@
 
 日期：2026-09-23。已完成混合模式实现、fake/HTTP/race 验证及生产只读基线检查；配对 GNAS 已合并并暂存候选。未写生产数据库、未修改 Nginx、未切换或重启生产。
 
+后续本地候选已将本文原先的“单租户 Registry/Z-S00 未就绪导致整个发现失败”收窄为对应 Host 503；其余全局权威与配置门禁不变。最新行为、缓存限制及验收范围见 [未就绪租户隔离](../../docs/operations/unready-tenant-isolation.md)。本文原始候选的验证/生产状态不作为后续候选的发布证据。
+
 ## 根因及证据边界
 
 基线 MCP `4cfd3a3` 支持 `--config`、`--fleet`、`--gnas-fleet-runtime`。第三种模式通过 Service JWT 调用 `POST /gnas/service/resolveMCPBindingsV1`，但仍把每个数据库 Binding 与本地 runtime manifest 对接，取实例路径和独立 OAuth introspection 客户端密钥引用。HostRouter 只在启动时构建。不存在“打开已有 DB-only 参数即可解决”的隐藏开关。
@@ -53,7 +55,7 @@ GNAS 还把 Binding/企业元数据指纹绑定到现有不透明授权状态和
 
 ### 混合模式保留已有能力
 
-同时使用 `--gnas-fleet-runtime` 与 `--gnas-discovery-policy`：一次完整 GNAS payload 决定租户路由，已映射 Binding 使用受保护本地配置，保留原完整写入、消息、初始化、schema 管理工具，以及 operator/AI 执行主体、schema/state 路径；未映射实例从 Registry/Z-S00 发现，只发布 reader 工具。两者均使用单 Binding digest 的 Service JWT 认证和员工实时权限。
+同时使用 `--gnas-fleet-runtime` 与 `--gnas-discovery-policy`：一次完整 GNAS payload 决定租户路由，已映射 Binding 使用受保护本地配置，未映射 Binding 从 Registry/Z-S00 发现运行时配置。两类 Binding 均发布完整 MCP 工具目录；实际调用仍由员工实时权限、角色边界和各自 runtime capability 白名单共同限制。两者均使用单 Binding digest 的 Service JWT 认证。
 
 静态配置绑定完整内容摘要，每次 Store 读取与工具执行重新校验，外部漂移立即拒绝；合法内部初始化写回在同 Store 更新摘要。静态文件缺失、Source/Registry 不符时拒绝，不自动降为只读。重复 ID/Host/Source、实例名或存储路径冲突、symlink 别名全部拒绝。DB 删除静态或动态 Binding 均撤路由。单项错误使完整 refresh 失败，已知 Host503、未知421，成功后原子恢复；不把旧权限持续服务称为恢复。
 

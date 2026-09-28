@@ -229,12 +229,37 @@ func (s *Server) CallToolWithOAuthEmployee(ctx context.Context, name string, arg
 	if err != nil {
 		return nil, err
 	}
+	if isPersonnelSubjectAddRecords(arguments) {
+		// Z-S09 registration is governed by the Enterprise WeCom API and the
+		// normal schema/write validation. It must not depend on an existing
+		// Z-S09 identity row, including during initialization.
+		s.personnelBootstrapMu.Lock()
+		defer s.personnelBootstrapMu.Unlock()
+		return s.callWithBootstrapIdentity(ctx, runtime, name, arguments, userid)
+	}
 	identity, err := resolvePersonnelIdentity(ctx, runtime, client, verifiedIdentity{UserID: userid})
 	if err != nil {
 		return nil, err
 	}
 	ctx = context.WithValue(ctx, oauthInstanceDigestKey{}, runtime.Digest())
 	return s.callWithVerifiedIdentity(ctx, runtime, name, arguments, identity)
+}
+
+type bootstrapActorContextKey struct{}
+
+func (s *Server) callWithBootstrapIdentity(ctx context.Context, runtime config.Config, name string, arguments json.RawMessage, userid string) (any, error) {
+	ctx = context.WithValue(ctx, oauthInstanceDigestKey{}, runtime.Digest())
+	ctx = context.WithValue(ctx, bootstrapActorContextKey{}, userid)
+	value, err := s.call(ctx, name, arguments)
+	if err != nil {
+		return nil, err
+	}
+	if output, ok := value.(map[string]any); ok {
+		output["personnel_subject_bootstrap"] = true
+		output["bootstrap_actor_userid"] = userid
+		output["identity_binding_verified"] = false
+	}
+	return value, nil
 }
 
 type oauthInstanceDigestKey struct{}
@@ -247,12 +272,11 @@ func verifyOAuthInstanceSnapshot(ctx context.Context, runtime config.Config) err
 }
 
 func (s *Server) callWithVerifiedIdentity(ctx context.Context, runtime config.Config, name string, cleaned json.RawMessage, identity verifiedIdentity) (any, error) {
-	executionSubject, err := configuredAIExecutionSubject(runtime)
-	if err != nil {
-		return nil, err
-	}
+	executionSubject, hasExecutionSubject := configuredAIExecutionSubject(runtime)
 	ctx = context.WithValue(ctx, verifiedIdentityContextKey{}, identity)
-	ctx = context.WithValue(ctx, verifiedExecutionSubjectContextKey{}, executionSubject)
+	if hasExecutionSubject {
+		ctx = context.WithValue(ctx, verifiedExecutionSubjectContextKey{}, executionSubject)
+	}
 	value, err := s.call(ctx, name, cleaned)
 	if err != nil {
 		return nil, err
@@ -266,7 +290,9 @@ func (s *Server) callWithVerifiedIdentity(ctx context.Context, runtime config.Co
 		output["verified_initiator_userid"] = identity.UserID
 		output["verified_initiator_name"] = identity.DisplayName
 		output["verified_initiator_subject_record_id"] = identity.SubjectRecordID
-		output["verified_execution_subject_record_id"] = executionSubject.RecordID
+		if hasExecutionSubject {
+			output["verified_execution_subject_record_id"] = executionSubject.RecordID
+		}
 		output["identity_binding_verified"] = true
 	}
 	return value, nil

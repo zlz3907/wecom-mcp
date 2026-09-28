@@ -194,13 +194,13 @@ func TestVerifiedActorReferenceIsInjectedAndCannotBeSpoofed(t *testing.T) {
 	}
 }
 
-func TestConfiguredAIExecutionSubjectFailsClosed(t *testing.T) {
-	if _, err := configuredAIExecutionSubject(config.Config{}); err == nil {
-		t.Fatal("missing configured AI execution subject was accepted")
+func TestConfiguredAIExecutionSubjectIsOptional(t *testing.T) {
+	if subject, ok := configuredAIExecutionSubject(config.Config{}); ok || subject.RecordID != "" {
+		t.Fatalf("missing AI execution subject should be optional: %#v ok=%v", subject, ok)
 	}
-	subject, err := configuredAIExecutionSubject(config.Config{AIExecutionSubjectRecordID: "subject-ai"})
-	if err != nil || subject.RecordID != "subject-ai" {
-		t.Fatalf("configured AI execution subject not resolved: %#v err=%v", subject, err)
+	subject, ok := configuredAIExecutionSubject(config.Config{AIExecutionSubjectRecordID: " subject-ai "})
+	if !ok || subject.RecordID != "subject-ai" {
+		t.Fatalf("configured AI execution subject not resolved: %#v ok=%v", subject, ok)
 	}
 }
 
@@ -248,6 +248,26 @@ func TestIdentityCellContainsOnlyExplicitText(t *testing.T) {
 	cell := []any{map[string]any{"id": "option-one", "text": "人员主体"}}
 	if !identityCellContainsText(cell, "人员主体") || identityCellContainsText(cell, "option-one") || identityCellContainsText(map[string]any{"name": "人员主体"}, "人员主体") {
 		t.Fatal("select text matching widened beyond explicit text")
+	}
+}
+
+func TestPersonnelSubjectAddRecordsDoesNotRequireExistingIdentity(t *testing.T) {
+	for _, raw := range []string{
+		`{"target_role":"Z-S09","operation":"add_records","records":[{"values":{}}]}`,
+		`{"target_role":"Z-S09","operation":"add_records","records":[{"values":{"主体类型":"人员主体","主体状态":"启用"}}]}`,
+	} {
+		if !isPersonnelSubjectAddRecords(json.RawMessage(raw)) {
+			t.Fatalf("Z-S09 add_records was not recognized: %s", raw)
+		}
+	}
+	for _, raw := range []string{
+		`{"target_role":"Z-S09","operation":"update_records","records":[{"values":{}}]}`,
+		`{"target_role":"Z-S08","operation":"add_records","records":[{"values":{}}]}`,
+		`{"target_role":"Z-S09","operation":"add_records","records":[]}`,
+	} {
+		if isPersonnelSubjectAddRecords(json.RawMessage(raw)) {
+			t.Fatalf("non-registration request was recognized: %s", raw)
+		}
 	}
 }
 

@@ -587,6 +587,28 @@ func resolvePersonnelIdentity(ctx context.Context, runtime config.Config, client
 	return identity, nil
 }
 
+// isPersonnelSubjectAddRecords identifies the Z-S09 registration path. The
+// Enterprise WeCom API and normal schema/write validation remain authoritative;
+// no existing Z-S09 identity row is required for registration.
+func isPersonnelSubjectAddRecords(raw json.RawMessage) bool {
+	var input struct {
+		TargetRole string            `json:"target_role"`
+		Operation  string            `json:"operation"`
+		Records    []json.RawMessage `json:"records"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil || input.TargetRole != "Z-S09" || input.Operation != "add_records" || len(input.Records) == 0 {
+		return false
+	}
+	return true
+}
+
+func inputCellContainsText(value any, expected string) bool {
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text) == expected
+	}
+	return identityCellContainsText(value, expected)
+}
+
 func resolveUniquePersonnelSubjectRecordID(records []any, userid, memberFieldID, typeFieldID, statusFieldID string) (string, error) {
 	matches := make([]string, 0, 1)
 	for _, rawRecord := range records {
@@ -658,11 +680,12 @@ func verifiedIdentityFromContext(ctx context.Context) (verifiedIdentity, bool) {
 	return identity, ok && identity.UserID != "" && identity.SubjectRecordID != ""
 }
 
-func configuredAIExecutionSubject(runtime config.Config) (verifiedExecutionSubject, error) {
-	if runtime.AIExecutionSubjectRecordID == "" {
-		return verifiedExecutionSubject{}, fmt.Errorf("实例未配置 ai_execution_subject_record_id，团队写入保持关闭")
+func configuredAIExecutionSubject(runtime config.Config) (verifiedExecutionSubject, bool) {
+	recordID := strings.TrimSpace(runtime.AIExecutionSubjectRecordID)
+	if recordID == "" {
+		return verifiedExecutionSubject{}, false
 	}
-	return verifiedExecutionSubject{RecordID: runtime.AIExecutionSubjectRecordID}, nil
+	return verifiedExecutionSubject{RecordID: recordID}, true
 }
 
 func verifiedExecutionSubjectFromContext(ctx context.Context) (verifiedExecutionSubject, bool) {
@@ -674,7 +697,19 @@ func businessActorUserID(ctx context.Context, runtime config.Config) string {
 	if identity, ok := verifiedIdentityFromContext(ctx); ok {
 		return identity.UserID
 	}
-	return runtime.WecomOperatorUserID
+	if userid, ok := ctx.Value(bootstrapActorContextKey{}).(string); ok && userid != "" {
+		return userid
+	}
+	return ""
+}
+
+func runtimeWithBusinessActor(ctx context.Context, runtime config.Config) (config.Config, error) {
+	operatorUserID := businessActorUserID(ctx, runtime)
+	if operatorUserID == "" {
+		return config.Config{}, fmt.Errorf("当前 OAuth 会话未提供企业微信用户身份，远程写入保持关闭")
+	}
+	runtime.WecomOperatorUserID = operatorUserID
+	return runtime, nil
 }
 
 type actorReferenceSource int

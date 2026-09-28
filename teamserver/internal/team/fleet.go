@@ -43,6 +43,9 @@ type FleetBinding struct {
 type LoadedFleetBinding struct {
 	Binding FleetBinding
 	Config  Config
+	// RegistryUnavailable is set only after discovery validates the complete
+	// authority snapshot and common configuration. It never grants service access.
+	RegistryUnavailable bool
 }
 
 func LoadFleetManifest(path, listenAddress string) ([]LoadedFleetBinding, error) {

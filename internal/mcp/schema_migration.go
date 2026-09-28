@@ -101,6 +101,10 @@ func (s *Server) applySchemaMigration(ctx context.Context, runtime config.Config
 	if input.AdminAuthorization != schemaAdminPermission {
 		return nil, fmt.Errorf("缺少明确的管理员 Schema 迁移授权")
 	}
+	runtime, err := runtimeWithBusinessActor(ctx, runtime)
+	if err != nil {
+		return nil, err
+	}
 	if err := verifySchemaAdmin(runtime); err != nil {
 		return nil, err
 	}

@@ -26,11 +26,11 @@ class ControllerTests(unittest.TestCase):
         for key, value in [('runtime_verified',False),('runtime_path','/releases/stale/bin'),('binary_sha256','c'*64),('unit_fingerprint','d'*64),('runtime_config_fingerprint','f'*64),('restarts',1),('active','failed')]:
             self.assertFalse(c.baseline_matches(dict(current, **{key:value}), expected))
 
-    def test_service_template_preserves_static_and_adds_dynamic(self):
+    def test_service_template_uses_database_discovery_only(self):
         raw = c.dropin('20260923T080000Z-'+'a'*12).decode()
-        self.assertIn('--gnas-fleet-runtime ', raw)
         self.assertIn('--gnas-discovery-policy ', raw)
         self.assertIn('--gnas-state-root ', raw)
+        self.assertNotIn('--gnas-fleet-runtime ', raw)
         self.assertNotIn('Environment=', raw)
         self.assertNotIn('nginx', raw)
         with self.assertRaises(ValueError):
@@ -69,10 +69,10 @@ class ControllerTests(unittest.TestCase):
         control=self.root/'control';(control/'rollback').mkdir(parents=True)
         state=self.root/'state';state.mkdir()
         override=self.root/'service.conf'
-        m={'ci_url':'https://ci.example/run','release_id':rid,'expected_runtime_path':str(previous),'expected_binary_sha256':c.sha(previous),'expected_unit_fingerprint':'b'*64,'expected_runtime_config_fingerprint':'e'*64,'expected_unmanaged_unit_fingerprint':'f'*64,'recovery_mode':'same-version-static','recovery_hosts':list(c.HOSTS[:1]),'expected_gnas_release_id':'gnas','expected_gnas_binary_sha256':'c'*64,'files':{'wecom-mcp-team':'d'*64,'recovery.conf':'f'*64}}
+        m={'ci_url':'https://ci.example/run','release_id':rid,'expected_runtime_path':str(previous),'expected_binary_sha256':c.sha(previous),'expected_unit_fingerprint':'b'*64,'expected_runtime_config_fingerprint':'e'*64,'expected_unmanaged_unit_fingerprint':'f'*64,'recovery_mode':'database-only','recovery_hosts':list(c.HOSTS),'expected_gnas_release_id':'gnas','expected_gnas_binary_sha256':'c'*64,'files':{'wecom-mcp-team':'d'*64,'recovery.conf':'f'*64}}
         original=c.regular
         with patch.object(c,'RELEASES',releases),patch.object(c,'CONTROL',control),patch.object(c,'STATE',state),patch.object(c,'DROPIN',override),patch.object(c,'verify',return_value=m),patch.object(c,'status'),patch.object(c,'baseline_matches',return_value=True),patch.object(c,'check_gnas'),patch.object(c,'healthy'),patch.object(c,'regular',side_effect=lambda p,root=False:original(p,False)),patch.object(c,'check_approval'),patch.object(c,'preflight_recovery'),patch.object(c,'recovery_matches'),patch.object(c,'approval'),patch.object(c,'restart_and_verify',side_effect=ValueError('test failure')),patch.object(c,'restore') as restore:
-            with self.assertRaisesRegex(ValueError,'same-version static recovery completed'):c.deploy(rid,'APR-20260923T080000Z-testonly')
+            with self.assertRaisesRegex(ValueError,'same-version database-only recovery completed'):c.deploy(rid,'APR-20260923T080000Z-testonly')
             restore.assert_called_once_with(rid)
             self.assertTrue((control/'rollback'/rid/'baseline.json').exists())
 
@@ -104,7 +104,8 @@ class ControllerTests(unittest.TestCase):
             args=run.call_args.args
             self.assertEqual(args[0],'systemd-run')
             self.assertIn(str(c.RELEASES/rid/'wecom-mcp-team'),args)
-            self.assertIn('--gnas-static-only',args)
+            self.assertNotIn('--gnas-static-only',args)
+            self.assertNotIn('--gnas-fleet-runtime',args)
             self.assertNotIn('--fleet',args)
             self.assertEqual(args[-1],'--check-config')
             self.assertIn('--property=StandardOutput=null',args)
@@ -136,3 +137,27 @@ class ControllerTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class StartupExecTests(unittest.TestCase):
+    def test_known_launcher_waits_then_verifies_actual_binary(self):
+        current=dict(runtime_path='/expected',binary_sha256='a'*64,restarts=0,unit_fingerprint='u',runtime_config_fingerprint='r')
+        with patch.object(c,'run'),patch.object(c,'unit_fingerprint',return_value='u'),patch.object(c,'runtime_fingerprint',return_value='r'),patch.object(c,'status',side_effect=[ValueError('unexpected runtime path'),current]),patch.object(c,'exec_pending',return_value=True),patch.object(c,'healthy') as healthy,patch.object(c.time,'monotonic',return_value=0),patch.object(c.time,'sleep') as sleep:
+            c.restart_and_verify('/expected','a'*64,c.HOSTS)
+            sleep.assert_called_once_with(0.1);healthy.assert_called_once()
+
+    def test_foreign_or_overdue_startup_does_not_retry(self):
+        for pending, times in ((False,[0,0]),(True,[0,3])):
+            with self.subTest(pending=pending,times=times),patch.object(c,'run'),patch.object(c,'unit_fingerprint',return_value='u'),patch.object(c,'runtime_fingerprint',return_value='r'),patch.object(c,'status',side_effect=ValueError('unexpected runtime path')),patch.object(c,'exec_pending',return_value=pending),patch.object(c,'healthy') as healthy,patch.object(c.time,'monotonic',side_effect=times),patch.object(c.time,'sleep') as sleep:
+                with self.assertRaisesRegex(ValueError,'unexpected runtime path'):c.restart_and_verify('/expected','a'*64,c.HOSTS)
+                healthy.assert_not_called();sleep.assert_not_called()
+
+    def test_pending_requires_exact_config_and_known_manager_image(self):
+        props={'ExecStart':'{ path=/expected ; argv[]=/expected ; }','NRestarts':'0','ActiveState':'active','MainPID':'123'}
+        def run(*args):return props[args[-2]]
+        with patch.object(c,'run',side_effect=run):
+            for actual, wanted in (('/usr/lib/systemd/systemd',True),('/usr/lib/systemd/systemd-executor',True),('/expected',True),('/foreign',False)):
+                with patch.object(c.os,'readlink',side_effect=lambda p: '/usr/lib/systemd/systemd' if p=='/proc/1/exe' else actual):
+                    self.assertEqual(c.exec_pending('/expected'),wanted)
+            props['ExecStart']='{ path=/foreign ; }'
+            with self.assertRaisesRegex(ValueError,'configured runtime drift'):c.exec_pending('/expected')

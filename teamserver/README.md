@@ -34,13 +34,15 @@ fleet 不保存企业微信 Secret。启动时会回读每个实例配置并验�
 
 现有生产多企业适配模式是 `--gnas-fleet-runtime`，它仍依赖本地 runtime manifest，**不是仅数据库配置即可自动开通的模式**。GNAS `app_info.config.mcp_bindings` 提供域名、稳定的 `authorization_resource`、Source 和插件绑定；授权资源不从 URL 猜测，因此把既有实例迁到独立域名不会使历史用户授权失效。本地 runtime manifest 保存 `binding_id`、受保护的 `instance_config_path`、每企业独立的 introspection `client_id` 和 `client_secret_env`（仅环境变量名称）。实际密钥由受保护的进程环境提供，且 GNAS 中该 client 必须绑定相同 tenant 与 MCP resource。每个远程 binding 都必须显式提供凭据引用；缺失或无效时拒绝启动，不回退到全局 `TEAM_MCP_OAUTH21_CLIENT_ID/SECRET`。此模式强制 `TEAM_MCP_AUTH_MODE=oauth21`；旧单实例与本地 `--fleet` 的配置行为保持兼容。MCP 启动时使用 Service JWT 从 GNAS 回读绑定，并强制核对本地 `tenant_route` 与 Zoop Registry；任何漂移都拒绝启动。本地条目自身不能启用路由，GNAS 未返回的条目保持未加载。
 
-新增数据库自动发现模式：`--gnas-discovery-policy /absolute/shared-policy.json --gnas-state-root /absolute/state-root`。共享 policy 仅保存能力白名单，不含任何租户清单、路径、Registry 或 OAuth 客户端。MCP 通过同一 GNAS 服务身份读取 Binding、核验已有 Registry/Z-S00、创建不可变内存实例，并调用配套 `introspectMCPTokenV1`；无需逐租户本地文件或 OAuth Basic 密钥。此模式默认每 30 秒刷新，允许最短 5 秒，不允许关闭刷新，必须配套新版 GNAS。现有能力策略与 AI 执行主体并不在 Binding 契约中，因此当前发现模式只发布查询工具；初始化和业务写入保持关闭，不能直接当作旧写入实例的等价替换。
+新增数据库自动发现模式：`--gnas-discovery-policy /absolute/shared-policy.json --gnas-state-root /absolute/state-root`。共享 policy 仅保存能力白名单，不含任何租户清单、路径、Registry 或 OAuth 客户端。MCP 通过同一 GNAS 服务身份读取 Binding、核验已有 Registry/Z-S00、创建不可变内存实例，并调用配套 `introspectMCPTokenV1`；无需逐租户本地文件或 OAuth Basic 密钥。此模式默认每 30 秒刷新，允许最短 5 秒，不允许关闭刷新，必须配套新版 GNAS。发现模式默认发布完整 MCP 工具目录；`tools/list` 和 `tools/call` 仍分别受 MCP 角色、GNAS `effective_tools` 及运行时 capability 白名单约束。
 
-共享生产使用混合模式：同时传入 `--gnas-fleet-runtime` 和 `--gnas-discovery-policy`，manifest 中已有 Binding 保留原完整工具能力、operator、AI 执行主体及 schema/state 路径，未映射 Binding 动态发现为只读。静态 Source/Registry 不匹配或配置失效时拒绝，绝不降级为 reader；所有实例以 Service JWT 和单 Binding 摘要校验。受保护配置漂移使相应 handler 返回503，下一次完整刷新重新验证。发布、基础设施安装和回滚门禁见 [混合模式生产发布](deploy/production/README.md)。
+共享生产使用混合模式：同时传入 `--gnas-fleet-runtime` 和 `--gnas-discovery-policy`，manifest 中已有 Binding 保留原完整运行时能力，未映射 Binding 通过数据库发现运行时配置；两类 Binding 都默认发布完整工具目录，再由角色、GNAS 实时权限和 runtime capability 决定实际可用工具。静态 Source/Registry 不匹配或配置失效时拒绝，绝不降级或静默放权；所有实例以 Service JWT 和单 Binding 摘要校验。受保护配置漂移使相应 handler 返回503，下一次完整刷新重新验证。发布、基础设施安装和回滚门禁见 [混合模式生产发布](deploy/production/README.md)。
 
 同版本恢复可在混合参数上增加 `--gnas-static-only https://<approved-host>`：runtime manifest 必须仅有一个静态映射，仍使用 Service JWT、单 Binding 摘要、完整权威校验和动态撤路由，只跳过未映射租户发现。普通 `--fleet` 的配置检查通过不能替代这套恢复合同。恢复范围和限制见上述生产发布文档。
 
 两种 GNAS 模式均可使用 `--gnas-fleet-refresh 30s`；旧 runtime 模式默认 0，保留启动时加载行为。完整候选成功后原子切换 Host 路由，未变更的 handler 复用；变更前返回 503 并有界排空旧请求，排空最多 10 秒。刷新失败时已有 Host 全部返回 503，未知 Host 为 421，完整成功后恢复。发现模式接受带正确摘要的空数组并撤下全部租户；错误响应、null 和摘要错误绝不当作空集合。`--check-config` 仅首次加载及只读核验，不启动监听或循环。完整根因、接口边界、发布及回滚步骤见 [数据库自动发现候选](deploy/GNAS-FLEET-DISCOVERY.md)。
+
+动态发现现在隔离已通过权威及公共配置检查、但 Registry/Z-S00 尚未就绪的 Binding：仅对应 Host 全路径 503，不构建 MCP/OAuth handler，其他已就绪租户可启动。`--check-config` 成功只证明共享配置可加载，不证明每个租户可用；发布仍须逐 Host 核验预期状态。权威、公共配置、受保护 local mapping、存储或服务构建错误仍全局失败关闭。缓存、重试及只读边界见 [未就绪租户隔离](../docs/operations/unready-tenant-isolation.md)。
 
 `zoop` 只决定该实例是否暴露 Zoop 初始化、九表、Z-S00 和记录治理工具。员工目录、受控企业微信 API、单人消息及 `SMART_SHEETS_IDS` bootstrap 属于通用企业微信层。旧单实例模式默认启用 Zoop，保持原工具兼容。
 
@@ -50,7 +52,7 @@ fleet 不保存企业微信 Secret。启动时会回读每个实例配置并验�
 
 这是连接器服务身份，不是用户登录或逐人授权。它不能写入 Zoop 的“需求提出主体”等业务字段。operator/admin 工具必须另外提供永久 `identity_binding_id`：首次使用时，WorkBuddy 询问企业微信通讯录完整姓名，`wecom_identity_binding_start` 唯一匹配启用成员与 Z-S09 中唯一启用的人员主体（同 `userid` 的 AI 执行主体不参与匹配），并由自建应用向该成员发送 6 位验证码；`wecom_identity_binding_confirm` 验证成功后生成绑定。验证码一次性、最多输错 5 次；绑定本身不设有效期，并支持持有原句柄时换绑。
 
-绑定句柄只解决当前业务操作由谁发起，不会把共享 Connector API Key 升格为逐用户访问授权。实例配置中的 `ai_execution_subject_record_id` 固定指向一个已登记且启用的 Z-S09 WorkBuddy AI 执行主体；缺失时团队 operator/admin 调用失败关闭。`wecom_record_apply` 新建记录时自动注入双主体：Z-S01/Z-S02 使用人员发起者，Z-S04/Z-S05 使用 AI 执行者，Z-S06 同时填写发起者与执行者；显式提交冲突主体会被拒绝。Z-S03 的责任与执行主体由治理流程按实际分工显式填写。
+绑定句柄只解决当前业务操作由谁发起，不会把共享 Connector API Key 升格为逐用户访问授权。实例配置中的 `ai_execution_subject_record_id` 如存在，固定指向一个已登记且启用的 Z-S09 WorkBuddy AI 执行主体，作为可选审计引用；缺失时不再阻断团队 operator/admin 调用。`wecom_record_apply` 新建记录时，Z-S01/Z-S02 仍使用人员发起者；Z-S04/Z-S05 仅在存在可选 AI 执行主体时注入执行者；Z-S06 按现有可用主体填充。显式提交冲突主体仍会被拒绝。Z-S03 的责任与执行主体由治理流程按实际分工显式填写。
 
 ## OIDC / 用户授权候选边界
 
