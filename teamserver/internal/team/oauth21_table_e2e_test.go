@@ -105,7 +105,10 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 						return nil, fmt.Errorf("unexpected managed operation")
 					}
 					if op == "list_employees" {
-						out = map[string]any{"userlist": []any{map[string]any{"userid": "application-operator", "status": 1}}}
+						out = map[string]any{"userlist": []any{
+							map[string]any{"userid": "application-operator", "status": 1},
+							map[string]any{"userid": "employee-one", "status": 1},
+						}}
 						break
 					}
 					var p map[string]any

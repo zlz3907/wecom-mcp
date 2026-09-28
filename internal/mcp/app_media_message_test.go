@@ -59,7 +59,7 @@ func TestSendApplicationMediaMessageUploadsAndSendsToOneEnabledUser(t *testing.T
 		"content_sha256":   hex.EncodeToString(sum[:]),
 		"idempotency_key":  "media-message-key-0001",
 	})
-	result, err := (&Server{}).sendApplicationMediaMessage(context.Background(), runtime, fake, input)
+	result, err := (&Server{}).sendApplicationMediaMessage(operatorContext("operator"), runtime, fake, input)
 	if err != nil {
 		t.Fatal(err)
 	}

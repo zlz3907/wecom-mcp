@@ -131,7 +131,7 @@ func TestRecordApplyBindsConfiguredOperatorWithoutCallerActor(t *testing.T) {
 	if err := server.completeStateWithOperator(path, input.IdempotencyKey, digest, "operator-b"); err == nil {
 		t.Fatal("different operator completed reserved mutation")
 	}
-	if _, err := server.apply(context.Background(), config.Config{}, config.Schema{}, strings.Repeat("a", 64), nil, json.RawMessage(`{"target_role":"Z-S01","operation":"add_records","idempotency_key":"idempotency-key-0001","source_revision":"rev-1","records":[{"values":{"x":"y"}}]}`)); err == nil || !strings.Contains(err.Error(), "wecom_operator_userid") {
+	if _, err := server.apply(context.Background(), config.Config{}, config.Schema{}, strings.Repeat("a", 64), nil, json.RawMessage(`{"target_role":"Z-S01","operation":"add_records","idempotency_key":"idempotency-key-0001","source_revision":"rev-1","records":[{"values":{"x":"y"}}]}`)); err == nil || !strings.Contains(err.Error(), "OAuth 会话") {
 		t.Fatalf("record write without configured operator was not fail-closed: %v", err)
 	}
 	for _, item := range tools {

@@ -81,7 +81,8 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 	if err := verifyBoundOperator(ctx, runtime, client, ""); err != nil {
 		return nil, err
 	}
-	operatorDigest := digestValue(runtime.WecomOperatorUserID)
+	operatorUserID := businessActorUserID(ctx, runtime)
+	operatorDigest := digestValue(operatorUserID)
 
 	statePath := registryBootstrapStatePath(runtime)
 	state, exists, err := loadRegistryBootstrapState(statePath)
@@ -95,7 +96,7 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 		if err := reserveRegistryBootstrapState(statePath, state); err != nil {
 			return nil, err
 		}
-		created, err := client.Request(ctx, "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "SMART_SHEETS_IDS", "admin_users": []string{runtime.WecomOperatorUserID}})
+		created, err := client.Request(ctx, "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "SMART_SHEETS_IDS", "admin_users": []string{operatorUserID}})
 		if err != nil {
 			return nil, fmt.Errorf("SMART_SHEETS_IDS 创建结果不确定；本地哨兵已保留，禁止自动重试: %w", err)
 		}
@@ -123,7 +124,7 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 	}
 	authResponse, authErr := client.Request(ctx, "get_doc_auth", map[string]any{"docid": state.DocumentID})
 	authResult, _ := authResponse["result"].(map[string]any)
-	if authErr != nil || apiError(authResponse) != nil || !initializeDocumentMemberHasAuth(authResult, runtime.WecomOperatorUserID, 7) {
+	if authErr != nil || apiError(authResponse) != nil || !initializeDocumentMemberHasAuth(authResult, operatorUserID, 7) {
 		return nil, fmt.Errorf("SMART_SHEETS_IDS 已创建但 business operator 管理员权限未通过精确回读；禁止自动重试创建")
 	}
 
@@ -154,7 +155,7 @@ func (s *Server) bootstrapRegistry(ctx context.Context, runtime config.Config, c
 		"state": "created_configured_readback_verified", "created": createdNow,
 		"config_updated": true, "readback_verified": true, "registry_field_count": verifiedCount,
 		"instance_name": persisted.InstanceName,
-	}, runtime.WecomOperatorUserID), nil
+	}, operatorUserID), nil
 }
 
 func ensureRegistryFields(ctx context.Context, client wecomRequester, documentID string) (string, int, error) {

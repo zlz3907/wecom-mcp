@@ -294,7 +294,11 @@ func (s *Server) createFieldCodecLab(ctx context.Context, runtime config.Config,
 		}, nil
 	}
 
-	created, err := client.Request(ctx, "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "Zoop｜企业微信字段编码验证", "admin_users": []string{runtime.WecomOperatorUserID}})
+	operatorUserID := businessActorUserID(ctx, runtime)
+	if operatorUserID == "" {
+		return nil, fmt.Errorf("当前 OAuth 会话未提供企业微信用户身份，远程写入保持关闭")
+	}
+	created, err := client.Request(ctx, "create_smartsheet", map[string]any{"doc_type": 10, "doc_name": "Zoop｜企业微信字段编码验证", "admin_users": []string{operatorUserID}})
 	if err != nil {
 		return nil, err
 	}

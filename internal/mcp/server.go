@@ -202,13 +202,14 @@ func role(value string) error {
 }
 
 func verifyBoundOperator(ctx context.Context, runtime config.Config, client wecomRequester, capabilityGroup string) error {
-	if runtime.WecomOperatorUserID == "" {
-		return fmt.Errorf("实例未配置 wecom_operator_userid，远程写入保持关闭")
+	operatorUserID := businessActorUserID(ctx, runtime)
+	if operatorUserID == "" {
+		return fmt.Errorf("当前 OAuth 会话未提供企业微信用户身份，远程写入保持关闭")
 	}
 	if capabilityGroup != "" && !runtime.AllowsInGroup(capabilityGroup, "list_employees") {
 		return fmt.Errorf("%s 专用 capability 未允许 list_employees", capabilityGroup)
 	}
-	if _, err := verifyInitializeOperatorEmployee(ctx, client, runtime.WecomOperatorUserID); err != nil {
+	if _, err := verifyInitializeOperatorEmployee(ctx, client, operatorUserID); err != nil {
 		return fmt.Errorf("business_operator_userid 未通过当前固定租户员工目录核验")
 	}
 	return nil

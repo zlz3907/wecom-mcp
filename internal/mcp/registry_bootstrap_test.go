@@ -73,7 +73,7 @@ func TestRegistryBootstrapCreatesOncePersistsAndRereads(t *testing.T) {
 	server := &Server{store: config.NewStore(path)}
 	client := &bootstrapFakeClient{fields: map[string]map[string]any{}}
 	raw, _ := json.Marshal(map[string]string{"owner_authorization": "create_and_persist_default_registry"})
-	result, err := server.bootstrapRegistry(context.Background(), runtime, client, raw)
+	result, err := server.bootstrapRegistry(operatorContext("operator-user"), runtime, client, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestRegistryBootstrapCreatesOncePersistsAndRereads(t *testing.T) {
 	if err != nil || !exists || state.Phase != "verified" || state.DocumentID != "registry-created" {
 		t.Fatalf("state=%#v exists=%v err=%v", state, exists, err)
 	}
-	configured, err := server.bootstrapRegistry(context.Background(), persisted, nil, raw)
+	configured, err := server.bootstrapRegistry(operatorContext("operator-user"), persisted, nil, raw)
 	if err != nil || configured.(map[string]any)["state"] != "already_configured" || client.createCalls != 1 {
 		t.Fatalf("configured=%#v err=%v createCalls=%d", configured, err, client.createCalls)
 	}
@@ -196,7 +196,7 @@ func TestRegistryBootstrapResumesCreatedDocumentWithoutCreatingAgain(t *testing.
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(map[string]string{"owner_authorization": "create_and_persist_default_registry"})
-	result, err := server.bootstrapRegistry(context.Background(), runtime, client, raw)
+	result, err := server.bootstrapRegistry(operatorContext("operator-user"), runtime, client, raw)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -699,7 +699,16 @@ func businessActorUserID(ctx context.Context, runtime config.Config) string {
 	if userid, ok := ctx.Value(bootstrapActorContextKey{}).(string); ok && userid != "" {
 		return userid
 	}
-	return runtime.WecomOperatorUserID
+	return ""
+}
+
+func runtimeWithBusinessActor(ctx context.Context, runtime config.Config) (config.Config, error) {
+	operatorUserID := businessActorUserID(ctx, runtime)
+	if operatorUserID == "" {
+		return config.Config{}, fmt.Errorf("当前 OAuth 会话未提供企业微信用户身份，远程写入保持关闭")
+	}
+	runtime.WecomOperatorUserID = operatorUserID
+	return runtime, nil
 }
 
 type actorReferenceSource int
