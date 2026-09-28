@@ -1,6 +1,35 @@
 {
   "version": 1,
   "api_whitelist": {
-    "read": ["get_sheet", "get_fields", "get_records", "list_employees"]
+    "default": [
+      "list_employees",
+      "send_app_message",
+      "upload_app_media",
+      "get_doc_base_info",
+      "get_doc_share_url",
+      "get_doc_auth",
+      "get_sheets",
+      "get_sheet",
+      "get_views",
+      "get_fields",
+      "get_records",
+      "create_smartsheet",
+      "rename_document",
+      "lock_down_doc_access",
+      "grant_doc_readers",
+      "harden_doc_security",
+      "add_sheet",
+      "update_sheet",
+      "delete_sheet",
+      "add_view",
+      "update_view",
+      "delete_views",
+      "add_fields",
+      "update_fields",
+      "delete_fields",
+      "add_records",
+      "update_records",
+      "delete_records"
+    ]
   }
 }
