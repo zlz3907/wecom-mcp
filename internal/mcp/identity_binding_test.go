@@ -253,7 +253,7 @@ func TestIdentityCellContainsOnlyExplicitText(t *testing.T) {
 	}
 }
 
-func TestInitialPersonnelSubjectBootstrapOnlyAllowsMatchingRowOnEmptyTable(t *testing.T) {
+func TestInitialPersonnelSubjectBootstrapOnlyAllowsValidRowsOnEmptyTable(t *testing.T) {
 	dir := t.TempDir()
 	schemaPath := filepath.Join(dir, "schema.md")
 	schema := ""
@@ -286,7 +286,7 @@ func TestInitialPersonnelSubjectBootstrapOnlyAllowsMatchingRowOnEmptyTable(t *te
 	}{
 		{name: "empty table and current employee", userid: "employee-one", want: true},
 		{name: "non-empty table", rows: []any{identitySubjectRecord("existing", "employee-one", "人员主体", "启用")}, userid: "employee-one", want: false},
-		{name: "different employee", userid: "employee-two", want: false},
+		{name: "different employee", userid: "employee-two", want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			candidate, err := initialPersonnelSubjectBootstrapCandidate(context.Background(), runtime, &oauthPersonnelFake{records: tc.rows}, raw, tc.userid)
@@ -333,8 +333,8 @@ func TestInitialPersonnelSubjectBootstrapAllowsControlledBatchOnEmptyTable(t *te
 		t.Fatalf("controlled personnel batch was not accepted: candidate=%v err=%v", candidate, err)
 	}
 	other, err := initialPersonnelSubjectBootstrapCandidate(context.Background(), runtime, &oauthPersonnelFake{}, raw, "employee-three")
-	if err != nil || other {
-		t.Fatalf("batch without current employee was accepted: candidate=%v err=%v", other, err)
+	if err != nil || !other {
+		t.Fatalf("valid batch was rejected for a different caller: candidate=%v err=%v", other, err)
 	}
 }
 

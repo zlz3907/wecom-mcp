@@ -588,10 +588,10 @@ func resolvePersonnelIdentity(ctx context.Context, runtime config.Config, client
 }
 
 // initialPersonnelSubjectBootstrapCandidate permits a controlled first Z-S09
-// personnel batch when the table is provably empty. The normal identity
-// resolver cannot be used for that first batch because it deliberately
-// requires the row to exist before it establishes identity.
-func initialPersonnelSubjectBootstrapCandidate(ctx context.Context, runtime config.Config, client wecomRequester, raw json.RawMessage, userid string) (bool, error) {
+// personnel batch when the table is provably empty. Enterprise WeCom remains
+// the authority for API authorization and app visibility; this check only
+// validates the target, operation, row shape, and empty-table precondition.
+func initialPersonnelSubjectBootstrapCandidate(ctx context.Context, runtime config.Config, client wecomRequester, raw json.RawMessage, _ string) (bool, error) {
 	var input struct {
 		TargetRole string `json:"target_role"`
 		Operation  string `json:"operation"`
@@ -602,18 +602,11 @@ func initialPersonnelSubjectBootstrapCandidate(ctx context.Context, runtime conf
 	if err := json.Unmarshal(raw, &input); err != nil || input.TargetRole != "Z-S09" || input.Operation != "add_records" || len(input.Records) == 0 {
 		return false, nil
 	}
-	currentUserPresent := false
 	for _, record := range input.Records {
 		values := record.Values
 		if !inputCellContainsText(values["主体类型"], "人员主体") || !validPersonnelBootstrapStatus(values["主体状态"]) || !identityCellHasAnyUserID(values["企业微信成员或责任人"]) {
 			return false, nil
 		}
-		if identityCellContainsUserID(values["企业微信成员或责任人"], userid) {
-			currentUserPresent = true
-		}
-	}
-	if !currentUserPresent {
-		return false, nil
 	}
 	if !runtime.Allows("get_records") {
 		return false, fmt.Errorf("实例白名单未允许读取 Z-S09 主体，拒绝首次登记")
