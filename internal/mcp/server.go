@@ -206,8 +206,8 @@ func verifyBoundOperator(ctx context.Context, runtime config.Config, client weco
 	if operatorUserID == "" {
 		return fmt.Errorf("当前 OAuth 会话未提供企业微信用户身份，远程写入保持关闭")
 	}
-	if capabilityGroup != "" && !runtime.AllowsInGroup(capabilityGroup, "list_employees") {
-		return fmt.Errorf("%s 专用 capability 未允许 list_employees", capabilityGroup)
+	if !runtime.Allows("list_employees") {
+		return fmt.Errorf("实例白名单未允许 list_employees，无法核验当前 OAuth 用户")
 	}
 	if _, err := verifyInitializeOperatorEmployee(ctx, client, operatorUserID); err != nil {
 		return fmt.Errorf("business_operator_userid 未通过当前固定租户员工目录核验")
