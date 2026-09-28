@@ -511,8 +511,8 @@ func (s *Server) updateSchemaRegistry(ctx context.Context, runtime config.Config
 		return nil, err
 	}
 	for _, operation := range []string{"get_sheet", "get_fields", "get_records", "add_records", "update_records"} {
-		if !runtime.AllowsInGroup(schemaRegistryGroup, operation) {
-			return nil, fmt.Errorf("Schema Registry 白名单未允许 %s", operation)
+		if !runtime.Allows(operation) {
+			return nil, fmt.Errorf("实例白名单未允许 %s", operation)
 		}
 	}
 	s.schemaRegistryMu.Lock()

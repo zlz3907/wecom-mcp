@@ -52,8 +52,8 @@ func subjectLinkRoles() []string {
 
 func buildSubjectLinksMigrationPlan(ctx context.Context, runtime config.Config, client *wecom.Client) (subjectLinksMigrationPlan, error) {
 	for _, operation := range []string{"get_sheet", "get_fields", "add_fields"} {
-		if !runtime.AllowsInGroup(schemaMigrationGroup, operation) {
-			return subjectLinksMigrationPlan{}, fmt.Errorf("Schema 迁移白名单未允许 %s", operation)
+		if !runtime.Allows(operation) {
+			return subjectLinksMigrationPlan{}, fmt.Errorf("实例白名单未允许 %s", operation)
 		}
 	}
 	targets, err := wecom.ResolveTargets(ctx, client, runtime.RegistryDocumentID, runtime.RegistryKey, subjectLinkRoles(), runtime.Allows)

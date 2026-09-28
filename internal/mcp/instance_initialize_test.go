@@ -206,15 +206,15 @@ func TestInstanceInitializeStatusReadyIsReadOnlyAndDisclosesNoRecords(t *testing
 	}
 }
 
-func TestInstanceInitializeRequiresDedicatedCapabilityGroup(t *testing.T) {
+func TestInstanceInitializeUsesOperationAllowlistRegardlessOfGroup(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
-	runtime.APIWhitelist = map[string][]string{"other": {"get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records"}}
+	runtime.APIWhitelist = map[string][]string{"other": {"list_employees", "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records"}}
 	result, err := (&Server{}).instanceInitializeStatus(context.Background(), runtime, fake, nil, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.(map[string]any)["state"] != "environment_unavailable" || len(fake.operations) != 0 {
-		t.Fatalf("dedicated capability was bypassed: result=%#v calls=%#v", result, fake.operations)
+	if result.(map[string]any)["state"] != "ready" || len(fake.operations) == 0 {
+		t.Fatalf("operation allowlist was not honored independently of group name: result=%#v calls=%#v", result, fake.operations)
 	}
 }
 

@@ -12,8 +12,6 @@ import (
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/config"
 )
 
-const appMessageCapabilityGroup = "app_message"
-
 type appMessageInput struct {
 	RecipientUserID string `json:"recipient_userid"`
 	Text            string `json:"text"`
@@ -34,11 +32,11 @@ func (s *Server) sendApplicationMessage(ctx context.Context, runtime config.Conf
 	if len(input.IdempotencyKey) < 16 || len(input.IdempotencyKey) > 256 {
 		return nil, fmt.Errorf("idempotency_key 无效")
 	}
-	if err := verifyBoundOperator(ctx, runtime, client, appMessageCapabilityGroup); err != nil {
+	if err := verifyBoundOperator(ctx, runtime, client, ""); err != nil {
 		return nil, err
 	}
-	if !runtime.AllowsInGroup(appMessageCapabilityGroup, "send_app_message") {
-		return nil, fmt.Errorf("app_message 专用 capability 未允许 send_app_message")
+	if !runtime.Allows("send_app_message") {
+		return nil, fmt.Errorf("实例白名单未允许 send_app_message")
 	}
 	if _, err := verifyInitializeOperatorEmployee(ctx, client, input.RecipientUserID); err != nil {
 		return nil, fmt.Errorf("recipient_userid 未在当前固定租户员工目录中唯一启用")

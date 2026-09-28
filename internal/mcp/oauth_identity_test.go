@@ -51,7 +51,7 @@ func TestOAuthEmployeeWriteEndToEnd(t *testing.T) {
 			if err := os.WriteFile(schemaPath, []byte(schema), 0600); err != nil {
 				t.Fatal(err)
 			}
-			runtime := config.Config{Version: 1, InstanceName: "fixture-instance", TenantRoute: "fixture-source", RegistryDocumentID: "registry", RegistryKey: "instance-key", SchemaMirrorPath: schemaPath, SchemaSource: "local_compatibility", StatePath: filepath.Join(dir, "state.json"), WecomOperatorUserID: "application-operator", AIExecutionSubjectRecordID: "ai-subject", APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}, "app_message": {"list_employees", "send_app_message"}}}
+			runtime := config.Config{Version: 1, InstanceName: "fixture-instance", TenantRoute: "fixture-source", RegistryDocumentID: "registry", RegistryKey: "instance-key", SchemaMirrorPath: schemaPath, SchemaSource: "local_compatibility", StatePath: filepath.Join(dir, "state.json"), WecomOperatorUserID: "application-operator", AIExecutionSubjectRecordID: "ai-subject", APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}, "default": {"list_employees", "send_app_message"}}}
 			configPath := filepath.Join(dir, "instance.json")
 			encoded, _ := json.Marshal(runtime)
 			if err := os.WriteFile(configPath, encoded, 0600); err != nil {

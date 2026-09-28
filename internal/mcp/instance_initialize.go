@@ -600,8 +600,8 @@ func (s *Server) applyRemoteInstanceInitialization(ctx context.Context, runtime 
 		return nil, fmt.Errorf("企业微信客户端不可用")
 	}
 	for _, operation := range []string{"list_employees", "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records", "create_smartsheet", "grant_doc_readers", "add_sheet", "update_sheet", "add_fields", "update_fields", "add_records", "delete_records"} {
-		if !runtime.AllowsInGroup(instanceInitializeGroup, operation) {
-			return nil, fmt.Errorf("实例初始化专用 capability 未允许 %s；initializer 不会自行提升白名单", operation)
+		if !runtime.Allows(operation) {
+			return nil, fmt.Errorf("实例白名单未允许 %s；initializer 不会自行提升白名单", operation)
 		}
 	}
 	if runtime.WecomOperatorUserID == "" {
@@ -1520,8 +1520,8 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	snapshot.BusinessOwnedByJournal = journalExists && journal.BusinessOwned && journal.BusinessDocumentID != "" && journal.BusinessDocumentID == businessRecoveryDocumentID
 	capabilityMissing := false
 	for _, operation := range []string{"list_employees", "get_doc_base_info", "get_doc_auth", "get_sheet", "get_fields", "get_records"} {
-		if !runtime.AllowsInGroup(instanceInitializeGroup, operation) {
-			observation.Conflicts = append(observation.Conflicts, "instance_initialize_capability_missing:"+operation)
+		if !runtime.Allows(operation) {
+			observation.Conflicts = append(observation.Conflicts, "instance_initialize_operation_missing:"+operation)
 			capabilityMissing = true
 		}
 	}
@@ -1592,8 +1592,8 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	snapshot.RegistryOperatorAdmin, _ = registryAuthorization["configured_operator_is_admin"].(bool)
 	if !operatorMissing && !snapshot.RegistryOperatorAdmin {
 		observation.PlannedOperations = append(observation.PlannedOperations, "grant_registry_operator_admin")
-		if !runtime.AllowsInGroup(instanceInitializeGroup, "grant_doc_readers") {
-			observation.Conflicts = append(observation.Conflicts, "instance_initialize_capability_missing:grant_doc_readers")
+		if !runtime.Allows("grant_doc_readers") {
+			observation.Conflicts = append(observation.Conflicts, "instance_initialize_operation_missing:grant_doc_readers")
 		}
 	}
 	registrySheets, err := client.Request(ctx, "get_sheet", map[string]any{"docid": registryDocumentID})
@@ -1737,8 +1737,8 @@ func observeInstanceInitializationWithCatalog(ctx context.Context, runtime confi
 	snapshot.BusinessOperatorAdmin, _ = businessAuthorization["configured_operator_is_admin"].(bool)
 	if !operatorMissing && !snapshot.BusinessOperatorAdmin {
 		observation.PlannedOperations = append(observation.PlannedOperations, "grant_business_operator_admin")
-		if !runtime.AllowsInGroup(instanceInitializeGroup, "grant_doc_readers") {
-			observation.Conflicts = append(observation.Conflicts, "instance_initialize_capability_missing:grant_doc_readers")
+		if !runtime.Allows("grant_doc_readers") {
+			observation.Conflicts = append(observation.Conflicts, "instance_initialize_operation_missing:grant_doc_readers")
 		}
 	}
 	businessSheets, err := client.Request(ctx, "get_sheet", map[string]any{"docid": snapshot.BusinessDocumentID})
