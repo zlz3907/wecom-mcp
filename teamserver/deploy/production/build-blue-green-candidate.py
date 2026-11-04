@@ -53,6 +53,9 @@ def main():
         'expected_gnas_release_id': args.expected_gnas_release_id, 'expected_gnas_binary_sha256': args.expected_gnas_binary_sha256,
         'ci_url': args.ci_url,
     }
+    manifest['control_plane'] = b.control_plane(release_id)
+    manifest['control_plane_sha256'] = b.control_plane_sha256(manifest['control_plane'])
+    b.validate_control_plane(manifest['control_plane'], release_id)
     manifest['files'] = {name: b.c.sha(output / name) for name in b.FILES[:-1]}
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     (output / 'SHA256SUMS').write_text(''.join(b.c.sha(output / name) + '  ' + name + '\n' for name in sorted(b.FILES)))

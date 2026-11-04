@@ -25,6 +25,12 @@ def regular(path):
     require(stat.S_ISREG(value.st_mode) and path.resolve() == path and value.st_uid == 0 and not value.st_mode & 0o022, 'untrusted active receipt')
 
 
+def trusted_parent(path):
+    value = path.lstat()
+    require(stat.S_ISDIR(value.st_mode) and path.resolve() == path and value.st_uid == 0
+            and not value.st_mode & 0o022, 'untrusted active receipt parent')
+
+
 def receipt(path):
     regular(path)
     value = json.loads(path.read_text())
@@ -56,6 +62,7 @@ def main():
     require(os.geteuid() == 0, 'root required')
     path = Path(args.active_file)
     require(path == DEFAULT and path.is_absolute() and path.parent.is_dir() and path.parent.resolve() == path.parent, 'fixed active receipt required')
+    trusted_parent(path.parent)
     current = receipt(path)
     require(current['color'] == args.expected_color and args.expected_color != args.to, 'entrypoint changed concurrently or no-op')
     atomic(path, {'version': 1, 'color': args.to, 'loopback': COLORS[args.to]})
