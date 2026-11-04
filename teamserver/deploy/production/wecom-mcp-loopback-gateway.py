@@ -137,6 +137,30 @@ def stream_reader(response, output, stopped):
                 continue
 
 
+def header_reader(upstream, output, stopped):
+    """Wait for first upstream headers without blocking cancellation checks."""
+    try:
+        response = upstream.getresponse()
+        if not stopped.is_set():
+            output.put(('response', response))
+    except (OSError, http.client.HTTPException, AttributeError) as error:
+        if not stopped.is_set():
+            output.put(('error', error))
+
+
+def shutdown_socket(value):
+    if value is None:
+        return
+    try:
+        value.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    try:
+        value.close()
+    except OSError:
+        pass
+
+
 class ReceiptGatewayHandler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
@@ -162,7 +186,30 @@ class ReceiptGatewayHandler(BaseHTTPRequestHandler):
                 upstream.request(self.command, self.path,
                                  body=request_body(self) if has_body else None, headers=headers,
                                  encode_chunked=has_body)
-                response = upstream.getresponse()
+                headers_stopped = threading.Event()
+                header_result = queue.Queue(maxsize=1)
+                header_worker = threading.Thread(target=header_reader,
+                                                 args=(upstream, header_result, headers_stopped), daemon=True)
+                header_worker.start()
+                response = None
+                try:
+                    while response is None:
+                        try:
+                            kind, value = header_result.get(timeout=0.25)
+                        except queue.Empty:
+                            if downstream_closed(self.connection):
+                                return
+                            continue
+                        if kind == 'error':
+                            raise value
+                        response = value
+                finally:
+                    if response is None:
+                        headers_stopped.set()
+                        shutdown_socket(upstream.sock)
+                        upstream.close()
+                    header_worker.join(timeout=1)
+                    require(not header_worker.is_alive(), 'upstream header reader did not stop')
                 # Bound the connect/request-header phase, but an MCP SSE
                 # response is intentionally long-lived.  After headers, each
                 # upstream event must be relayed as it arrives rather than
@@ -207,14 +254,12 @@ class ReceiptGatewayHandler(BaseHTTPRequestHandler):
                     # For HTTP/1.1 responses delimited by Connection: close,
                     # HTTPConnection may have transferred ownership of the
                     # socket to HTTPResponse and set upstream.sock=None.
-                    # Close both layers so a silent client disconnect releases
-                    # the real upstream TCP stream, not merely its wrapper.
+                    # First shut down the real socket: response.close() may
+                    # wait for a reader thread holding BufferedReader's lock,
+                    # which would otherwise delay a truly silent upstream's
+                    # EOF until it emits another event.
+                    shutdown_socket(stream_socket)
                     response.close()
-                    try:
-                        stream_socket.shutdown(socket.SHUT_RDWR)
-                    except OSError:
-                        pass
-                    stream_socket.close()
                     upstream.close()
                     reader.join(timeout=1)
                     require(not reader.is_alive(), 'upstream reader did not stop')

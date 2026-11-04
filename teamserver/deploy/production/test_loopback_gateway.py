@@ -3,6 +3,7 @@ import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 from pathlib import Path
+import select
 import socket
 import struct
 import threading
@@ -79,6 +80,19 @@ class Backend(BaseHTTPRequestHandler):
             self.wfile.write(payload); self.wfile.flush()
             self.close_connection = True
             return
+        if self.path == '/late-headers-cancel':
+            self.server.header_wait_started.set()
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                readable, _, _ = select.select([self.connection], [], [], 0.05)
+                if readable:
+                    try:
+                        if self.connection.recv(1) == b'':
+                            self.server.header_wait_upstream_closed.set()
+                    except OSError:
+                        self.server.header_wait_upstream_closed.set()
+                    return
+            return
         if self.path == '/silent-disconnect':
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
@@ -86,15 +100,16 @@ class Backend(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'data: first\n\n'); self.wfile.flush()
             self.server.first_event.set()
-            # Keep the upstream genuinely quiet long enough for the gateway's
-            # downstream-close monitor to run before the next event exists.
-            time.sleep(1)
-            try:
-                for _ in range(32):
-                    self.wfile.write(b'x' * 65536); self.wfile.flush()
-                    time.sleep(0.005)
-            except (BrokenPipeError, ConnectionResetError):
-                self.server.silent_upstream_closed.set()
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                readable, _, _ = select.select([self.connection], [], [], 0.05)
+                if readable:
+                    try:
+                        if self.connection.recv(1) == b'':
+                            self.server.silent_upstream_closed.set()
+                    except OSError:
+                        self.server.silent_upstream_closed.set()
+                    return
             return
         payload = (self.server.marker + ':' + self.headers.get('Host', '')).encode()
         self.send_response(200)
@@ -137,6 +152,8 @@ class LoopbackGatewayTests(unittest.TestCase):
         self.green.disconnect_release = threading.Event()
         self.green.upstream_closed = threading.Event()
         self.green.silent_upstream_closed = threading.Event()
+        self.green.header_wait_started = threading.Event()
+        self.green.header_wait_upstream_closed = threading.Event()
         self.green.stream_finish = threading.Event()
         self.green.heartbeat_delay = 0.25
         self.blue = ThreadingHTTPServer(('127.0.0.1', 0), Backend)
@@ -231,6 +248,17 @@ class LoopbackGatewayTests(unittest.TestCase):
             self.assertIn(b'200 OK', response)
         finally:
             client.close()
+
+    def test_client_reset_cancels_upstream_waiting_for_first_response_headers(self):
+        client = socket.create_connection(('127.0.0.1', self.gateway.server_port), timeout=1)
+        try:
+            client.sendall(b'GET /late-headers-cancel HTTP/1.1\r\nHost: mcp.wesiyu.com\r\nConnection: keep-alive\r\n\r\n')
+            self.assertTrue(self.green.header_wait_started.wait(1), 'upstream did not enter header wait')
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+        finally:
+            client.close()
+        self.assertTrue(self.green.header_wait_upstream_closed.wait(3),
+                        'gateway left upstream header wait open after client reset')
 
     def test_chunked_request_body_reaches_upstream_without_buffered_rewrite(self):
         client = socket.create_connection(('127.0.0.1', self.gateway.server_port), timeout=1)
