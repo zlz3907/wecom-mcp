@@ -205,11 +205,31 @@ class ControllerTests(unittest.TestCase):
             c.healthy_fleet_state_vector('/expected', 'a' * 64, c.fleet_state_vector())
             runtime.assert_called_once_with('/expected', 'a' * 64)
             self.assertEqual([call.args[0] for call in ready.call_args_list], ['mcp.wesiyu.com', 'mcp.rtyouth.com'])
-            unready.assert_called_once_with('mcp.jianpinke.com')
+            self.assertEqual([call.kwargs for call in ready.call_args_list], [
+                {'loopback': '127.0.0.1:7702', 'public_resource_metadata': True},
+                {'loopback': '127.0.0.1:7702', 'public_resource_metadata': True},
+            ])
+            unready.assert_called_once_with('mcp.jianpinke.com', loopback='127.0.0.1:7702')
         altered = c.fleet_state_vector()
         altered[0]['state'] = 'tenant_unavailable'
         with self.assertRaises(ValueError):
             c.healthy_fleet_state_vector('/expected', 'a' * 64, altered)
+
+    def test_blue_state_vector_uses_blue_loopback_and_public_metadata(self):
+        with patch.object(c, 'require_runtime'), patch.object(c, 'ready') as ready, patch.object(c, 'unready') as unready:
+            c.healthy_fleet_state_vector('/blue', 'b' * 64, c.fleet_state_vector(), c.BLUE_GREEN_PLAN, 'blue')
+            self.assertTrue(all(call.kwargs['loopback'] == '127.0.0.1:7703' and call.kwargs['public_resource_metadata'] is True for call in ready.call_args_list))
+            unready.assert_called_once_with('mcp.jianpinke.com', loopback='127.0.0.1:7703')
+        invalid = json.loads(json.dumps(c.BLUE_GREEN_PLAN))
+        invalid['blue']['loopback'] = '127.0.0.1:7704'
+        with self.assertRaises(ValueError):
+            c.blue_green_probe_target(invalid, 'blue')
+
+    def test_ready_blue_probe_checks_public_resource_metadata(self):
+        with patch.object(c, 'probe') as probe:
+            c.ready('mcp.wesiyu.com', loopback='127.0.0.1:7703', public_resource_metadata=True)
+            self.assertIn((('mcp.wesiyu.com', '/.well-known/oauth-protected-resource/mcp', 200), {'loopback': '127.0.0.1:7703'}), [(call.args, call.kwargs) for call in probe.call_args_list])
+            self.assertIn((('mcp.wesiyu.com', '/.well-known/oauth-protected-resource/mcp', 200, True), {}), [(call.args, call.kwargs) for call in probe.call_args_list])
 
 
 if __name__ == '__main__':

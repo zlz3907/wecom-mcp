@@ -234,8 +234,22 @@ func main() {
 	case <-signalContext.Done():
 		shutdownContext, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 		defer cancel()
-		if err := httpServer.Shutdown(shutdownContext); err != nil {
-			logger.Error("team MCP graceful shutdown failed", "error", err)
+		var fleetShutdownErr error
+		if refreshingFleet != nil {
+			// Fence ready-worker admissions before the parent HTTP server starts
+			// its own drain.  This prevents a child from receiving new requests
+			// while systemd is stopping the shared parent process.
+			fleetShutdownErr = refreshingFleet.Close(shutdownContext)
+		}
+		httpShutdownErr := httpServer.Shutdown(shutdownContext)
+		if fleetShutdownErr != nil {
+			logger.Error("team MCP ready-worker shutdown failed")
+		}
+		if httpShutdownErr != nil {
+			logger.Error("team MCP graceful shutdown failed", "error", httpShutdownErr)
+			os.Exit(1)
+		}
+		if fleetShutdownErr != nil {
 			os.Exit(1)
 		}
 		logger.Info("team MCP stopped")

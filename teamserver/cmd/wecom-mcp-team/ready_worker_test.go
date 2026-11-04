@@ -69,6 +69,11 @@ func TestReadyWorkerDrainProcessHelper(t *testing.T) {
 	if err := json.NewEncoder(os.Stdout).Encode(ready); err != nil {
 		t.Fatal(err)
 	}
+	parentGone, supervisor, err := readyWorkerParentGone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer supervisor.Close()
 	trace := os.Getenv("TEST_READY_WORKER_DRAIN_TRACE")
 	writeTrace := func(event string) {
 		if trace == "" {
@@ -108,6 +113,11 @@ func TestReadyWorkerDrainProcessHelper(t *testing.T) {
 			return
 		}
 		writeTrace("INT")
+		shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdown)
+	case <-parentGone:
+		writeTrace("PIPE")
 		shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdown)
@@ -213,6 +223,30 @@ func TestReadyWorkerStartupTimeoutKillsChild(t *testing.T) {
 	}
 }
 
+func TestReadyWorkerParentPipeStopsChild(t *testing.T) {
+	binding := readyWorkerFixture(t)
+	t.Setenv("TEST_READY_WORKER_PROCESS", "1")
+	original := readyWorkerCommand
+	readyWorkerCommand = func(string) *exec.Cmd {
+		return exec.Command(os.Args[0], "-test.run=^TestReadyWorkerProcessHelper$", "--")
+	}
+	defer func() { readyWorkerCommand = original }()
+	worker, err := startReadyWorker(t.Context(), binding, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := worker.(*subprocessReadyWorker)
+	process.closeSupervisor()
+	deadline := time.Now().Add(5 * time.Second)
+	for worker.Alive() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if worker.Alive() {
+		t.Fatal("worker outlived its parent supervision pipe")
+	}
+	assertWorkerStatusEventually(t, worker, http.StatusServiceUnavailable)
+}
+
 func TestReadyWorkerDrainRejectsNewRequestsBeforeGracefulStop(t *testing.T) {
 	binding := readyWorkerFixture(t)
 	trace := filepath.Join(t.TempDir(), "signals.log")
@@ -264,7 +298,7 @@ func TestReadyWorkerDrainRejectsNewRequestsBeforeGracefulStop(t *testing.T) {
 	if err := <-stopped; err != nil {
 		t.Fatal(err)
 	}
-	waitForWorkerTrace(t, trace, "INT")
+	waitForWorkerTrace(t, trace, "PIPE")
 	if bytes, err := os.ReadFile(trace); err != nil || strings.Contains(string(bytes), "TERM") {
 		t.Fatalf("graceful drain sent SIGTERM: err=%v trace=%q", err, bytes)
 	}

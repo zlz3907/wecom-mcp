@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -24,6 +25,8 @@ import (
 )
 
 const bindingWorkerMessageLimit = 64 << 10
+
+const bindingWorkerSupervisorFD = 3
 
 var readyWorkerCommand = func(executable string) *exec.Cmd {
 	return exec.Command(executable, "--gnas-ready-worker")
@@ -51,27 +54,41 @@ func startReadyWorker(ctx context.Context, binding team.LoadedFleetBinding, _ *s
 		return nil, fmt.Errorf("ready worker executable unavailable")
 	}
 	command := readyWorkerCommand(executable)
-	command.Env = append(os.Environ(), "TEAM_MCP_WORKER_READY_TOKEN="+hex.EncodeToString(secret))
+	supervisorRead, supervisorWrite, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("ready worker supervision unavailable")
+	}
+	command.ExtraFiles = []*os.File{supervisorRead}
+	command.Env = append(os.Environ(), "TEAM_MCP_WORKER_READY_TOKEN="+hex.EncodeToString(secret), "TEAM_MCP_WORKER_SUPERVISOR_FD="+strconv.Itoa(bindingWorkerSupervisorFD))
 	stdin, err := command.StdinPipe()
 	if err != nil {
+		_ = supervisorRead.Close()
+		_ = supervisorWrite.Close()
 		return nil, fmt.Errorf("ready worker pipe unavailable")
 	}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
+		_ = supervisorRead.Close()
+		_ = supervisorWrite.Close()
 		return nil, fmt.Errorf("ready worker pipe unavailable")
 	}
 	// Never copy a child stderr to parent logs: a future dependency must not be
 	// able to leak credentials, assertions, or Enterprise WeCom identities.
 	command.Stderr = io.Discard
 	if err := command.Start(); err != nil {
+		_ = supervisorRead.Close()
+		_ = supervisorWrite.Close()
 		return nil, fmt.Errorf("ready worker start failed")
 	}
+	_ = supervisorRead.Close()
 	if _, err := stdin.Write(payload); err != nil {
 		_ = stdin.Close()
+		_ = supervisorWrite.Close()
 		killAndWait(command)
 		return nil, fmt.Errorf("ready worker start payload failed")
 	}
 	if err := stdin.Close(); err != nil {
+		_ = supervisorWrite.Close()
 		killAndWait(command)
 		return nil, fmt.Errorf("ready worker start payload failed")
 	}
@@ -90,38 +107,43 @@ func startReadyWorker(ctx context.Context, binding team.LoadedFleetBinding, _ *s
 	select {
 	case result := <-readyResultChannel:
 		if result.err != nil || team.VerifyBindingWorkerReady(secret, start.Identity, result.ready) != nil {
+			_ = supervisorWrite.Close()
 			killAndWait(command)
 			return nil, fmt.Errorf("ready worker handshake rejected")
 		}
-		return newSubprocessReadyWorker(command, result.ready.Address), nil
+		return newSubprocessReadyWorker(command, result.ready.Address, supervisorWrite), nil
 	case <-ctx.Done():
+		_ = supervisorWrite.Close()
 		killAndWait(command)
 		return nil, ctx.Err()
 	}
 }
 
 type subprocessReadyWorker struct {
-	proxy     *httputil.ReverseProxy
-	command   *exec.Cmd
-	address   string
-	done      chan struct{}
-	alive     atomic.Bool
-	admission sync.Mutex
-	accepting bool
-	inflight  int
-	drained   chan struct{}
-	drainOnce sync.Once
-	closeOnce sync.Once
+	proxy          *httputil.ReverseProxy
+	command        *exec.Cmd
+	address        string
+	supervisor     *os.File
+	done           chan struct{}
+	alive          atomic.Bool
+	admission      sync.Mutex
+	accepting      bool
+	inflight       int
+	drained        chan struct{}
+	drainOnce      sync.Once
+	supervisorOnce sync.Once
+	closeOnce      sync.Once
 }
 
-func newSubprocessReadyWorker(command *exec.Cmd, address string) *subprocessReadyWorker {
+func newSubprocessReadyWorker(command *exec.Cmd, address string, supervisor *os.File) *subprocessReadyWorker {
 	target := &url.URL{Scheme: "http", Host: address}
 	worker := &subprocessReadyWorker{
-		command:   command,
-		address:   address,
-		done:      make(chan struct{}),
-		accepting: true,
-		drained:   make(chan struct{}),
+		command:    command,
+		address:    address,
+		supervisor: supervisor,
+		done:       make(chan struct{}),
+		accepting:  true,
+		drained:    make(chan struct{}),
 	}
 	worker.alive.Store(true)
 	worker.proxy = &httputil.ReverseProxy{
@@ -139,6 +161,7 @@ func newSubprocessReadyWorker(command *exec.Cmd, address string) *subprocessRead
 	go func() {
 		_ = command.Wait()
 		worker.alive.Store(false)
+		worker.closeSupervisor()
 		close(worker.done)
 	}()
 	return worker
@@ -195,12 +218,14 @@ func (w *subprocessReadyWorker) Close(ctx context.Context) error {
 	w.closeOnce.Do(func() {
 		w.BeginDrain()
 		// SIGTERM is reserved for a failed bounded drain.  When existing
-		// proxy requests finish in time, SIGINT lets the child run its normal
-		// http.Server.Shutdown path instead of cutting an authenticated call
-		// off in the middle of its response.
+		// proxy requests finish in time, closing the private parent-death pipe
+		// makes the child run its normal http.Server.Shutdown path instead of
+		// cutting an authenticated call off in the middle of its response.
 		select {
 		case <-w.drained:
-			if w.alive.Load() && w.command.Process != nil {
+			if w.supervisor != nil {
+				w.closeSupervisor()
+			} else if w.alive.Load() && w.command.Process != nil {
 				if err := w.command.Process.Signal(syscall.SIGINT); err != nil && !errors.Is(err, os.ErrProcessDone) {
 					closeErr = err
 				}
@@ -237,6 +262,14 @@ func (w *subprocessReadyWorker) terminate() {
 	}
 }
 
+func (w *subprocessReadyWorker) closeSupervisor() {
+	w.supervisorOnce.Do(func() {
+		if w.supervisor != nil {
+			_ = w.supervisor.Close()
+		}
+	})
+}
+
 func readyWorkerUnavailable(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
 	http.Error(w, "MCP instance unavailable", http.StatusServiceUnavailable)
@@ -254,6 +287,11 @@ func runReadyWorker(ctx context.Context, logger *slog.Logger) error {
 	if err != nil || len(secret) != 32 {
 		return fmt.Errorf("ready worker handshake unavailable")
 	}
+	parentGone, supervisor, err := readyWorkerParentGone()
+	if err != nil {
+		return err
+	}
+	defer supervisor.Close()
 	decoder := json.NewDecoder(io.LimitReader(os.Stdin, bindingWorkerMessageLimit+1))
 	decoder.DisallowUnknownFields()
 	var start team.BindingWorkerStart
@@ -295,5 +333,28 @@ func runReadyWorker(ctx context.Context, logger *slog.Logger) error {
 		defer cancel()
 		_ = server.Shutdown(shutdownContext)
 		return nil
+	case <-parentGone:
+		shutdownContext, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		_ = server.Shutdown(shutdownContext)
+		return nil
 	}
+}
+
+func readyWorkerParentGone() (<-chan struct{}, *os.File, error) {
+	fd, err := strconv.Atoi(os.Getenv("TEAM_MCP_WORKER_SUPERVISOR_FD"))
+	if err != nil || fd != bindingWorkerSupervisorFD {
+		return nil, nil, fmt.Errorf("ready worker supervision unavailable")
+	}
+	supervisor := os.NewFile(uintptr(fd), "ready-worker-supervisor")
+	if supervisor == nil {
+		return nil, nil, fmt.Errorf("ready worker supervision unavailable")
+	}
+	parentGone := make(chan struct{})
+	go func() {
+		var byte [1]byte
+		_, _ = supervisor.Read(byte[:])
+		close(parentGone)
+	}()
+	return parentGone, supervisor, nil
 }

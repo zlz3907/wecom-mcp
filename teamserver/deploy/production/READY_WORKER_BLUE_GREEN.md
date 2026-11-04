@@ -27,6 +27,8 @@
 
 Blue 不能复用 green 的 unit、listener、state root、PID 或 lock 文件。Blue 必须由独立、root-owned 的安装流程预置；其 service definition、有效安全 sandbox、运行用户、环境文件引用和 state root ownership 都需要独立审查。这里没有也不会给出凭据内容。
 
+父进程收到正常停止信号时，fleet 必须先 fence 全部 worker、把 fleet 标记为不可用、在同一个有界 shutdown context 内 drain/close child，再关闭父 HTTP server。对于 SIGKILL/父进程崩溃，blue unit 必须在真实 Linux 主机回读确认 cgroup 会一并终止 child（例如经审查的 `KillMode=control-group` 语义）；本地源码测试不能替代该运行事实。
+
 公网入口需要一个已经预置的 root-owned **atomic loopback switch**：它只允许在 green `7702` 和 blue `7703` 两个已审计 loopback 后端间切换，并将当前颜色的只读回执写到 `/var/lib/wecom-mcp-release/entrypoint/active.json`。它不是 Nginx include，也不允许编辑 Nginx；当前仓库/控制器没有该 switch，因而没有可执行的切流命令。
 
 ## 将来的受控序列

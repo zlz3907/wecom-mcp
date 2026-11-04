@@ -2,6 +2,7 @@ package team
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -9,6 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// ErrFleetClosed prevents a shutdown fleet from accepting a refresh that
+// could otherwise start a child after its parent has fenced worker traffic.
+var ErrFleetClosed = errors.New("refreshing fleet is closed")
 
 type FleetLoader func(context.Context) ([]LoadedFleetBinding, error)
 type FleetHandlerFactory func(Config) (http.Handler, error)
@@ -54,6 +59,7 @@ type RefreshingFleet struct {
 	workerTimeout  time.Duration
 	listen         string
 	allowEmpty     bool
+	closed         bool
 	current        atomic.Pointer[fleetSnapshot]
 }
 
@@ -101,6 +107,9 @@ func (f *RefreshingFleet) ListenAddress() string { return f.listen }
 func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.closed {
+		return ErrFleetClosed
+	}
 	defer func() {
 		if err != nil {
 			if previous := f.current.Load(); previous != nil {
@@ -316,6 +325,40 @@ func (f *RefreshingFleet) closeWorker(worker ReadyWorker) {
 	ctx, cancel := context.WithTimeout(context.Background(), f.workerTimeout)
 	defer cancel()
 	_ = worker.Close(ctx)
+}
+
+// Close is the parent-service shutdown sequence for isolated workers.  It
+// fences every child before publishing fleet unavailability, then gives every
+// already proxied request the caller's bounded drain context.  A closed fleet
+// cannot refresh or start a replacement child while the parent is exiting.
+func (f *RefreshingFleet) Close(ctx context.Context) error {
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		return nil
+	}
+	f.closed = true
+	workers := make([]ReadyWorker, 0, len(f.workers))
+	for _, worker := range f.workers {
+		if worker != nil {
+			workers = append(workers, worker)
+		}
+	}
+	for _, worker := range workers {
+		worker.BeginDrain()
+	}
+	if previous := f.current.Load(); previous != nil {
+		f.current.Store(&fleetSnapshot{router: previous.router, unavailable: true})
+	}
+	f.mu.Unlock()
+
+	var closeErr error
+	for _, worker := range workers {
+		if err := worker.Close(ctx); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
 }
 
 // drain returns with the execution write lock held. Waiting is bounded even

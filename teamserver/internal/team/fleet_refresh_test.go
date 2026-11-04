@@ -467,7 +467,7 @@ type blockingReadyWorker struct {
 func newBlockingReadyWorker() *blockingReadyWorker {
 	return &blockingReadyWorker{
 		alive: true, accepting: true, entered: make(chan struct{}), release: make(chan struct{}),
-		drained: make(chan struct{}), beginDrained: make(chan struct{}), beginGate: make(chan struct{}),
+		drained: make(chan struct{}), beginDrained: make(chan struct{}),
 	}
 }
 
@@ -505,7 +505,9 @@ func (w *blockingReadyWorker) BeginDrain() {
 	}
 	w.mu.Unlock()
 	w.beginOnce.Do(func() { close(w.beginDrained) })
-	<-w.beginGate
+	if w.beginGate != nil {
+		<-w.beginGate
+	}
 }
 
 func (w *blockingReadyWorker) Close(ctx context.Context) error {
@@ -558,6 +560,7 @@ func TestDiscoveryWorkerRevocationFencesOldRouterBeforeDrain(t *testing.T) {
 	// Revoke while the first request is still proxied.  BeginDrain deliberately
 	// blocks publication here so the test observes the previous router snapshot:
 	// the worker admission fence, not timing, must reject the new request.
+	worker.beginGate = make(chan struct{})
 	loaded = []LoadedFleetBinding{a, b, c}
 	refreshed := make(chan error, 1)
 	go func() { refreshed <- f.Refresh(t.Context()) }()
@@ -589,5 +592,68 @@ func TestDiscoveryWorkerRevocationFencesOldRouterBeforeDrain(t *testing.T) {
 		if status := fleetStatus(f, host); status != http.StatusNoContent {
 			t.Fatalf("incumbent %s status=%d", host, status)
 		}
+	}
+}
+
+func TestDiscoveryWorkerParentCloseFencesAndDrains(t *testing.T) {
+	a, b, c, added := refreshTestBinding("a"), refreshTestBinding("b"), refreshTestBinding("c"), refreshTestBinding("added")
+	added.RegistryUnavailable = true
+	loaded := []LoadedFleetBinding{a, b, c, added}
+	var worker *blockingReadyWorker
+	f, err := NewDiscoveryFleetWithReadyWorkers(t.Context(), "127.0.0.1:17801", func(context.Context) ([]LoadedFleetBinding, error) {
+		return loaded, nil
+	}, func(Config) (http.Handler, error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }), nil
+	}, func(_ context.Context, binding LoadedFleetBinding) (ReadyWorker, error) {
+		if binding.Binding.BindingID != "added" {
+			t.Fatalf("unexpected isolated worker for %q", binding.Binding.BindingID)
+		}
+		worker = newBlockingReadyWorker()
+		return worker, nil
+	}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	added.RegistryUnavailable = false
+	loaded = []LoadedFleetBinding{a, b, c, added}
+	if err := f.Refresh(t.Context()); err != nil || worker == nil {
+		t.Fatalf("worker promotion err=%v worker=%v", err, worker != nil)
+	}
+	inflight := make(chan int, 1)
+	go func() { inflight <- fleetStatus(f, "added.example") }()
+	select {
+	case <-worker.entered:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not receive an in-flight request")
+	}
+	shutdownContext, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	closed := make(chan error, 1)
+	go func() { closed <- f.Close(shutdownContext) }()
+	select {
+	case <-worker.beginDrained:
+	case <-time.After(time.Second):
+		t.Fatal("parent close did not fence the worker")
+	}
+	if status := fleetStatus(f, "added.example"); status != http.StatusServiceUnavailable {
+		t.Fatalf("parent close admitted a new request: %d", status)
+	}
+	select {
+	case err := <-closed:
+		t.Fatalf("parent close returned before drain: %v", err)
+	default:
+	}
+	close(worker.release)
+	if status := <-inflight; status != http.StatusNoContent {
+		t.Fatalf("existing request status=%d", status)
+	}
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	if worker.Alive() {
+		t.Fatal("parent close left worker alive")
+	}
+	if err := f.Refresh(t.Context()); !errors.Is(err, ErrFleetClosed) {
+		t.Fatalf("closed fleet refresh error=%v", err)
 	}
 }

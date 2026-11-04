@@ -285,7 +285,7 @@ def approval(approval_id, action, expected):
     return receipt
 
 
-def probe(host, path, expected, public=False):
+def probe(host, path, expected, public=False, loopback='127.0.0.1:7702'):
     if public:
         request = urllib.request.Request('https://' + host + path, method='GET')
         class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -297,7 +297,9 @@ def probe(host, path, expected, public=False):
         except urllib.error.HTTPError as error:
             code = error.code
     else:
-        conn = http.client.HTTPConnection('127.0.0.1', 7702, timeout=5)
+        local_host, separator, local_port = loopback.rpartition(':')
+        require(separator == ':' and local_host == '127.0.0.1' and local_port.isdigit(), 'invalid loopback probe target')
+        conn = http.client.HTTPConnection(local_host, int(local_port), timeout=5)
         try:
             conn.request('GET', path, headers={'Host': host})
             response = conn.getresponse()
@@ -312,10 +314,13 @@ def require_runtime(path, digest):
     require(current.get('runtime_verified') is True and current['active'] == 'active' and current['restarts'] == 0 and current['runtime_path'] == path and current['binary_sha256'] == digest, 'runtime mismatch or restart')
 
 
-def ready(host, legacy=False):
+def ready(host, legacy=False, loopback='127.0.0.1:7702', public_resource_metadata=False):
     for endpoint, code in (('/healthz', 200), ('/readyz', 200), ('/mcp', 401), ('/.well-known/oauth-protected-resource' if legacy else '/.well-known/oauth-protected-resource/mcp', 200)):
-        probe(host, endpoint, code)
-    for endpoint, code in (('/healthz', 200), ('/readyz', 200), ('/mcp', 401)):
+        probe(host, endpoint, code, loopback=loopback)
+    public_endpoints = [('/healthz', 200), ('/readyz', 200), ('/mcp', 401)]
+    if public_resource_metadata:
+        public_endpoints.append(('/.well-known/oauth-protected-resource/mcp', 200))
+    for endpoint, code in public_endpoints:
         probe(host, endpoint, code, True)
 
 
@@ -331,24 +336,34 @@ def healthy(path, digest, hosts, legacy=False):
             unready(host)
 
 
-def healthy_fleet_state_vector(path, digest, vector):
+def blue_green_probe_target(plan, color):
+    require(plan == BLUE_GREEN_PLAN and color in ('green', 'blue'), 'unreviewed blue-green probe target')
+    return plan[color]['loopback']
+
+
+def healthy_fleet_state_vector(path, digest, vector, plan=BLUE_GREEN_PLAN, color='green'):
     """Strictly check the frozen blue/green baseline, in declared order."""
     require(vector == fleet_state_vector(), 'fleet state vector is not frozen')
     require_runtime(path, digest)
+    loopback = blue_green_probe_target(plan, color)
     for row in vector:
         if row['state'] == 'ready':
-            ready(row['host'])
+            ready(row['host'], loopback=loopback, public_resource_metadata=True)
         elif row['state'] == 'tenant_unavailable':
-            unready(row['host'])
+            unready(row['host'], loopback=loopback)
         else:
             raise ValueError('unknown fleet state')
 
 
-def unready(host):
+def unready(host, loopback='127.0.0.1:7702'):
     for public in (False, True):
         for endpoint in ('/healthz', '/readyz', '/mcp', '/.well-known/oauth-protected-resource/mcp'):
-            conn = (http.client.HTTPSConnection(host, timeout=5) if public else
-                    http.client.HTTPConnection('127.0.0.1', 7702, timeout=5))
+            if public:
+                conn = http.client.HTTPSConnection(host, timeout=5)
+            else:
+                local_host, separator, local_port = loopback.rpartition(':')
+                require(separator == ':' and local_host == '127.0.0.1' and local_port.isdigit(), 'invalid loopback probe target')
+                conn = http.client.HTTPConnection(local_host, int(local_port), timeout=5)
             try:
                 conn.request('GET', endpoint, headers={'Host': host})
                 response = conn.getresponse()
