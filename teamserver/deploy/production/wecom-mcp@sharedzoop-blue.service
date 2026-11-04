@@ -10,7 +10,9 @@ Group=wecom-mcp-gmzoop
 EnvironmentFile=/etc/wecom-mcp/gmzoop.env
 Environment=GOMEMLIMIT=512MiB
 Environment=GOGC=75
-ExecStart=/home/product/services/mcp/wecom/current/wecom-mcp-team --gnas-discovery-policy /dev/null
+# This template must not start a service until the separately reviewed executor
+# installs its immutable release-specific drop-in.
+ExecStart=/usr/bin/false
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
