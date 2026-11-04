@@ -8,7 +8,7 @@
 - blue：`wecom-mcp@sharedzoop-blue.service`，`127.0.0.1:7703`，`/home/product/services/mcp/wecom/state/discovery-blue`；blue drop-in 强制 `--gnas-ready-worker-isolation`、独立 state root、`KillMode=control-group`、30 秒停止界限。
 - 入口：root-owned `wecom-mcp-loopback-switch` 只原子替换 `/var/lib/wecom-mcp-release/entrypoint/active.json` 中的 green/blue loopback receipt。`wecom-mcp-loopback-gateway` 是唯一的受控 receipt consumer：每一个请求都重新验证该 root-owned receipt，再只代理到 green `7702` 或 blue `7703`，并添加固定、无敏感内容的 `X-WeCom-MCP-Loopback-Color` response header。executor 必须在公开向量中读到该颜色，因而旧的直连 route 不能伪造切换成功。它监听候选 `127.0.0.1:7704`；`7701` 已被现有服务占用，绝不复用。它不读写 Nginx。
 
-blue executor 在启动 blue 后先验证冻结向量 `[ready, tenant_unavailable, ready]` 的 **7703 本地**合同；只有成功后才调用 switch。切换后验证所有公开入口（包括 resource metadata）。失败时先切回 green、读回 green 公开向量和原 green 基线，再停止 blue；任一 green 回读失败时 blue 保持运行并显式失败，不能把 receipt 文件本身当作切回成功。若失败发生在 blue start 之前，事务会恢复 blue drop-in 并 daemon-reload，不触碰 green/blue 进程。
+blue executor 在启动 blue 后先验证冻结向量 `[ready, tenant_unavailable, ready]` 的 **7703 本地**合同；只有成功后才调用 switch。切换后对每个 host 的 `healthz`、`readyz`、`mcp`、resource metadata（包括 unavailable 503 路由）逐项验证状态和 gateway color header，不能只凭 `/healthz` 代表真实 MCP 路由。失败时先切回 green、读回 green 公开向量和原 green 基线，再停止 blue；任一 green 回读失败时 blue 保持运行并显式失败，不能把 receipt 文件本身当作切回成功。正常 rollback 在同样的 green 验证、blue stop 后删除 managed blue drop-in 并 daemon-reload，确保下一次 deploy 不会撞到旧 override。若失败发生在 blue start 之前，事务会恢复 blue drop-in 并 daemon-reload，不触碰 green/blue 进程。
 
 ## 安装前硬门槛
 

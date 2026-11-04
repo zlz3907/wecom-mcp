@@ -77,9 +77,18 @@ class BlueGreenExecutorTests(unittest.TestCase):
         with patch.object(b, 'gateway_public_color') as color, patch.object(b.c, 'probe') as probe, patch.object(b.c, 'unready') as unready:
             b.check_vector('green', True)
         self.assertEqual(color.call_args_list, [
-            call('green', 'mcp.wesiyu.com', 200),
-            call('green', 'mcp.jianpinke.com', 503),
-            call('green', 'mcp.rtyouth.com', 200),
+            call('green', 'mcp.wesiyu.com', '/healthz', 200),
+            call('green', 'mcp.wesiyu.com', '/readyz', 200),
+            call('green', 'mcp.wesiyu.com', '/mcp', 401),
+            call('green', 'mcp.wesiyu.com', '/.well-known/oauth-protected-resource/mcp', 200),
+            call('green', 'mcp.jianpinke.com', '/healthz', 503),
+            call('green', 'mcp.jianpinke.com', '/readyz', 503),
+            call('green', 'mcp.jianpinke.com', '/mcp', 503),
+            call('green', 'mcp.jianpinke.com', '/.well-known/oauth-protected-resource/mcp', 503),
+            call('green', 'mcp.rtyouth.com', '/healthz', 200),
+            call('green', 'mcp.rtyouth.com', '/readyz', 200),
+            call('green', 'mcp.rtyouth.com', '/mcp', 401),
+            call('green', 'mcp.rtyouth.com', '/.well-known/oauth-protected-resource/mcp', 200),
         ])
         self.assertTrue(probe.called)
         unready.assert_called_once()
@@ -185,6 +194,22 @@ class BlueGreenExecutorTests(unittest.TestCase):
             b.cleanup_failed_deploy(manifest, {'ignored': True}, None, False)
         restore.assert_called_once()
         run.assert_not_called(); vector.assert_not_called()
+
+    def test_rollback_removes_managed_dropin_after_verified_green_and_blue_stop(self):
+        manifest = dict(self.manifest, files={'wecom-mcp-team': 'f' * 64, 'blue.conf': 'e' * 64, 'plan.json': 'd' * 64})
+        green = {'runtime_verified': True, 'active': 'active', 'restarts': 0,
+                 'runtime_path': manifest['expected_runtime_path'], 'binary_sha256': manifest['expected_binary_sha256'],
+                 'unit_fingerprint': manifest['expected_unit_fingerprint'], 'runtime_config_fingerprint': manifest['expected_runtime_config_fingerprint']}
+        state = {'color': 'blue'}; calls = []
+        def switch(target, expected):
+            self.assertEqual(state['color'], expected); state['color'] = target; calls.append(('switch', target))
+        def run(*args): calls.append(args); return ''
+        with patch.object(b, 'verify', return_value=manifest), patch.object(b.c, 'status', return_value=green), patch.object(b.c, 'baseline_matches', return_value=True), patch.object(b, 'control_plane_runtime'), patch.object(b, 'read_active', side_effect=lambda: dict(state)), patch.object(b.c, 'check_approval'), patch.object(b.c, 'approval'), patch.object(b, 'switch', side_effect=switch), patch.object(b, 'verify_green_continuity') as continuity, patch.object(b, 'run', side_effect=run), patch.object(b, 'blue_status', return_value={'ActiveState': 'inactive'}), patch.object(b, 'restore_dropin') as restore, patch.object(b.c, 'sha', return_value='s' * 64):
+            result = b.rollback(self.rid, 'APR-20261104T120000Z-testonly')
+        self.assertEqual(result['state'], 'green_restored')
+        continuity.assert_called_once_with(manifest, green)
+        self.assertLess(calls.index(('switch', 'green')), calls.index(('systemctl', 'stop', b.BLUE_UNIT)))
+        restore.assert_called_once_with(None, manifest['control_plane']['blue']['dropin_sha256'])
 
 
 if __name__ == '__main__':

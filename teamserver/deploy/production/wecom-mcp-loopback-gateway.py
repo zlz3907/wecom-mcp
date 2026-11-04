@@ -97,6 +97,7 @@ class ReceiptGatewayHandler(BaseHTTPRequestHandler):
         return
 
     def _proxy(self):
+        response_started = False
         try:
             host, port = self.server.receipt_reader()
             color = self.server.colors.get((host, port))
@@ -108,6 +109,16 @@ class ReceiptGatewayHandler(BaseHTTPRequestHandler):
                 upstream.request(self.command, self.path, body=request_body(self), headers=headers,
                                  encode_chunked=True)
                 response = upstream.getresponse()
+                # Bound the connect/request-header phase, but an MCP SSE
+                # response is intentionally long-lived.  After headers, each
+                # upstream event must be relayed as it arrives rather than
+                # timing out or waiting for a 64KiB buffer/EOF.
+                stream_socket = upstream.sock
+                if stream_socket is None:
+                    stream_socket = getattr(getattr(response, 'fp', None), 'raw', None)
+                    stream_socket = getattr(stream_socket, '_sock', None)
+                require(stream_socket is not None, 'upstream stream socket unavailable')
+                stream_socket.settimeout(None)
                 self.send_response(response.status)
                 for key, value in response.getheaders():
                     if key.lower() not in HOP_BY_HOP | {'content-length', COLOR_HEADER.lower()}:
@@ -118,20 +129,26 @@ class ReceiptGatewayHandler(BaseHTTPRequestHandler):
                 self.send_header(COLOR_HEADER, color)
                 self.send_header('Connection', 'close')
                 self.end_headers()
+                response_started = True
                 while True:
-                    data = response.read(64 * 1024)
+                    data = response.read1(64 * 1024)
                     if not data:
                         break
                     self.wfile.write(data)
-                self.wfile.flush()
+                    self.wfile.flush()
             finally:
                 upstream.close()
         except (OSError, ValueError, json.JSONDecodeError, http.client.HTTPException):
-            self.send_response(502)
-            self.send_header('Cache-Control', 'no-store')
-            self.send_header('Connection', 'close')
-            self.end_headers()
-            self.wfile.write(b'loopback gateway unavailable\n')
+            # Once a proxied status/headers have reached a client, appending a
+            # second HTTP response would corrupt an SSE/stream.  A peer close
+            # is therefore just a close; before headers we retain fail-closed
+            # generic 502 behavior without upstream details.
+            if not response_started:
+                self.send_response(502)
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self.wfile.write(b'loopback gateway unavailable\n')
         finally:
             self.close_connection = True
 

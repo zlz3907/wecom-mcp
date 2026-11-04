@@ -278,26 +278,29 @@ def check_vector(color, public):
     for row in executor_vector():
         if row['state'] == 'tenant_unavailable':
             if public:
-                gateway_public_color(color, row['host'], 503)
+                for path in ('/healthz', '/readyz', '/mcp', '/.well-known/oauth-protected-resource/mcp'):
+                    gateway_public_color(color, row['host'], path, 503)
                 c.unready(row['host'], loopback=loopback)
             else:
                 unavailable_local(row['host'], loopback)
             continue
         require(row['state'] == 'ready', 'unknown fleet state')
-        if public:
-            gateway_public_color(color, row['host'], 200)
         for path, code in (('/healthz', 200), ('/readyz', 200), ('/mcp', 401), ('/.well-known/oauth-protected-resource/mcp', 200)):
+            if public:
+                gateway_public_color(color, row['host'], path, code)
             c.probe(row['host'], path, code, public=public, loopback=loopback)
 
 
-def gateway_public_color(color, host, expected_code):
-    require(color in ('green', 'blue') and host in c.HOSTS and expected_code in (200, 503),
+def gateway_public_color(color, host, path, expected_code):
+    require(color in ('green', 'blue') and host in c.HOSTS
+            and path in ('/healthz', '/readyz', '/mcp', '/.well-known/oauth-protected-resource/mcp')
+            and expected_code in (200, 401, 503),
             'invalid gateway color probe')
     # The gateway adds this fixed non-sensitive response header only after it
     # has opened the root-owned receipt for this request.  Without it, status
     # codes alone cannot distinguish a still-direct public route from a real
     # atomic receipt cutover.
-    request = urllib.request.Request('https://' + host + '/healthz', method='GET')
+    request = urllib.request.Request('https://' + host + path, method='GET')
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
             return None
@@ -463,6 +466,7 @@ def rollback(release_id, approval_id):
     verify_green_continuity(manifest, green)
     run('systemctl', 'stop', BLUE_UNIT)
     require(blue_status().get('ActiveState') in ('inactive', 'failed'), 'blue unit did not stop')
+    restore_dropin(None, manifest['control_plane']['blue']['dropin_sha256'])
     return {'state': 'green_restored', 'release_id': release_id, 'green_restarted': False}
 
 
