@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -102,14 +103,26 @@ func startReadyWorker(ctx context.Context, binding team.LoadedFleetBinding, _ *s
 type subprocessReadyWorker struct {
 	proxy     *httputil.ReverseProxy
 	command   *exec.Cmd
+	address   string
 	done      chan struct{}
 	alive     atomic.Bool
+	admission sync.Mutex
+	accepting bool
+	inflight  int
+	drained   chan struct{}
+	drainOnce sync.Once
 	closeOnce sync.Once
 }
 
 func newSubprocessReadyWorker(command *exec.Cmd, address string) *subprocessReadyWorker {
 	target := &url.URL{Scheme: "http", Host: address}
-	worker := &subprocessReadyWorker{command: command, done: make(chan struct{})}
+	worker := &subprocessReadyWorker{
+		command:   command,
+		address:   address,
+		done:      make(chan struct{}),
+		accepting: true,
+		drained:   make(chan struct{}),
+	}
 	worker.alive.Store(true)
 	worker.proxy = &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
@@ -132,18 +145,76 @@ func newSubprocessReadyWorker(command *exec.Cmd, address string) *subprocessRead
 }
 
 func (w *subprocessReadyWorker) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	if !w.admit() {
+		readyWorkerUnavailable(response)
+		return
+	}
+	defer w.complete()
 	w.proxy.ServeHTTP(response, request)
 }
 
 func (w *subprocessReadyWorker) Alive() bool { return w.alive.Load() }
 
+// BeginDrain is deliberately separate from process termination.  Refresh
+// calls it before a revoked route is replaced, which makes stale router
+// snapshots reject new requests while already proxied requests can finish.
+func (w *subprocessReadyWorker) BeginDrain() {
+	w.admission.Lock()
+	w.accepting = false
+	if w.inflight == 0 {
+		w.markDrained()
+	}
+	w.admission.Unlock()
+}
+
+func (w *subprocessReadyWorker) admit() bool {
+	w.admission.Lock()
+	defer w.admission.Unlock()
+	if !w.accepting || !w.alive.Load() {
+		return false
+	}
+	w.inflight++
+	return true
+}
+
+func (w *subprocessReadyWorker) complete() {
+	w.admission.Lock()
+	defer w.admission.Unlock()
+	w.inflight--
+	if !w.accepting && w.inflight == 0 {
+		w.markDrained()
+	}
+}
+
+func (w *subprocessReadyWorker) markDrained() {
+	w.drainOnce.Do(func() { close(w.drained) })
+}
+
 func (w *subprocessReadyWorker) Close(ctx context.Context) error {
 	var closeErr error
 	w.closeOnce.Do(func() {
-		wasAlive := w.alive.Swap(false)
-		if wasAlive && w.command.Process != nil {
-			if err := w.command.Process.Signal(syscall.SIGTERM); err != nil {
-				closeErr = err
+		w.BeginDrain()
+		// SIGTERM is reserved for a failed bounded drain.  When existing
+		// proxy requests finish in time, SIGINT lets the child run its normal
+		// http.Server.Shutdown path instead of cutting an authenticated call
+		// off in the middle of its response.
+		select {
+		case <-w.drained:
+			if w.alive.Load() && w.command.Process != nil {
+				if err := w.command.Process.Signal(syscall.SIGINT); err != nil && !errors.Is(err, os.ErrProcessDone) {
+					closeErr = err
+				}
+			}
+		case <-ctx.Done():
+			w.terminate()
+			closeErr = ctx.Err()
+		}
+		if closeErr == nil {
+			select {
+			case <-w.done:
+			case <-ctx.Done():
+				w.terminate()
+				closeErr = ctx.Err()
 			}
 		}
 	})
@@ -151,15 +222,24 @@ func (w *subprocessReadyWorker) Close(ctx context.Context) error {
 	case <-w.done:
 		return closeErr
 	case <-ctx.Done():
-		if w.command.Process != nil {
-			_ = w.command.Process.Kill()
-		}
+		w.terminate()
 		select {
 		case <-w.done:
 		case <-time.After(time.Second):
 		}
 		return ctx.Err()
 	}
+}
+
+func (w *subprocessReadyWorker) terminate() {
+	if w.alive.Swap(false) && w.command.Process != nil {
+		_ = w.command.Process.Signal(syscall.SIGTERM)
+	}
+}
+
+func readyWorkerUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	http.Error(w, "MCP instance unavailable", http.StatusServiceUnavailable)
 }
 
 func killAndWait(command *exec.Cmd) {

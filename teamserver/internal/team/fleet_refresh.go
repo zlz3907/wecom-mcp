@@ -20,6 +20,11 @@ type FleetHandlerFactory func(Config) (http.Handler, error)
 type ReadyWorker interface {
 	http.Handler
 	Alive() bool
+	// BeginDrain makes the worker reject every request that has not already
+	// entered its proxy.  Refresh calls this before it publishes a revoked or
+	// replaced route, so a request holding an older router snapshot cannot
+	// bypass an authoritative removal.
+	BeginDrain()
 	Close(context.Context) error
 }
 
@@ -203,8 +208,16 @@ func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 	if f.listen == "" {
 		f.listen = listen
 	}
-	f.bindings, f.handlers = bindings, handlers
 	retired := f.retiredWorkers(workers)
+	// First fence the old worker's own admission path.  A request may have
+	// loaded the previous HostRouter immediately before the atomic publication
+	// below; this per-worker fence makes that request fail closed unless it was
+	// already in flight.  Do this before publishing the new router and before
+	// waiting for its bounded drain.
+	for _, worker := range retired {
+		worker.BeginDrain()
+	}
+	f.bindings, f.handlers = bindings, handlers
 	f.workers, f.workerFailures = workers, workerFailures
 	f.current.Store(&fleetSnapshot{router: router})
 	for _, worker := range retired {

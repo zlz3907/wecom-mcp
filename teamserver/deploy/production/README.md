@@ -12,6 +12,8 @@
 
 旧名称迁移必须先按 [单一共享服务改名](SHARED_SERVICE_MIGRATION.md) 执行；不可直接升级 controller 或重启旧二进制。动态租户可保持受隔离的未就绪 503，不能据此宣称客户端可用。
 
+Ready-worker isolation 的 blue/green 计划是另一个显式、默认关闭的候选合同，见 [READY_WORKER_BLUE_GREEN.md](READY_WORKER_BLUE_GREEN.md)。当前 shared-green 控制器会拒绝该 schema v3 候选，绝不会用它 restart 唯一的 shared green；尚未具备独立 blue unit、入口 switch 和回退控制器前，不得写 Binding 或开启 flag。
+
 ## 为什么不用普通 --fleet
 
 既有 `--fleet .../gmzoop/config/fleet.json --check-config` PASS 仅证明配置可加载。普通 fleet 使用既有 OAuth Basic introspection，不包含数据库发现的 Service JWT + 单 Binding digest、配置代际快照及动态撤路由语义。它不能作为满足这些强制规则的恢复基线。

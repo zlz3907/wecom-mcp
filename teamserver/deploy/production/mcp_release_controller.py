@@ -29,6 +29,37 @@ DROPIN = Path('/etc/systemd/system/wecom-mcp@sharedzoop.service.d/zz-managed-rel
 RUNTIME = BASE / 'instances/gmzoop/config/fleet-runtime-20260916.json'
 STATE = BASE / 'state/discovery'
 HOSTS = ('mcp.wesiyu.com', 'mcp.jianpinke.com', 'mcp.rtyouth.com')
+# This is an intentionally frozen pre-cutover baseline.  It is not inferred
+# from a transient health result: the candidate manifest and the one-time
+# receipt must repeat this exact vector before any future blue/green executor
+# may use ready-worker isolation.
+FLEET_STATE_VECTOR = (
+    {'host': HOSTS[0], 'state': 'ready'},
+    {'host': HOSTS[1], 'state': 'tenant_unavailable'},
+    {'host': HOSTS[2], 'state': 'ready'},
+)
+# The current controller owns only the shared green service.  These constants
+# describe the separately provisioned topology required for an isolation
+# promotion; they do not authorize this controller to create units, edit
+# Nginx, or restart the shared green process.
+BLUE_GREEN_PLAN = {
+    'version': 1,
+    'green': {'unit': UNIT, 'loopback': '127.0.0.1:7702', 'state_root': str(STATE)},
+    'blue': {
+        'unit': 'wecom-mcp@sharedzoop-blue.service',
+        'loopback': '127.0.0.1:7703',
+        'state_root': str(BASE / 'state/discovery-blue'),
+        'ready_worker_isolation': True,
+    },
+    'entrypoint': {
+        # This must be a separately provisioned, root-owned loopback switch.
+        # It is deliberately not an Nginx include or an editable public route.
+        'kind': 'preprovisioned-atomic-loopback-switch',
+        'active_color': 'green',
+        'receipt_path': str(CONTROL / 'entrypoint' / 'active.json'),
+    },
+    'shared_green_action': 'never-restart',
+}
 FILES = ('wecom-mcp-team', 'discovery-policy.json', 'service.conf', 'recovery.conf', 'manifest.json')
 RID = re.compile(r'^\d{8}T\d{6}Z-[a-f0-9]{12}$')
 SHA = re.compile(r'^[a-f0-9]{64}$')
@@ -50,6 +81,49 @@ def stream_hash(f):
     for block in iter(lambda: f.read(1 << 20), b''):
         h.update(block)
     return h.hexdigest()
+
+
+def canonical_json(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'))
+
+
+def fleet_state_vector():
+    # Return fresh JSON-shaped values so callers cannot mutate the frozen
+    # module constants before their digest is calculated.
+    return [dict(row) for row in FLEET_STATE_VECTOR]
+
+
+def fleet_state_vector_sha256(vector=None):
+    value = fleet_state_vector() if vector is None else vector
+    return hashlib.sha256(canonical_json(value).encode()).hexdigest()
+
+
+def isolation_manifest_fields():
+    vector = fleet_state_vector()
+    return {
+        'ready_worker_isolation': True,
+        'deployment_topology': 'blue-green-isolated-ready-worker',
+        'fleet_state_vector': vector,
+        'fleet_state_vector_sha256': fleet_state_vector_sha256(vector),
+        'blue_green_plan': BLUE_GREEN_PLAN,
+    }
+
+
+def verify_isolation_manifest(m):
+    """Validate an opt-in plan without enabling or applying it.
+
+    Schema v2 candidates remain the production-compatible default.  Schema v3
+    is a planning artifact for a future dedicated blue/green executor; it is
+    accepted for review/staging but the shared-green deploy action refuses it.
+    """
+    if m.get('schema_version') == 2:
+        require('ready_worker_isolation' not in m, 'legacy manifest cannot enable worker isolation')
+        return False
+    require(m.get('schema_version') == 3, 'unsupported manifest schema')
+    fields = isolation_manifest_fields()
+    require(all(m.get(key) == value for key, value in fields.items()), 'ready-worker isolation plan mismatch')
+    require(fleet_state_vector_sha256(m['fleet_state_vector']) == m['fleet_state_vector_sha256'], 'fleet state vector digest mismatch')
+    return True
 
 
 def regular(path, root=False):
@@ -139,13 +213,17 @@ def verify(directory, release_id):
     regular(directory / 'SHA256SUMS', True)
     require((directory / 'SHA256SUMS').read_text() == ''.join(sha(directory / name) + '  ' + name + '\n' for name in sorted(FILES)), 'candidate checksum mismatch')
     m = read_json(directory / 'manifest.json', True)
-    require(m.get('schema_version') == 2 and m.get('environment') == ENVIRONMENT and m.get('release_id') == release_id, 'manifest identity mismatch')
+    require(m.get('schema_version') in (2, 3) and m.get('environment') == ENVIRONMENT and m.get('release_id') == release_id, 'manifest identity mismatch')
+    isolated = verify_isolation_manifest(m)
     require(re.fullmatch(r'[a-f0-9]{40}', m.get('git_commit', '')) and re.fullmatch(r'[a-f0-9]{40}', m.get('git_tree', '')), 'invalid source identity')
     require(m.get('source_clean') is True and m.get('target') == 'linux/amd64', 'invalid build provenance')
     require(set(m.get('files', {})) == set(FILES[:-1]), 'unexpected artifact list')
     for name, digest in m['files'].items():
         regular(directory / name, True)
         require(SHA.fullmatch(digest) and sha(directory / name) == digest, 'artifact digest mismatch')
+    # A schema v3 artifact must not be accidentally used to restart the one
+    # shared green unit.  Its blue unit/switch are created only by the future
+    # dedicated executor described in BLUE_GREEN_PLAN.
     require((directory / 'service.conf').read_bytes() == dropin(release_id), 'unexpected service arguments')
     require((directory / 'recovery.conf').read_bytes() == recovery_dropin(release_id), 'unexpected recovery arguments')
     require(m.get('recovery_mode') == 'database-only' and m.get('recovery_hosts') == list(HOSTS), 'recovery scope missing')
@@ -153,6 +231,7 @@ def verify(directory, release_id):
     policy = read_json(directory / 'discovery-policy.json', True)
     require(set(policy) == {'version', 'api_whitelist'} and policy['version'] == 1, 'unexpected discovery policy')
     require(m.get('expected_runtime_path', '').startswith(str(RELEASES) + '/') and SHA.fullmatch(m.get('expected_binary_sha256', '')) and SHA.fullmatch(m.get('expected_unit_fingerprint', '')) and SHA.fullmatch(m.get('expected_runtime_config_fingerprint', '')), 'rollback baseline missing')
+    m['_ready_worker_isolation'] = isolated
     return m
 
 
@@ -228,20 +307,41 @@ def probe(host, path, expected, public=False):
     require(code == expected, 'health/auth contract failed')
 
 
-def healthy(path, digest, hosts, legacy=False):
+def require_runtime(path, digest):
     current = status()
     require(current.get('runtime_verified') is True and current['active'] == 'active' and current['restarts'] == 0 and current['runtime_path'] == path and current['binary_sha256'] == digest, 'runtime mismatch or restart')
+
+
+def ready(host, legacy=False):
+    for endpoint, code in (('/healthz', 200), ('/readyz', 200), ('/mcp', 401), ('/.well-known/oauth-protected-resource' if legacy else '/.well-known/oauth-protected-resource/mcp', 200)):
+        probe(host, endpoint, code)
+    for endpoint, code in (('/healthz', 200), ('/readyz', 200), ('/mcp', 401)):
+        probe(host, endpoint, code, True)
+
+
+def healthy(path, digest, hosts, legacy=False):
+    require_runtime(path, digest)
     for host in hosts:
         try:
-            for endpoint, code in (('/healthz', 200), ('/readyz', 200), ('/mcp', 401), ('/.well-known/oauth-protected-resource' if legacy else '/.well-known/oauth-protected-resource/mcp', 200)):
-                probe(host, endpoint, code)
-            for endpoint, code in (('/healthz', 200), ('/readyz', 200), ('/mcp', 401)):
-                probe(host, endpoint, code, True)
+            ready(host, legacy)
         except ValueError:
             # Only the reviewed, tenant-local unavailable route is allowed.
             # Authority failure and loss of the static tenant remain failures.
             require(host in HOSTS[1:] and not legacy, 'required static tenant unhealthy')
             unready(host)
+
+
+def healthy_fleet_state_vector(path, digest, vector):
+    """Strictly check the frozen blue/green baseline, in declared order."""
+    require(vector == fleet_state_vector(), 'fleet state vector is not frozen')
+    require_runtime(path, digest)
+    for row in vector:
+        if row['state'] == 'ready':
+            ready(row['host'])
+        elif row['state'] == 'tenant_unavailable':
+            unready(row['host'])
+        else:
+            raise ValueError('unknown fleet state')
 
 
 def unready(host):
@@ -365,12 +465,21 @@ def preflight_recovery(release_id):
 def deploy_fields(m, directory):
     expected = {k: m[k] for k in ('release_id', 'expected_runtime_path', 'expected_binary_sha256', 'expected_unit_fingerprint', 'expected_runtime_config_fingerprint', 'expected_gnas_release_id', 'expected_gnas_binary_sha256', 'expected_unmanaged_unit_fingerprint', 'recovery_mode', 'recovery_hosts')}
     expected.update(binary_sha256=m['files']['wecom-mcp-team'], manifest_sha256=sha(directory / 'manifest.json'), recovery_sha256=m['files']['recovery.conf'])
+    # The state vector is bound into any future isolation receipt, rather than
+    # being reinterpreted at execution time from an observed health response.
+    if m.get('_ready_worker_isolation') or m.get('ready_worker_isolation') is True:
+        expected.update({key: m[key] for key in ('ready_worker_isolation', 'deployment_topology', 'fleet_state_vector', 'fleet_state_vector_sha256', 'blue_green_plan')})
     return expected
 
 
 def deploy(release_id, approval_id):
     directory = RELEASES / release_id
     m = verify(directory, release_id)
+    # Do not turn an opt-in plan into a restart of the only shared green
+    # process.  The dedicated executor must prove independent unit, loopback,
+    # state-root and atomic-entrypoint capabilities before it is installed.
+    if m.get('_ready_worker_isolation'):
+        raise ValueError('blue-green isolation executor is not installed; shared green restart is prohibited')
     require(baseline_matches(status(), m), 'live baseline drift')
     require(m.get('ci_url', '').startswith('https://'), 'successful same-commit CI evidence required before deploy')
     check_gnas(m)

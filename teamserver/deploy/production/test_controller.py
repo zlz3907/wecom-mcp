@@ -134,6 +134,76 @@ class ControllerTests(unittest.TestCase):
         result=subprocess.run([sys.executable,'-O',str(Path(__file__).with_name('stage-candidate.py')),'--candidate',str(directory)],capture_output=True,text=True,env=env)
         self.assertNotEqual(result.returncode,0);self.assertIn('invalid release ID',result.stderr);self.assertFalse(marker.exists())
 
+    def test_ready_worker_isolation_manifest_freezes_state_and_blue_green_plan(self):
+        manifest = {'schema_version': 3, **c.isolation_manifest_fields()}
+        self.assertTrue(c.verify_isolation_manifest(manifest))
+        self.assertEqual(manifest['fleet_state_vector'], [
+            {'host': 'mcp.wesiyu.com', 'state': 'ready'},
+            {'host': 'mcp.jianpinke.com', 'state': 'tenant_unavailable'},
+            {'host': 'mcp.rtyouth.com', 'state': 'ready'},
+        ])
+        for mutate in (
+            lambda m: m['fleet_state_vector'].__setitem__(1, {'host': 'mcp.jianpinke.com', 'state': 'ready'}),
+            lambda m: m.__setitem__('fleet_state_vector_sha256', '0' * 64),
+            lambda m: m['blue_green_plan']['blue'].__setitem__('loopback', '127.0.0.1:7702'),
+            lambda m: m.__setitem__('deployment_topology', 'shared-restart'),
+        ):
+            bad = json.loads(json.dumps(manifest))
+            mutate(bad)
+            with self.assertRaises(ValueError):
+                c.verify_isolation_manifest(bad)
+        with self.assertRaises(ValueError):
+            c.verify_isolation_manifest({'schema_version': 2, 'ready_worker_isolation': True})
+
+    def test_isolation_receipt_fields_bind_frozen_vector(self):
+        required = ('release_id', 'expected_runtime_path', 'expected_binary_sha256', 'expected_unit_fingerprint', 'expected_runtime_config_fingerprint', 'expected_gnas_release_id', 'expected_gnas_binary_sha256', 'expected_unmanaged_unit_fingerprint', 'recovery_mode', 'recovery_hosts')
+        manifest = {
+            'release_id': '20260923T080000Z-' + 'a' * 12,
+            'files': {'wecom-mcp-team': 'a' * 64, 'recovery.conf': 'b' * 64},
+            **{key: ('database-only' if key == 'recovery_mode' else list(c.HOSTS) if key == 'recovery_hosts' else 'a' * 64 if key.endswith('fingerprint') or key.endswith('sha256') else '/release/path' if key == 'expected_runtime_path' else 'gnas') for key in required if key != 'release_id'},
+            **c.isolation_manifest_fields(),
+        }
+        (self.root / 'manifest.json').write_text('{}')
+        fields = c.deploy_fields(manifest, self.root)
+        self.assertTrue(fields['ready_worker_isolation'])
+        self.assertEqual(fields['fleet_state_vector'], c.fleet_state_vector())
+        self.assertEqual(fields['fleet_state_vector_sha256'], c.fleet_state_vector_sha256())
+        self.assertEqual(fields['blue_green_plan'], c.BLUE_GREEN_PLAN)
+
+    def test_isolation_receipt_rejects_state_vector_drift(self):
+        approvals = self.root / 'approvals'; approvals.mkdir()
+        aid = 'APR-20260923T080000Z-testonly'
+        now = dt.datetime.now(dt.timezone.utc)
+        expected = {'release_id': '20260923T080000Z-' + 'a' * 12, **c.isolation_manifest_fields()}
+        receipt = json.loads(json.dumps(dict(schema_version=1, environment=c.ENVIRONMENT, approval_id=aid, action='blue-green-plan', approved_by='test-admin', approved_at=(now-dt.timedelta(minutes=1)).isoformat(), expires_at=(now+dt.timedelta(hours=1)).isoformat(), **expected)))
+        path = approvals / (aid + '.json')
+        path.write_text(json.dumps(receipt)); path.chmod(0o400)
+        original = c.regular
+        with patch.object(c, 'APPROVALS', approvals), patch.object(c, 'regular', side_effect=lambda p,root=False:original(p,False)):
+            self.assertEqual(c.check_approval(aid, 'blue-green-plan', expected)['fleet_state_vector'], c.fleet_state_vector())
+            receipt['fleet_state_vector'][1]['state'] = 'ready'
+            path.chmod(0o600); path.write_text(json.dumps(receipt)); path.chmod(0o400)
+            with self.assertRaises(ValueError):
+                c.check_approval(aid, 'blue-green-plan', expected)
+
+    def test_shared_green_deploy_refuses_isolation_plan_before_runtime_calls(self):
+        rid = '20260923T080000Z-' + 'a' * 12
+        with patch.object(c, 'verify', return_value={'_ready_worker_isolation': True}), patch.object(c, 'status') as status:
+            with self.assertRaisesRegex(ValueError, 'shared green restart is prohibited'):
+                c.deploy(rid, 'APR-20260923T080000Z-testonly')
+            status.assert_not_called()
+
+    def test_frozen_state_vector_health_is_exact(self):
+        with patch.object(c, 'require_runtime') as runtime, patch.object(c, 'ready') as ready, patch.object(c, 'unready') as unready:
+            c.healthy_fleet_state_vector('/expected', 'a' * 64, c.fleet_state_vector())
+            runtime.assert_called_once_with('/expected', 'a' * 64)
+            self.assertEqual([call.args[0] for call in ready.call_args_list], ['mcp.wesiyu.com', 'mcp.rtyouth.com'])
+            unready.assert_called_once_with('mcp.jianpinke.com')
+        altered = c.fleet_state_vector()
+        altered[0]['state'] = 'tenant_unavailable'
+        with self.assertRaises(ValueError):
+            c.healthy_fleet_state_vector('/expected', 'a' * 64, altered)
+
 
 if __name__ == '__main__':
     unittest.main()
