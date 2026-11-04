@@ -75,6 +75,14 @@ class BlueGreenExecutorTests(unittest.TestCase):
         self.assertNotIn('--gnas-fleet-runtime', raw)
         self.assertNotIn('--config ', raw)
 
+    def test_blue_unit_has_conservative_bounded_resource_contract(self):
+        raw = (HERE / 'wecom-mcp@sharedzoop-blue.service').read_text()
+        self.assertIn('Environment=GOMEMLIMIT=80MiB', raw)
+        self.assertIn('MemoryHigh=96M', raw)
+        self.assertIn('MemoryMax=128M', raw)
+        self.assertIn('CPUQuota=20%', raw)
+        self.assertNotIn('MemoryMax=600M', raw)
+
     def test_public_vector_requires_gateway_color_attestation_before_probes(self):
         with patch.object(b, 'gateway_public_color') as color, patch.object(b.c, 'probe') as probe, patch.object(b.c, 'unready') as unready:
             b.check_vector('green', True)

@@ -8,7 +8,7 @@ Type=simple
 User=wecom-mcp-gmzoop
 Group=wecom-mcp-gmzoop
 EnvironmentFile=/etc/wecom-mcp/gmzoop.env
-Environment=GOMEMLIMIT=512MiB
+Environment=GOMEMLIMIT=80MiB
 Environment=GOGC=75
 # This template must not start a service until the separately reviewed executor
 # installs its immutable release-specific drop-in.
@@ -31,11 +31,11 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 ReadWritePaths=/home/product/services/mcp/wecom/state/discovery-blue
 
-MemoryHigh=500M
-MemoryMax=600M
+MemoryHigh=96M
+MemoryMax=128M
 TasksMax=96
 LimitNOFILE=4096
-CPUQuota=75%
+CPUQuota=20%
 
 [Install]
 WantedBy=multi-user.target
