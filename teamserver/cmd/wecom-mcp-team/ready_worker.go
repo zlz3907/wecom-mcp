@@ -24,6 +24,10 @@ import (
 
 const bindingWorkerMessageLimit = 64 << 10
 
+var readyWorkerCommand = func(executable string) *exec.Cmd {
+	return exec.Command(executable, "--gnas-ready-worker")
+}
+
 // startReadyWorker runs the same executable in a private child mode. The
 // child receives no credential over stdin or argv: OAuth credentials are read
 // from its inherited protected environment and its one ready response is
@@ -45,7 +49,7 @@ func startReadyWorker(ctx context.Context, binding team.LoadedFleetBinding, _ *s
 	if err != nil {
 		return nil, fmt.Errorf("ready worker executable unavailable")
 	}
-	command := exec.Command(executable, "--gnas-ready-worker")
+	command := readyWorkerCommand(executable)
 	command.Env = append(os.Environ(), "TEAM_MCP_WORKER_READY_TOKEN="+hex.EncodeToString(secret))
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -136,8 +140,8 @@ func (w *subprocessReadyWorker) Alive() bool { return w.alive.Load() }
 func (w *subprocessReadyWorker) Close(ctx context.Context) error {
 	var closeErr error
 	w.closeOnce.Do(func() {
-		w.alive.Store(false)
-		if w.command.Process != nil {
+		wasAlive := w.alive.Swap(false)
+		if wasAlive && w.command.Process != nil {
 			if err := w.command.Process.Signal(syscall.SIGTERM); err != nil {
 				closeErr = err
 			}
