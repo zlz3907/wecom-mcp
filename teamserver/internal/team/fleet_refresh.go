@@ -296,6 +296,25 @@ func (f *RefreshingFleet) localWorkerTransition(loaded []LoadedFleetBinding) boo
 }
 
 func sameBindingExceptRegistryReadiness(left, right LoadedFleetBinding) bool {
+	// Database discovery uses BindingID as a placeholder until it reads the
+	// active Registry instance name. Normalize only that one derived field,
+	// and only across an actual readiness transition; every authority, source,
+	// storage, policy and authentication field remains part of the comparison.
+	if left.RegistryUnavailable != right.RegistryUnavailable &&
+		left.Config.Runtime != nil && right.Config.Runtime != nil &&
+		left.Config.BoundRuntime == nil && right.Config.BoundRuntime == nil &&
+		left.Config.InstanceConfigPath == "" && right.Config.InstanceConfigPath == "" &&
+		left.Config.OAuth21ServiceJWT && right.Config.OAuth21ServiceJWT {
+		unready := left
+		if !left.RegistryUnavailable {
+			unready = right
+		}
+		if unready.Config.Runtime.InstanceName == unready.Binding.BindingID {
+			leftRuntime, rightRuntime := *left.Config.Runtime, *right.Config.Runtime
+			leftRuntime.InstanceName, rightRuntime.InstanceName = "", ""
+			left.Config.Runtime, right.Config.Runtime = &leftRuntime, &rightRuntime
+		}
+	}
 	left.RegistryUnavailable = false
 	right.RegistryUnavailable = false
 	return reflect.DeepEqual(left, right)
@@ -383,6 +402,15 @@ func (f *RefreshingFleet) drain(parent context.Context) error {
 	}
 }
 
+// refreshOnce gives discovery the same bounded budget used at initial startup.
+// Registry probes still run concurrently and are individually capped at 10s;
+// healthy published handlers remain usable while this read-only work runs.
+func (f *RefreshingFleet) refreshOnce(ctx context.Context) error {
+	refreshContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return f.Refresh(refreshContext)
+}
+
 // Run is synchronous and stops on cancellation. The caller owns its goroutine.
 // Reports contain no configuration or upstream response body.
 func (f *RefreshingFleet) Run(ctx context.Context, interval time.Duration, report func(error)) {
@@ -396,9 +424,7 @@ func (f *RefreshingFleet) Run(ctx context.Context, interval time.Duration, repor
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			refreshContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-			err := f.Refresh(refreshContext)
-			cancel()
+			err := f.refreshOnce(ctx)
 			if report != nil && ctx.Err() == nil {
 				report(err)
 			}

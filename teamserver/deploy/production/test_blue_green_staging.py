@@ -3,6 +3,8 @@ import importlib.util
 import hashlib
 import os
 import json
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -15,6 +17,20 @@ spec.loader.exec_module(s)
 
 
 class BlueGreenStagingTests(unittest.TestCase):
+    def test_installed_executor_loads_installed_controller_dependency(self):
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root)
+            for source, installed, _ in s.TARGETS:
+                if source in ('mcp_blue_green_executor.py', 'mcp_release_controller.py'):
+                    (target / installed.name).write_bytes((s.HERE / source).read_bytes())
+            program = ('import runpy; runpy.run_path(' + repr(str(target / 'mcp-blue-green-executor')) + '); print("loaded")')
+            result = subprocess.run([sys.executable, '-B', '-I', '-c', program],
+                                    capture_output=True, text=True, check=False)
+            self.assertNotIn('ModuleNotFoundError', result.stderr)
+            self.assertNotIn('FileNotFoundError', result.stderr)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('loaded', result.stdout)
+
     def green(self):
         return {
             'runtime_verified': True, 'active': 'active', 'restarts': 0,
@@ -67,7 +83,8 @@ class BlueGreenStagingTests(unittest.TestCase):
         target_parent.mkdir(mode=0o700)
         targets = tuple((source, target_parent / Path(target).name, mode)
                         for source, target, mode in s.TARGETS)
-        blue_state = root / 'state' / 'discovery-blue'
+        blue_state = root / 'state' / 'discovery'
+        blue_state.mkdir(mode=0o700, parents=True)
         active = control / 'entrypoint' / 'active.json'
         value = {
             'environment': 'fixture',
@@ -139,6 +156,9 @@ class BlueGreenStagingTests(unittest.TestCase):
         fixture = self.fixture()
         _, control, targets, blue_state, active, value, _, _ = fixture
         original_atomic = s.c.atomic
+        sentinel = blue_state / 'existing-journal.json'
+        sentinel.write_text('existing green state')
+        original_mode = blue_state.stat().st_mode
         failing_target = targets[1][1]
 
         def atomic(path, data, mode=0o644):
@@ -150,7 +170,9 @@ class BlueGreenStagingTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, 'fixture artifact failure'):
                 s.apply_inert('APR-20261104T120000Z-fixture', value)
             self.assertFalse(any(target.exists() for _, target, _ in targets))
-            self.assertFalse(blue_state.exists())
+            self.assertTrue(blue_state.is_dir())
+            self.assertEqual(sentinel.read_text(), 'existing green state')
+            self.assertEqual(blue_state.stat().st_mode, original_mode)
             self.assertFalse(active.parent.exists())
             self.assertFalse((control / 'blue-green-staging.APR-20261104T120000Z-fixture.json').exists())
 

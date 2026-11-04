@@ -24,6 +24,7 @@ c = b.c
 
 TARGETS = (
     ('mcp_blue_green_executor.py', Path('/usr/local/sbin/mcp-blue-green-executor'), 0o755),
+    ('mcp_release_controller.py', Path('/usr/local/sbin/mcp_release_controller.py'), 0o644),
     ('wecom-mcp-loopback-switch.py', b.SWITCHER, 0o755),
     ('wecom-mcp-loopback-gateway.py', b.GATEWAY, 0o755),
     ('wecom-mcp@sharedzoop-blue.service', b.BLUE_UNIT_FILE, 0o644),
@@ -134,7 +135,8 @@ def missing_directories(path):
 def state_directory_ok(path, uid, gid):
     value = path.lstat()
     require(path.is_dir() and path.resolve() == path and value.st_uid == uid and value.st_gid == gid
-            and value.st_mode & 0o777 == 0o700, 'blue state root ownership or mode mismatch')
+            and value.st_mode & 0o700 == 0o700 and not value.st_mode & 0o022,
+            'shared state root ownership or mode mismatch')
 
 
 def target_preflight(value):
@@ -146,9 +148,12 @@ def target_preflight(value):
         require(not temporary.exists() and not temporary.is_symlink(), 'staging temporary target already exists')
         targets.append({'source': source, 'target': str(target), 'mode': mode,
                         'sha256': value['artifacts'][str(target)]})
+    # Existing green state is shared and never created, chowned or rolled back.
+    uid, gid = service_identity()
+    state_directory_ok(b.BLUE_STATE, uid, gid)
     state_dirs = []
     seen = set()
-    for path in (b.BLUE_STATE, b.ACTIVE.parent):
+    for path in (b.ACTIVE.parent,):
         for missing in missing_directories(path):
             if str(missing) not in seen:
                 state_dirs.append(missing)
@@ -282,9 +287,7 @@ def apply_inert(approval_id, value):
                 journal_value['created_dirs'].append(str(path))
                 write_journal(journal, journal_value)
             uid, gid = service_identity()
-            os.chown(b.BLUE_STATE, uid, gid)
-            os.chmod(b.BLUE_STATE, 0o700)
-            write_journal(journal, journal_value)
+            state_directory_ok(b.BLUE_STATE, uid, gid)
             for source, target, mode in TARGETS:
                 c.atomic(target, (HERE / source).read_bytes(), mode)
                 require(regular(target) == value['artifacts'][str(target)], 'installed artifact digest mismatch')

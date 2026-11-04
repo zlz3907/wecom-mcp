@@ -52,6 +52,7 @@ class BlueGreenExecutorTests(unittest.TestCase):
             self.assertEqual(got['release_id'], self.rid)
         for mutate in (
             lambda m: m['plan']['blue'].__setitem__('loopback', '127.0.0.1:7702'),
+            lambda m: m['control_plane']['controller'].__setitem__('path', '/tmp/untrusted-controller'),
             lambda m: m['fleet_state_vector'].__setitem__(1, {'host': 'mcp.jianpinke.com', 'state': 'ready'}),
             lambda m: m['control_plane']['gateway'].__setitem__('path', '/tmp/untrusted-gateway'),
         ):
@@ -66,8 +67,11 @@ class BlueGreenExecutorTests(unittest.TestCase):
             (self.directory / 'manifest.json').write_text(json.dumps(self.manifest))
             (self.directory / 'manifest.json').chmod(0o400)
 
-    def test_blue_dropin_has_distinct_state_listener_flag_and_cgroup(self):
+    def test_blue_dropin_shares_state_but_has_distinct_listener_and_cgroup(self):
         raw = b.blue_dropin(self.rid).decode()
+        self.assertEqual(b.BLUE_STATE, b.c.STATE)
+        self.assertEqual(b.PLAN['green']['state_root'], b.PLAN['blue']['state_root'])
+        self.assertIn('ReadWritePaths=' + str(b.c.STATE), raw)
         self.assertIn('--listen 127.0.0.1:7703', raw)
         self.assertIn('--gnas-ready-worker-isolation', raw)
         self.assertIn(str(b.BLUE_STATE), raw)
