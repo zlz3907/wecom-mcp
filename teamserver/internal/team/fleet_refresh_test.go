@@ -268,3 +268,176 @@ func TestDiscoveryFleetAcceptsEmptyAndRepopulates(t *testing.T) {
 		t.Fatal("empty fleet could not repopulate")
 	}
 }
+
+type fakeReadyWorker struct {
+	mu     sync.Mutex
+	alive  bool
+	status int
+	closes int
+}
+
+func (w *fakeReadyWorker) ServeHTTP(rw http.ResponseWriter, _ *http.Request) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.alive {
+		http.Error(rw, "worker unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	rw.WriteHeader(w.status)
+}
+
+func (w *fakeReadyWorker) Alive() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.alive
+}
+
+func (w *fakeReadyWorker) Close(context.Context) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.alive = false
+	w.closes++
+	return nil
+}
+
+func (w *fakeReadyWorker) stop() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.alive = false
+}
+
+func (w *fakeReadyWorker) closeCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.closes
+}
+
+func TestDiscoveryReadyWorkersIsolateNewHostsAndRevokeThem(t *testing.T) {
+	a, b, c, added := refreshTestBinding("a"), refreshTestBinding("b"), refreshTestBinding("c"), refreshTestBinding("added")
+	loaded := []LoadedFleetBinding{a, b, c}
+	var loadErr error
+	builds := 0
+	workerStarts := 0
+	var mode string
+	var latest *fakeReadyWorker
+	factory := func(ctx context.Context, binding LoadedFleetBinding) (ReadyWorker, error) {
+		workerStarts++
+		if binding.Binding.BindingID != "added" {
+			t.Fatalf("unexpected worker for existing tenant %q", binding.Binding.BindingID)
+		}
+		switch mode {
+		case "error":
+			return nil, errors.New("test isolated worker failure")
+		case "timeout":
+			<-ctx.Done()
+			return nil, ctx.Err()
+		default:
+			latest = &fakeReadyWorker{alive: true, status: http.StatusAccepted}
+			return latest, nil
+		}
+	}
+	f, err := NewDiscoveryFleetWithReadyWorkers(t.Context(), "127.0.0.1:17801", func(context.Context) ([]LoadedFleetBinding, error) {
+		return loaded, loadErr
+	}, func(Config) (http.Handler, error) {
+		builds++
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }), nil
+	}, factory, 5*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builds != 3 {
+		t.Fatalf("initial incumbents built=%d want 3", builds)
+	}
+	assertIncumbents := func(t *testing.T) {
+		t.Helper()
+		for _, host := range []string{"a.example", "b.example", "c.example"} {
+			if got := fleetStatus(f, host); got != http.StatusNoContent {
+				t.Fatalf("incumbent %s status=%d", host, got)
+			}
+		}
+	}
+	assertIncumbents(t)
+
+	// A complete snapshot may include an unready new Registry, but this must
+	// not start a worker, rebuild, or drain any incumbent.
+	added.RegistryUnavailable = true
+	loaded = []LoadedFleetBinding{a, b, c, added}
+	if err := f.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	assertIncumbents(t)
+	if got := fleetStatus(f, "added.example"); got != http.StatusServiceUnavailable || builds != 3 {
+		t.Fatalf("unready addition status=%d builds=%d", got, builds)
+	}
+
+	// Unready -> ready is promoted only after a successful independent worker.
+	added.RegistryUnavailable = false
+	loaded = []LoadedFleetBinding{a, b, c, added}
+	mode = "ready"
+	if err := f.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	assertIncumbents(t)
+	if got := fleetStatus(f, "added.example"); got != http.StatusAccepted || builds != 3 || latest == nil {
+		t.Fatalf("ready addition status=%d builds=%d worker=%v starts=%d", got, builds, latest != nil, workerStarts)
+	}
+
+	// A worker process exit cuts only that Host off, then the next successful
+	// complete snapshot retries it without reconstructing incumbents.
+	exited := latest
+	exited.stop()
+	if got := fleetStatus(f, "added.example"); got != http.StatusServiceUnavailable {
+		t.Fatalf("exited worker status=%d", got)
+	}
+	if err := f.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	assertIncumbents(t)
+	if got := fleetStatus(f, "added.example"); got != http.StatusAccepted || exited.closeCount() == 0 || builds != 3 {
+		t.Fatalf("worker recovery status=%d closes=%d builds=%d", got, exited.closeCount(), builds)
+	}
+
+	// Revocation (authoritative removal) must suppress the Host immediately
+	// and terminate its child; the three unrelated tenants keep serving.
+	revoked := latest
+	loaded = []LoadedFleetBinding{a, b, c}
+	if err := f.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	assertIncumbents(t)
+	if got := fleetStatus(f, "added.example"); got != http.StatusMisdirectedRequest || revoked.closeCount() == 0 || builds != 3 {
+		t.Fatalf("revoked status=%d closes=%d builds=%d", got, revoked.closeCount(), builds)
+	}
+
+	// Process-start error and timeout are local 503s, never a reason to use an
+	// old worker or drain existing authorization paths.
+	mode = "error"
+	loaded = []LoadedFleetBinding{a, b, c, added}
+	if err := f.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	assertIncumbents(t)
+	if got := fleetStatus(f, "added.example"); got != http.StatusServiceUnavailable || builds != 3 {
+		t.Fatalf("error addition status=%d builds=%d", got, builds)
+	}
+	mode = "timeout"
+	if err := f.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	assertIncumbents(t)
+	if got := fleetStatus(f, "added.example"); got != http.StatusServiceUnavailable || builds != 3 {
+		t.Fatalf("timeout addition status=%d builds=%d", got, builds)
+	}
+
+	// Conversely, a GNAS/discovery failure remains fleet-wide fail closed;
+	// workers cannot turn a rejected authority snapshot into stale access.
+	loadErr = errors.New("authoritative snapshot unavailable")
+	if err := f.Refresh(t.Context()); err == nil {
+		t.Fatal("source failure accepted")
+	}
+	for _, host := range []string{"a.example", "b.example", "c.example", "added.example"} {
+		if got := fleetStatus(f, host); got != http.StatusServiceUnavailable {
+			t.Fatalf("authority failure host=%s status=%d", host, got)
+		}
+	}
+}
