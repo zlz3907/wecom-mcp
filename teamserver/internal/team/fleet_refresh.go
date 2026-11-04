@@ -296,6 +296,25 @@ func (f *RefreshingFleet) localWorkerTransition(loaded []LoadedFleetBinding) boo
 }
 
 func sameBindingExceptRegistryReadiness(left, right LoadedFleetBinding) bool {
+	// Database discovery uses BindingID as a placeholder until it reads the
+	// active Registry instance name. Normalize only that one derived field,
+	// and only across an actual readiness transition; every authority, source,
+	// storage, policy and authentication field remains part of the comparison.
+	if left.RegistryUnavailable != right.RegistryUnavailable &&
+		left.Config.Runtime != nil && right.Config.Runtime != nil &&
+		left.Config.BoundRuntime == nil && right.Config.BoundRuntime == nil &&
+		left.Config.InstanceConfigPath == "" && right.Config.InstanceConfigPath == "" &&
+		left.Config.OAuth21ServiceJWT && right.Config.OAuth21ServiceJWT {
+		unready := left
+		if !left.RegistryUnavailable {
+			unready = right
+		}
+		if unready.Config.Runtime.InstanceName == unready.Binding.BindingID {
+			leftRuntime, rightRuntime := *left.Config.Runtime, *right.Config.Runtime
+			leftRuntime.InstanceName, rightRuntime.InstanceName = "", ""
+			left.Config.Runtime, right.Config.Runtime = &leftRuntime, &rightRuntime
+		}
+	}
 	left.RegistryUnavailable = false
 	right.RegistryUnavailable = false
 	return reflect.DeepEqual(left, right)

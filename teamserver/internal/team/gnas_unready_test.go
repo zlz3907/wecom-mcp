@@ -8,11 +8,171 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	instanceconfig "github.com/zhonglizhi/wecom-mcp-v2/internal/config"
 )
+
+func TestRealDiscoveryReadinessTransitionsDoNotDrainOtherTenants(t *testing.T) {
+	setupFleetOAuthEnvironment(t)
+	t.Setenv("GNAS_BASE_URL", "http://127.0.0.1:1")
+	t.Setenv("GNAS_APP_ID", "discovery-service")
+	t.Setenv("GNAS_APP_SECRET", "test-service-secret")
+	t.Setenv("GNAS_WECOM_TRANSPORT", "managed_executor")
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := NewGNASDiscovery(filepath.Join(root, "policy.json"), root, "127.0.0.1:17801")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindings := []gnasFleetBinding{unreadyVerifierBinding("a"), unreadyVerifierBinding("b")}
+	policy := DiscoveryPolicy{Version: 1, APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}}}
+	ready := false
+	d.resolveName = func(_ context.Context, runtime instanceconfig.Config) (string, error) {
+		if runtime.TenantRoute == "source-b" && !ready {
+			return "", errors.New("unready")
+		}
+		return "real-" + runtime.TenantRoute, nil
+	}
+	load := func(ctx context.Context) ([]LoadedFleetBinding, error) {
+		return d.assemble(ctx, signedGNASFleetPayload(t, bindings), policy)
+	}
+	hold, entered, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(hold) }) }
+	defer release()
+	builds, starts := 0, 0
+	failWorker := false
+	fleet, err := NewDiscoveryFleetWithReadyWorkers(t.Context(), d.listen, load, func(cfg Config) (http.Handler, error) {
+		builds++
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/hold" {
+				close(entered)
+				<-hold
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}), nil
+	}, func(_ context.Context, b LoadedFleetBinding) (ReadyWorker, error) {
+		starts++
+		if b.Config.Runtime.InstanceName != "real-source-b" {
+			return nil, errors.New("wrong discovered name")
+		}
+		if failWorker {
+			return nil, errors.New("worker start failed")
+		}
+		return &fakeReadyWorker{alive: true, status: http.StatusAccepted}, nil
+	}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fleet.bindings["b"].Config.Runtime.InstanceName; got != "b" {
+		t.Fatalf("unready placeholder=%q", got)
+	}
+	unreadyBinding := fleet.bindings["b"]
+	go func() {
+		defer close(finished)
+		w := httptest.NewRecorder()
+		fleet.ServeHTTP(w, httptest.NewRequest("GET", "https://a.example/hold", nil))
+	}()
+	<-entered
+	refresh := func() {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() { done <- fleet.Refresh(t.Context()) }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(time.Second):
+			release()
+			<-done
+			t.Fatal("readiness transition drained unrelated long request")
+		}
+		if got := fleetStatus(fleet, "a.example"); got != http.StatusNoContent {
+			t.Fatalf("incumbent status=%d", got)
+		}
+		select {
+		case <-finished:
+			t.Fatal("unrelated long request was interrupted")
+		default:
+		}
+	}
+	ready = true
+	refresh()
+	if got := fleet.bindings["b"].Config.Runtime.InstanceName; got != "real-source-b" {
+		t.Fatalf("ready name=%q", got)
+	}
+	readyBinding := fleet.bindings["b"]
+	if !sameBindingExceptRegistryReadiness(unreadyBinding, readyBinding) || !sameBindingExceptRegistryReadiness(readyBinding, unreadyBinding) {
+		t.Fatal("real discovery readiness transition was not isolated")
+	}
+	for name, mutate := range map[string]func(*LoadedFleetBinding){
+		"binding-source": func(v *LoadedFleetBinding) { v.Binding.Source = "other" },
+		"authority":      func(v *LoadedFleetBinding) { v.Config.GNASBindingDigest = "changed" },
+		"policy": func(v *LoadedFleetBinding) {
+			v.Config.Runtime.APIWhitelist = map[string][]string{"read": {"get_records"}}
+		},
+		"storage":        func(v *LoadedFleetBinding) { v.Config.Runtime.StatePath += "-other" },
+		"runtime-source": func(v *LoadedFleetBinding) { v.Config.Runtime.TenantRoute = "other" },
+	} {
+		changed := readyBinding
+		runtime := *readyBinding.Config.Runtime
+		changed.Config.Runtime = &runtime
+		mutate(&changed)
+		if sameBindingExceptRegistryReadiness(unreadyBinding, changed) {
+			t.Fatalf("%s drift was masked", name)
+		}
+	}
+	changed := readyBinding
+	runtime := *readyBinding.Config.Runtime
+	runtime.InstanceName = "different-ready-name"
+	changed.Config.Runtime = &runtime
+	if sameBindingExceptRegistryReadiness(readyBinding, changed) {
+		t.Fatal("ready identity change was masked")
+	}
+	badPlaceholder := unreadyBinding
+	badRuntime := *unreadyBinding.Config.Runtime
+	badRuntime.InstanceName = "unexpected-unready-identity"
+	badPlaceholder.Config.Runtime = &badRuntime
+	if sameBindingExceptRegistryReadiness(badPlaceholder, readyBinding) {
+		t.Fatal("unexpected unready identity change was masked")
+	}
+	staticReady := readyBinding
+	staticReady.Config.BoundRuntime = readyBinding.Config.Runtime
+	if sameBindingExceptRegistryReadiness(unreadyBinding, staticReady) {
+		t.Fatal("static runtime change was masked")
+	}
+	if got := fleetStatus(fleet, "b.example"); got != http.StatusAccepted || starts != 1 || builds != 1 {
+		t.Fatalf("ready status=%d starts=%d builds=%d", got, starts, builds)
+	}
+	// Force the next genuine discovery to re-probe and lose the Registry.
+	delete(d.instances, "b")
+	ready = false
+	refresh()
+	if got := fleet.bindings["b"].Config.Runtime.InstanceName; got != "b" {
+		t.Fatalf("unready placeholder=%q", got)
+	}
+	if got := fleetStatus(fleet, "b.example"); got != http.StatusServiceUnavailable {
+		t.Fatalf("unready status=%d", got)
+	}
+	ready, failWorker = true, true
+	refresh()
+	if got := fleetStatus(fleet, "b.example"); got != http.StatusServiceUnavailable || builds != 1 || starts != 2 {
+		t.Fatalf("failed worker status=%d builds=%d starts=%d", got, builds, starts)
+	}
+	failWorker = false
+	refresh()
+	if got := fleetStatus(fleet, "b.example"); got != http.StatusAccepted || builds != 1 || starts != 3 {
+		t.Fatalf("worker retry status=%d builds=%d starts=%d", got, builds, starts)
+	}
+	release()
+	<-finished
+}
 
 func TestDiscoveryUnreadyHostRecoversAndRevokesWithoutHealthyRebuild(t *testing.T) {
 	setupFleetOAuthEnvironment(t)
