@@ -140,7 +140,7 @@ func (s *Service) Handler(verifier sdkauth.TokenVerifier) http.Handler {
 			AuthorizationServers:   []string{s.config.OIDCIssuer},
 			ScopesSupported:        s.config.AdvertisedScopes,
 			BearerMethodsSupported: []string{"header"},
-			ResourceName:           "Guomai Aite WeCom Team MCP",
+			ResourceName:           "企业微信 MCP",
 		}
 		mux.Handle("/.well-known/oauth-protected-resource", sdkauth.ProtectedResourceMetadataHandler(metadata))
 		// Resource-specific discovery must match the URL in the challenge.

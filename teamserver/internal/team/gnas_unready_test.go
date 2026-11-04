@@ -145,3 +145,73 @@ func TestDiscoveryReadinessProbeDeadlineLeavesPublicationBudget(t *testing.T) {
 		t.Fatal("slow tenant exhausted shared discovery budget")
 	}
 }
+
+func TestPeriodicRefreshAllowsSlowReadyTenantWithoutInterruptingExisting(t *testing.T) {
+	setupFleetOAuthEnvironment(t)
+	t.Setenv("GNAS_BASE_URL", "http://127.0.0.1:1")
+	t.Setenv("GNAS_APP_ID", "discovery-service")
+	t.Setenv("GNAS_APP_SECRET", "test-service-secret")
+	t.Setenv("GNAS_WECOM_TRANSPORT", "managed_executor")
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := NewGNASDiscovery(filepath.Join(root, "policy.json"), root, "127.0.0.1:17801")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := func(id string) gnasFleetBinding {
+		return gnasFleetBinding{BindingID: id, PublicResource: "https://" + id + ".example", AuthorizationResource: "zoop", Source: "source-" + id, Plugins: gnasFleetPlugins{Zoop: &gnasFleetZoopPlugin{RegistryDocumentID: "registry-" + id, RegistryKey: "key-" + id}}}
+	}
+	started := make(chan struct{})
+	d.resolveName = func(ctx context.Context, runtime instanceconfig.Config) (string, error) {
+		switch runtime.TenantRoute {
+		case "source-slow":
+			close(started)
+			select {
+			case <-time.After(5300 * time.Millisecond):
+				return "ready-slow", nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		case "source-unready":
+			return "", errors.New("unavailable")
+		default:
+			return "ready-existing", nil
+		}
+	}
+	policy := DiscoveryPolicy{Version: 1, APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}}}
+	remote := []gnasFleetBinding{binding("existing")}
+	load := func(ctx context.Context) ([]LoadedFleetBinding, error) {
+		return d.assemble(ctx, signedGNASFleetPayload(t, remote), policy)
+	}
+	fleet, err := NewDiscoveryFleet(t.Context(), d.listen, load, func(Config) (http.Handler, error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote = append(remote, binding("slow"), binding("unready"))
+	result := make(chan error, 1)
+	go func() { result <- fleet.refreshOnce(t.Context()) }()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("slow discovery did not start")
+	}
+	check := func(host string, want int) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		fleet.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "https://"+host+"/mcp", nil))
+		if w.Code != want {
+			t.Fatalf("host %s: got %d want %d", host, w.Code, want)
+		}
+	}
+	check("existing.example", 204)
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	check("existing.example", 204)
+	check("slow.example", 204)
+	check("unready.example", 503)
+}
