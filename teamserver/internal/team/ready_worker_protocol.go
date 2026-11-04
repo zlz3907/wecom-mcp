@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"strings"
+
+	instanceconfig "github.com/zhonglizhi/wecom-mcp-v2/internal/config"
 )
 
 // BindingWorkerProtocolVersion is deliberately independent from the external
@@ -41,6 +44,18 @@ type BindingWorkerReady struct {
 	MAC           string `json:"mac"`
 }
 
+// BindingWorkerStart is private stdin data for the child process. Runtime
+// locators are needed to construct the fixed tenant handler, but are never
+// accepted from a browser, returned by an MCP endpoint, logged, or echoed in
+// the ready response. Credentials continue to be resolved by the child from
+// its inherited protected environment.
+type BindingWorkerStart struct {
+	Identity           BindingWorkerSpec      `json:"identity"`
+	Runtime            *instanceconfig.Config `json:"runtime,omitempty"`
+	BoundRuntime       *instanceconfig.Config `json:"bound_runtime,omitempty"`
+	InstanceConfigPath string                 `json:"instance_config_path,omitempty"`
+}
+
 // NewBindingWorkerSpec rejects drift between the authoritative route and the
 // Config that would be used to build the child.  It carries no tokens, keys,
 // registry coordinates, or Source references.
@@ -60,6 +75,78 @@ func NewBindingWorkerSpec(binding LoadedFleetBinding) (BindingWorkerSpec, error)
 		return BindingWorkerSpec{}, err
 	}
 	return spec, nil
+}
+
+func NewBindingWorkerStart(binding LoadedFleetBinding) (BindingWorkerStart, error) {
+	identity, err := NewBindingWorkerSpec(binding)
+	if err != nil {
+		return BindingWorkerStart{}, err
+	}
+	start := BindingWorkerStart{Identity: identity, InstanceConfigPath: binding.Config.InstanceConfigPath}
+	if binding.Config.Runtime != nil {
+		value := cloneWorkerRuntime(*binding.Config.Runtime)
+		start.Runtime = &value
+	}
+	if binding.Config.BoundRuntime != nil {
+		value := cloneWorkerRuntime(*binding.Config.BoundRuntime)
+		start.BoundRuntime = &value
+	}
+	if err := start.Validate(); err != nil {
+		return BindingWorkerStart{}, err
+	}
+	return start, nil
+}
+
+func (s BindingWorkerStart) Validate() error {
+	if err := s.Identity.Validate(); err != nil {
+		return err
+	}
+	if s.Runtime != nil && s.BoundRuntime != nil || s.Runtime == nil && s.BoundRuntime == nil {
+		return fmt.Errorf("binding worker runtime is invalid")
+	}
+	if s.Runtime != nil {
+		if s.InstanceConfigPath != "" || s.Runtime.Validate() != nil {
+			return fmt.Errorf("binding worker dynamic runtime is invalid")
+		}
+		return nil
+	}
+	if !filepath.IsAbs(s.InstanceConfigPath) || s.BoundRuntime.Validate() != nil {
+		return fmt.Errorf("binding worker bound runtime is invalid")
+	}
+	return nil
+}
+
+// LoadConfig constructs the same OAuth 2.1 service configuration inside the
+// child. It reconstructs credentials from the protected environment and
+// rejects any value that does not reproduce the parent-authenticated route.
+func (s BindingWorkerStart) LoadConfig(listen string) (Config, error) {
+	if err := s.Validate(); err != nil {
+		return Config{}, err
+	}
+	u, _ := url.Parse(s.Identity.PublicURL)
+	cfg, err := LoadConfigForBinding(s.InstanceConfigPath, listen, BindingOverrides{
+		Runtime: s.Runtime, BoundRuntime: s.BoundRuntime, OAuth21ServiceJWT: true,
+		GNASBindingDigest: s.Identity.BindingDigest, PublicURL: s.Identity.PublicURL,
+		OIDCIssuer: "https://" + u.Host + "/gnas/oauth", AuthorizationTenant: s.Identity.Tenant,
+		AuthorizationResource: s.Identity.Resource, Plugins: []string{"zoop"},
+	})
+	if err != nil {
+		return Config{}, fmt.Errorf("binding worker configuration is invalid")
+	}
+	if cfg.GNASBindingDigest != s.Identity.BindingDigest || cfg.AuthorizationTenant != s.Identity.Tenant || cfg.AuthorizationResource != s.Identity.Resource || cfg.PublicURL != s.Identity.PublicURL || !cfg.OAuth21ServiceJWT || cfg.AuthenticationMode != AuthenticationModeOAuth21 {
+		return Config{}, fmt.Errorf("binding worker configuration drift")
+	}
+	cfg.TrustedLoopbackProxy = true
+	return cfg, nil
+}
+
+func cloneWorkerRuntime(value instanceconfig.Config) instanceconfig.Config {
+	copy := value
+	copy.APIWhitelist = make(map[string][]string, len(value.APIWhitelist))
+	for group, operations := range value.APIWhitelist {
+		copy.APIWhitelist[group] = append([]string(nil), operations...)
+	}
+	return copy
 }
 
 func (s BindingWorkerSpec) Validate() error {
