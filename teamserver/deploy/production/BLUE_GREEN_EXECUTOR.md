@@ -14,7 +14,7 @@ blue executor 在启动 blue 后先验证冻结向量 `[ready, tenant_unavailabl
 
 这份仓库内容本身不授权安装。管理员必须另行完成并回读：
 
-1. root-owned executor、switcher、blue unit、gateway unit/gateway 程序的同提交 SHA；candidate manifest 精确绑定这些 SHA、release-specific drop-in SHA，以及 ACTIVE parent 的固定 root-owned 路径/权限策略摘要。安装时 executor 会重新读取 systemd FragmentPath/DropInPaths 和每个文件 SHA，不能以名字或 unit ActiveState 代替。
+1. root-owned executor、switcher、blue unit、gateway unit/gateway 程序的同提交 SHA；candidate manifest 精确绑定这些 SHA、release-specific drop-in SHA，以及 ACTIVE parent 的固定 root-owned 路径/权限策略摘要。manifest 和一次性 approval receipt 还逐字绑定 `git_commit`、`git_tree` 与 exact `ci_provenance`（run URL + 同一 commit/tree）；没有 exact CI 的本地构建只能 `ci_pending`，不能 verify/deploy。安装时 executor 会重新读取 systemd FragmentPath/DropInPaths 和每个文件 SHA，不能以名字或 unit ActiveState 代替。
 2. blue 的独立 cgroup、`KillMode=control-group`、7703 listener、state root ownership 和系统级 parent-stop 行为。
 3. gateway `127.0.0.1:7704` 已被预留为 green/blue 唯一可选后端；其公开入口 readback 能证明确实随 receipt 原子变化。若既有 public route 仍直连 `7702`，这条门槛不成立；executor 不会也不能修改 Nginx 来补救。
 4. 新 schema v1 blue candidate、同 commit CI、一次性精确 receipt、GNAS readiness、三租户向量和撤权读回。

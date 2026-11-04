@@ -9,10 +9,13 @@ every request; it is deliberately not cached.
 import http.client
 import json
 import os
+import queue
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import stat
 import sys
+import threading
 
 ACTIVE = Path('/var/lib/wecom-mcp-release/entrypoint/active.json')
 LISTEN = ('127.0.0.1', 7704)
@@ -20,6 +23,12 @@ COLORS = {'green': ('127.0.0.1', 7702), 'blue': ('127.0.0.1', 7703)}
 HOP_BY_HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
               'te', 'trailers', 'transfer-encoding', 'upgrade'}
 COLOR_HEADER = 'X-WeCom-MCP-Loopback-Color'
+# Keep local connect failure bounded, but align first-response and ordinary
+# response waits with the reviewed public MCP proxy_read_timeout.  A tool call
+# may legitimately take longer than the old 15s gateway default before it can
+# send its first headers/body.
+UPSTREAM_CONNECT_TIMEOUT_SECONDS = 15
+UPSTREAM_RESPONSE_HEADER_TIMEOUT_SECONDS = 3600
 
 
 def require(ok, message):
@@ -89,6 +98,45 @@ def request_body(handler):
         yield data
 
 
+def downstream_closed(connection):
+    """Non-destructively observe a downstream FIN/RST while SSE is silent."""
+    try:
+        flags = socket.MSG_PEEK | getattr(socket, 'MSG_DONTWAIT', 0)
+        value = connection.recv(1, flags)
+        # This gateway declares Connection: close.  A post-request downstream
+        # byte is therefore a pipelined/smuggled follow-up, not a request this
+        # stream may accept; treat it like a close rather than holding an
+        # upstream SSE open indefinitely.
+        return value == b'' or bool(value)
+    except (BlockingIOError, InterruptedError):
+        return False
+    except OSError:
+        return True
+
+
+def stream_reader(response, output, stopped):
+    """Read upstream in a worker so main can observe downstream disconnects."""
+    try:
+        while not stopped.is_set():
+            data = response.read1(64 * 1024)
+            item = ('eof', None) if not data else ('data', data)
+            while not stopped.is_set():
+                try:
+                    output.put(item, timeout=0.1)
+                    break
+                except queue.Full:
+                    continue
+            if not data:
+                return
+    except (OSError, http.client.HTTPException, AttributeError) as error:
+        while not stopped.is_set():
+            try:
+                output.put(('error', error), timeout=0.1)
+                return
+            except queue.Full:
+                continue
+
+
 class ReceiptGatewayHandler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
@@ -104,10 +152,16 @@ class ReceiptGatewayHandler(BaseHTTPRequestHandler):
             require(color in COLORS, 'receipt selected disallowed backend')
             headers = forwarded_headers(self.headers)
             headers['Host'] = self.headers.get('Host', '')
-            upstream = http.client.HTTPConnection(host, port, timeout=15)
+            upstream = http.client.HTTPConnection(host, port, timeout=UPSTREAM_CONNECT_TIMEOUT_SECONDS)
             try:
-                upstream.request(self.command, self.path, body=request_body(self), headers=headers,
-                                 encode_chunked=True)
+                upstream.connect()
+                require(upstream.sock is not None, 'upstream connect failed')
+                upstream.sock.settimeout(UPSTREAM_RESPONSE_HEADER_TIMEOUT_SECONDS)
+                has_body = (self.headers.get('Transfer-Encoding') is not None
+                            or self.headers.get('Content-Length') is not None)
+                upstream.request(self.command, self.path,
+                                 body=request_body(self) if has_body else None, headers=headers,
+                                 encode_chunked=has_body)
                 response = upstream.getresponse()
                 # Bound the connect/request-header phase, but an MCP SSE
                 # response is intentionally long-lived.  After headers, each
@@ -130,12 +184,40 @@ class ReceiptGatewayHandler(BaseHTTPRequestHandler):
                 self.send_header('Connection', 'close')
                 self.end_headers()
                 response_started = True
-                while True:
-                    data = response.read1(64 * 1024)
-                    if not data:
-                        break
-                    self.wfile.write(data)
-                    self.wfile.flush()
+                stopped = threading.Event()
+                chunks = queue.Queue(maxsize=1)
+                reader = threading.Thread(target=stream_reader, args=(response, chunks, stopped), daemon=True)
+                reader.start()
+                try:
+                    while True:
+                        try:
+                            kind, data = chunks.get(timeout=0.25)
+                        except queue.Empty:
+                            if downstream_closed(self.connection):
+                                return
+                            continue
+                        if kind == 'eof':
+                            return
+                        if kind == 'error':
+                            raise data
+                        self.wfile.write(data)
+                        self.wfile.flush()
+                finally:
+                    stopped.set()
+                    # For HTTP/1.1 responses delimited by Connection: close,
+                    # HTTPConnection may have transferred ownership of the
+                    # socket to HTTPResponse and set upstream.sock=None.
+                    # Close both layers so a silent client disconnect releases
+                    # the real upstream TCP stream, not merely its wrapper.
+                    response.close()
+                    try:
+                        stream_socket.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    stream_socket.close()
+                    upstream.close()
+                    reader.join(timeout=1)
+                    require(not reader.is_alive(), 'upstream reader did not stop')
             finally:
                 upstream.close()
         except (OSError, ValueError, json.JSONDecodeError, http.client.HTTPException):

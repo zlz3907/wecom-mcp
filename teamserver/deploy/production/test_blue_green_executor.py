@@ -30,6 +30,8 @@ class BlueGreenExecutorTests(unittest.TestCase):
             'deployment_topology': 'blue-green-isolated-ready-worker', 'plan': b.PLAN,
             'fleet_state_vector': b.executor_vector(), 'fleet_state_vector_sha256': b.c.fleet_state_vector_sha256(),
             'source_clean': True, 'target': 'linux/amd64', 'ci_url': 'https://ci.example/run',
+            'git_commit': 'e' * 40, 'git_tree': 'f' * 40,
+            'ci_provenance': {'run_url': 'https://ci.example/run', 'git_commit': 'e' * 40, 'git_tree': 'f' * 40},
             'files': {name: b.c.sha(self.directory / name) for name in b.FILES[:-1]},
             'expected_runtime_path': '/home/product/services/mcp/wecom/releases/20261103T000000Z-aaaaaaaaaaaa/wecom-mcp-team',
             'expected_binary_sha256': 'a' * 64, 'expected_unit_fingerprint': 'b' * 64,

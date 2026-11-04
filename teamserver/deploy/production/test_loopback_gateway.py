@@ -67,6 +67,35 @@ class Backend(BaseHTTPRequestHandler):
             self.wfile.write(b'data: after-idle\n\n'); self.wfile.flush()
             self.close_connection = True
             return
+        if self.path == '/late-headers':
+            # Regression boundary: a tool can need more than the historical
+            # 15s before producing *any* response headers/body.
+            time.sleep(15.2)
+            payload = b'late-first-packet'
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(payload)))
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            self.wfile.write(payload); self.wfile.flush()
+            self.close_connection = True
+            return
+        if self.path == '/silent-disconnect':
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            self.wfile.write(b'data: first\n\n'); self.wfile.flush()
+            self.server.first_event.set()
+            # Keep the upstream genuinely quiet long enough for the gateway's
+            # downstream-close monitor to run before the next event exists.
+            time.sleep(1)
+            try:
+                for _ in range(32):
+                    self.wfile.write(b'x' * 65536); self.wfile.flush()
+                    time.sleep(0.005)
+            except (BrokenPipeError, ConnectionResetError):
+                self.server.silent_upstream_closed.set()
+            return
         payload = (self.server.marker + ':' + self.headers.get('Host', '')).encode()
         self.send_response(200)
         self.send_header('Content-Length', str(len(payload)))
@@ -107,6 +136,7 @@ class LoopbackGatewayTests(unittest.TestCase):
         self.green.heartbeat_event = threading.Event()
         self.green.disconnect_release = threading.Event()
         self.green.upstream_closed = threading.Event()
+        self.green.silent_upstream_closed = threading.Event()
         self.green.stream_finish = threading.Event()
         self.green.heartbeat_delay = 0.25
         self.blue = ThreadingHTTPServer(('127.0.0.1', 0), Backend)
@@ -169,12 +199,12 @@ class LoopbackGatewayTests(unittest.TestCase):
             client.sendall(b'GET /events HTTP/1.1\r\nHost: mcp.wesiyu.com\r\nConnection: close\r\n\r\n')
             first = self.recv_until(client, b'data: first\n\n')
             self.assertIn(b'200 OK', first)
-            self.assertTrue(self.green.first_event.is_set())
+            self.assertTrue(self.green.first_event.wait(0.5))
             # The upstream intentionally remains open.  The heartbeat proves
             # the proxy does not wait for EOF or a 64KiB response buffer.
             heartbeat = self.recv_until(client, b': heartbeat\n\n')
             self.assertIn(b': heartbeat\n\n', heartbeat)
-            self.assertTrue(self.green.heartbeat_event.is_set())
+            self.assertTrue(self.green.heartbeat_event.wait(0.5))
         finally:
             self.green.stream_finish.set()
             client.close()
@@ -188,6 +218,17 @@ class LoopbackGatewayTests(unittest.TestCase):
             after_idle = self.recv_until(client, b'data: after-idle\n\n', timeout=17)
             self.assertGreaterEqual(time.monotonic() - started, 15)
             self.assertIn(b'data: after-idle\n\n', after_idle)
+        finally:
+            client.close()
+
+    def test_tool_response_headers_can_arrive_after_fifteen_seconds(self):
+        client = socket.create_connection(('127.0.0.1', self.gateway.server_port), timeout=1)
+        try:
+            started = time.monotonic()
+            client.sendall(b'GET /late-headers HTTP/1.1\r\nHost: mcp.wesiyu.com\r\nConnection: close\r\n\r\n')
+            response = self.recv_until(client, b'late-first-packet', timeout=17)
+            self.assertGreaterEqual(time.monotonic() - started, 15)
+            self.assertIn(b'200 OK', response)
         finally:
             client.close()
 
@@ -213,6 +254,29 @@ class LoopbackGatewayTests(unittest.TestCase):
             client.close()
         self.green.disconnect_release.set()
         self.assertTrue(self.green.upstream_closed.wait(2), 'gateway did not close upstream after client reset')
+
+    def test_client_reset_closes_silent_upstream_without_waiting_for_next_event(self):
+        original = g.downstream_closed
+        observed = threading.Event()
+        def monitored(connection):
+            value = original(connection)
+            if value:
+                observed.set()
+            return value
+        g.downstream_closed = monitored
+        client = socket.create_connection(('127.0.0.1', self.gateway.server_port), timeout=1)
+        try:
+            client.sendall(b'GET /silent-disconnect HTTP/1.1\r\nHost: mcp.wesiyu.com\r\nConnection: keep-alive\r\n\r\n')
+            self.recv_until(client, b'data: first\n\n')
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+        finally:
+            client.close()
+        try:
+            self.assertTrue(observed.wait(0.5), 'gateway did not observe client reset')
+            self.assertTrue(self.green.silent_upstream_closed.wait(3),
+                            'gateway left a silent upstream open after client reset')
+        finally:
+            g.downstream_closed = original
 
 
 if __name__ == '__main__':

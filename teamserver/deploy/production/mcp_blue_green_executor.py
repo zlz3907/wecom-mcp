@@ -40,6 +40,7 @@ ACTIVE = c.CONTROL / 'entrypoint/active.json'
 FILES = ('wecom-mcp-team', 'discovery-policy.json', 'blue.conf', 'plan.json', 'manifest.json')
 RID = c.RID
 GATEWAY_COLOR_HEADER = 'X-WeCom-MCP-Loopback-Color'
+GIT = re.compile(r'^[a-f0-9]{40}$')
 
 PLAN = {
     'version': 1,
@@ -226,7 +227,14 @@ def verify(directory, release_id):
     require(manifest.get('schema_version') == 1 and manifest.get('environment') == c.ENVIRONMENT and manifest.get('release_id') == release_id, 'manifest identity mismatch')
     require(manifest.get('deployment_topology') == 'blue-green-isolated-ready-worker' and manifest.get('plan') == PLAN, 'blue-green plan mismatch')
     require(manifest.get('fleet_state_vector') == executor_vector() and manifest.get('fleet_state_vector_sha256') == c.fleet_state_vector_sha256(), 'fleet state vector mismatch')
-    require(manifest.get('source_clean') is True and manifest.get('target') == 'linux/amd64' and manifest.get('ci_url', '').startswith('https://'), 'build provenance missing')
+    require(manifest.get('source_clean') is True and manifest.get('target') == 'linux/amd64'
+            and GIT.fullmatch(manifest.get('git_commit', '')) and GIT.fullmatch(manifest.get('git_tree', '')),
+            'build provenance missing')
+    ci = manifest.get('ci_provenance')
+    require(isinstance(ci, dict) and ci == {'run_url': manifest.get('ci_url'),
+            'git_commit': manifest['git_commit'], 'git_tree': manifest['git_tree']}
+            and isinstance(ci['run_url'], str) and ci['run_url'].startswith('https://'),
+            'exact CI provenance missing')
     validate_control_plane(manifest.get('control_plane'), release_id)
     require(manifest.get('control_plane_sha256') == control_plane_sha256(manifest['control_plane']),
             'control-plane manifest mismatch')
@@ -334,6 +342,8 @@ def expected_fields(manifest, directory):
         'fleet_state_vector_sha256': manifest['fleet_state_vector_sha256'], 'blue_unit': BLUE_UNIT,
         'blue_loopback': BLUE_LOOPBACK, 'green_unit': c.UNIT, 'green_action': 'never-restart',
         'control_plane_sha256': manifest['control_plane_sha256'],
+        'git_commit': manifest['git_commit'], 'git_tree': manifest['git_tree'],
+        'ci_provenance': manifest['ci_provenance'],
     }
 
 

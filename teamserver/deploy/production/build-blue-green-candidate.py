@@ -53,6 +53,10 @@ def main():
         'expected_gnas_release_id': args.expected_gnas_release_id, 'expected_gnas_binary_sha256': args.expected_gnas_binary_sha256,
         'ci_url': args.ci_url,
     }
+    if args.ci_url:
+        manifest['ci_provenance'] = {'run_url': args.ci_url, 'git_commit': commit, 'git_tree': tree}
+    else:
+        manifest['ci_provenance'] = None
     manifest['control_plane'] = b.control_plane(release_id)
     manifest['control_plane_sha256'] = b.control_plane_sha256(manifest['control_plane'])
     b.validate_control_plane(manifest['control_plane'], release_id)
