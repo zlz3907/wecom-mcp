@@ -48,7 +48,7 @@ BLUE_GREEN_PLAN = {
     'blue': {
         'unit': 'wecom-mcp@sharedzoop-blue.service',
         'loopback': '127.0.0.1:7703',
-        'state_root': str(BASE / 'state/discovery-blue'),
+        'state_root': str(STATE),
         'ready_worker_isolation': True,
     },
     'entrypoint': {

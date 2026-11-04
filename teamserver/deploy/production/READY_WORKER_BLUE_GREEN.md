@@ -23,9 +23,9 @@
 | 颜色 | systemd unit | loopback | state root | 进程参数 |
 | --- | --- | --- | --- | --- |
 | green | `wecom-mcp@sharedzoop.service` | `127.0.0.1:7702` | `/home/product/services/mcp/wecom/state/discovery` | 保持当前运行参数；**never restart** |
-| blue | `wecom-mcp@sharedzoop-blue.service` | `127.0.0.1:7703` | `/home/product/services/mcp/wecom/state/discovery-blue` | 数据库 discovery + `--gnas-ready-worker-isolation` + 有界 worker timeout |
+| blue | `wecom-mcp@sharedzoop-blue.service` | `127.0.0.1:7703` | `/home/product/services/mcp/wecom/state/discovery` | 数据库 discovery + `--gnas-ready-worker-isolation` + 有界 worker timeout |
 
-Blue 不能复用 green 的 unit、listener、state root、PID 或 lock 文件。Blue 必须由独立、root-owned 的安装流程预置；其 service definition、有效安全 sandbox、运行用户、环境文件引用和 state root ownership 都需要独立审查。这里没有也不会给出凭据内容。
+Blue 不能复用 green 的 unit、listener 或 PID；必须复用 green 的 state root 和幂等锁文件，以延续同一绑定状态。Blue 必须由独立、root-owned 的安装流程预置；其 service definition、有效安全 sandbox、运行用户、环境文件引用和 state root ownership 都需要独立审查。这里没有也不会给出凭据内容。
 
 父进程收到正常停止信号时，fleet 必须先 fence 全部 worker、把 fleet 标记为不可用、在同一个有界 shutdown context 内 drain/close child，再关闭父 HTTP server。对于 SIGKILL/父进程崩溃，blue unit 必须在真实 Linux 主机回读确认 cgroup 会一并终止 child（例如经审查的 `KillMode=control-group` 语义）；本地源码测试不能替代该运行事实。
 

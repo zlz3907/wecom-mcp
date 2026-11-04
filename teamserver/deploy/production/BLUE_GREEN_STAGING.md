@@ -3,7 +3,7 @@
 `prepare-blue-green-staging.py` 提供两个受控动作：
 
 - `--check`：root-only 只读门槛。读取 green 基线、blue/gateway 的 inactive 状态、工件 SHA、state/receipt 目标和 `MemAvailable`；只校验 `/etc/wecom-mcp/gmzoop.env` 的路径/所有权，**绝不读取、复制或打印**它的内容或任何凭据。
-- `--apply-inert <approval-id>`：仅在精确 root-owned approval 后写入静态 executor/switch/gateway/unit 文件，创建 blue state root 与 receipt parent。它明确不执行 `daemon-reload`、不启动 blue/gateway、不创建 active receipt、不写 Nginx/Binding/数据库，故没有公网或 MCP 流量。
+- `--apply-inert <approval-id>`：仅在精确 root-owned approval 后写入静态 executor/switch/gateway/unit 文件，检查已存在的共享 green state root 并创建 receipt parent。它明确不执行 `daemon-reload`、不启动 blue/gateway、不创建 active receipt、不写 Nginx/Binding/数据库，故没有公网或 MCP 流量。
 
 `--apply-inert` 与 green controller、blue executor 共用 `release.lock`，并在锁内先完成只读门槛与 exact approval 的一次性原子消费，再创建目录、chown 或写入任何 staging 工件。消费后的 journal 记录工件清单和已创建目录；中途失败只删除本次 journal 绑定且 digest 未漂移的文件/空目录，并清理 journal。成功 journal 保留不可变完成记录，同一 approval 的重试只做独立 digest/ownership 回读，不重复消费 approval；被中断的消费不会隐式换用新 approval。
 

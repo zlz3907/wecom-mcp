@@ -22,14 +22,20 @@ import urllib.error
 import urllib.request
 
 HERE = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location('controller', HERE / 'mcp_release_controller.py')
+CONTROLLER = HERE / 'mcp_release_controller.py'
+if os.geteuid() == 0:
+    info = CONTROLLER.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise ValueError('untrusted controller dependency')
+spec = importlib.util.spec_from_file_location('controller', CONTROLLER)
 c = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(c)
 
 BLUE_UNIT = 'wecom-mcp@sharedzoop-blue.service'
 BLUE_DROPIN = Path('/etc/systemd/system') / (BLUE_UNIT + '.d/zz-managed-blue-green.conf')
 BLUE_UNIT_FILE = Path('/etc/systemd/system') / BLUE_UNIT
-BLUE_STATE = c.BASE / 'state/discovery-blue'
+# Both colors must share the exact journal and flock paths for each binding.
+BLUE_STATE = c.STATE
 BLUE_LOOPBACK = '127.0.0.1:7703'
 GATEWAY_UNIT = 'wecom-mcp-loopback-gateway.service'
 GATEWAY_UNIT_FILE = Path('/etc/systemd/system') / GATEWAY_UNIT
@@ -110,6 +116,7 @@ def control_plane(release_id):
     return {
         'schema_version': 1,
         'executor': {'path': str(EXECUTOR), 'sha256': source_sha('mcp_blue_green_executor.py')},
+        'controller': {'path': '/usr/local/sbin/mcp_release_controller.py', 'sha256': source_sha('mcp_release_controller.py')},
         'switcher': {'path': str(SWITCHER), 'sha256': source_sha('wecom-mcp-loopback-switch.py')},
         'gateway': {
             'unit': GATEWAY_UNIT, 'unit_path': str(GATEWAY_UNIT_FILE),
@@ -139,9 +146,9 @@ def validate_control_plane(value, release_id):
     hashes through ``control_plane`` below.
     """
     require(isinstance(value, dict) and value.get('schema_version') == 1
-            and set(value) == {'schema_version', 'executor', 'switcher', 'gateway', 'blue', 'active_receipt_parent'},
+            and set(value) == {'schema_version', 'executor', 'controller', 'switcher', 'gateway', 'blue', 'active_receipt_parent'},
             'invalid control-plane shape')
-    for key, path in (('executor', EXECUTOR), ('switcher', SWITCHER)):
+    for key, path in (('executor', EXECUTOR), ('controller', Path('/usr/local/sbin/mcp_release_controller.py')), ('switcher', SWITCHER)):
         item = value.get(key)
         require(isinstance(item, dict) and item.get('path') == str(path)
                 and c.SHA.fullmatch(item.get('sha256', '')) and set(item) == {'path', 'sha256'},
@@ -205,6 +212,7 @@ def control_plane_runtime(manifest, phase):
     require(manifest.get('control_plane_sha256') == control_plane_sha256(value),
             'control-plane manifest mismatch')
     trusted_component(EXECUTOR, value['executor']['sha256'], 'executor')
+    trusted_component(Path(value['controller']['path']), value['controller']['sha256'], 'controller')
     trusted_component(SWITCHER, value['switcher']['sha256'], 'switcher')
     trusted_component(GATEWAY, value['gateway']['sha256'], 'gateway')
     unit_components(GATEWAY_UNIT, GATEWAY_UNIT_FILE, value['gateway']['unit_sha256'], [])

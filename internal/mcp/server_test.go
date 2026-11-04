@@ -167,6 +167,40 @@ func TestReserveSerializesIndependentProcesses(t *testing.T) {
 	}
 }
 
+func TestSharedJournalPreservesDifferentProcessReservationsAndRetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	keys := []string{"cross-process-distinct-key-one", "cross-process-distinct-key-two"}
+	results := make(chan string, len(keys))
+	for _, key := range keys {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestStateReservationProcessHelper$", "--")
+		cmd.Env = append(os.Environ(), "GNAS_STATE_RESERVATION_HELPER=1", "GNAS_STATE_RESERVATION_PATH="+path, "GNAS_STATE_RESERVATION_KEY="+key)
+		go func() {
+			out, err := cmd.CombinedOutput()
+			results <- fmt.Sprintf("%s %v", out, err)
+		}()
+	}
+	for range keys {
+		if got := <-results; !strings.Contains(got, "reserved") {
+			t.Fatalf("different-key reservation failed: %s", got)
+		}
+	}
+	state, err := loadState(path)
+	if err != nil || len(state.Entries) != len(keys) {
+		t.Fatalf("shared journal lost entries: %#v, %v", state, err)
+	}
+	if err := (&Server{}).completeStateWithOperator(path, keys[0], "same-digest", "same-operator"); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range keys {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestStateReservationProcessHelper$", "--")
+		cmd.Env = append(os.Environ(), "GNAS_STATE_RESERVATION_HELPER=1", "GNAS_STATE_RESERVATION_PATH="+path, "GNAS_STATE_RESERVATION_KEY="+key)
+		out, err := cmd.CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "error:") {
+			t.Fatalf("cross-process pending/completed retry was not refused: %s %v", out, err)
+		}
+	}
+}
+
 func TestCompleteStateReportsCorruptPersistence(t *testing.T) {
 	server := &Server{}
 	path := t.TempDir() + "/state.json"

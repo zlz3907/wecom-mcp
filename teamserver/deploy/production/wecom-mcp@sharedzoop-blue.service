@@ -29,7 +29,7 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
-ReadWritePaths=/home/product/services/mcp/wecom/state/discovery-blue
+ReadWritePaths=/home/product/services/mcp/wecom/state/discovery
 
 MemoryHigh=96M
 MemoryMax=128M
