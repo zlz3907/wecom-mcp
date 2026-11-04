@@ -193,6 +193,13 @@ class ControllerTests(unittest.TestCase):
                 c.deploy(rid, 'APR-20260923T080000Z-testonly')
             status.assert_not_called()
 
+    def test_shared_green_preflight_refuses_isolation_plan_before_systemd(self):
+        rid = '20260923T080000Z-' + 'a' * 12
+        with patch.object(c, 'verify', return_value={'_ready_worker_isolation': True}), patch.object(c, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'shared green preflight is prohibited'):
+                c.preflight_recovery(rid)
+            run.assert_not_called()
+
     def test_frozen_state_vector_health_is_exact(self):
         with patch.object(c, 'require_runtime') as runtime, patch.object(c, 'ready') as ready, patch.object(c, 'unready') as unready:
             c.healthy_fleet_state_vector('/expected', 'a' * 64, c.fleet_state_vector())

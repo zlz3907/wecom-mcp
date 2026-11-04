@@ -1,6 +1,6 @@
 # Ready-worker 隔离的 blue/green 合同（未部署）
 
-本文件只定义下一阶段受控发布的边界；不会安装 unit、创建 state root、修改 Nginx、切入口或重启任何服务。当前 `mcp_release_controller.py` 仍只能管理唯一的 shared green unit。因此它对 schema v3 的 ready-worker isolation 候选**明确拒绝 deploy**，不能把该候选错误降级为 restart shared green。
+本文件只定义下一阶段受控发布的边界；不会安装 unit、创建 state root、修改 Nginx、切入口或重启任何服务。当前 `mcp_release_controller.py` 仍只能管理唯一的 shared green unit。因此它对 schema v3 的 ready-worker isolation 候选**明确拒绝 deploy 和 shared-green preflight**，不能把该候选错误降级为 restart shared green。
 
 ## 默认与冻结基线
 

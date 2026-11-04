@@ -442,6 +442,11 @@ def stage(release_id):
 
 def preflight_recovery(release_id):
     m = verify(RELEASES / release_id, release_id)
+    # The temporary check unit shares the green runtime contract.  It cannot
+    # validate, start, or stop a planned isolated blue unit, so reject schema v3
+    # before any systemd command is issued.
+    if m.get('_ready_worker_isolation'):
+        raise ValueError('blue-green isolation executor is not installed; shared green preflight is prohibited')
     recovery_matches(m)
     # The candidate itself validates static recovery; no old binary is executed.
     run('systemd-run', '--quiet', '--wait', '--collect',
