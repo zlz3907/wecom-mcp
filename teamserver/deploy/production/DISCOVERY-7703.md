@@ -42,6 +42,39 @@ candidate and this fallback evidence, then re-read the live unit, process,
 fleet, and public route state before consuming a one-time receipt (maximum
 four hours). No receipt is created by this repository change.
 
+## Receipt contract (template only)
+
+The adapter reuses the existing root-owned receipt directory and one-time
+`used/` marker. The exact base fields are
+`schema_version=1`, `environment`, `approval_id`, `action`, `approved_by`,
+`approved_at`, and `expires_at`; `expires_at-approved_at` must be positive and
+no more than four hours. The action is `deploy` or `rollback` and the receipt
+must contain exactly these additional fields:
+
+```text
+release_id, binary_sha256, manifest_sha256,
+expected_runtime_path, expected_binary_sha256, expected_unit_fingerprint,
+expected_unmanaged_unit_fingerprint, expected_runtime_config_fingerprint,
+expected_gnas_release_id, expected_gnas_binary_sha256,
+recovery_mode, recovery_hosts, recovery_sha256,
+profile, service_unit, loopback, resources, public_hosts,
+observed_fleet_snapshot, readiness_file,
+expected_current_release_id, expected_current_binary_sha256,
+expected_previous_release_id, expected_previous_binary_sha256,
+expected_current_unit_fragment_sha256,
+expected_current_archive_sha256, expected_current_manifest_sha256,
+expected_current_catalogue_sha256, legacy_smoke_sha256
+```
+
+`rollback` additionally binds `source_override_sha256` and the live
+`expected_unit_fingerprint` observed immediately before recovery. The
+`approved_by` value, approval ID, timestamps, and any production receipt are
+left for the independent authorized administrator; this worktree does not
+invent or create them. The candidate archive SHA is independently reported by
+the check-only gate and must be copied into the external receipt binding by
+the admission/promotion controller; it is not embedded back into the archive
+because that would make a self-referential digest.
+
 ## Check-only / future controlled actions
 
 ```sh
