@@ -22,8 +22,10 @@ TEAM_MCP_CAPABILITY_INSTANCE_ID=<GNAS Binding 配置了 mcp_instance_id 时使�
 Fleet/discovery 模式从 GNAS 返回的 Binding 注入 binding/source/resource/instance
 身份，不接受进程外覆盖。启用后必须使用 `OAuth21ServiceJWT=true` 的既有
 `/gnas/service/getJwtToken` 方向；缺少身份、scope、Binding 或 digest 时启动/上报
-失败关闭。请求客户端禁止 HTTP 重定向；生产端点必须 HTTPS（仅 loopback 测试可用
-HTTP）。
+失败关闭。teamserver 启动后后台首次上报，成功每 5 分钟刷新；失败按 30 秒起、
+上限 5 分钟的有界退避重试。上报故障不会阻断 MCP 启动，也不会改变旧的
+`tools/list`/`tools/call`；只有 GNAS 管理目录在 TTL 后不可用。请求客户端禁止
+HTTP 重定向；生产端点必须 HTTPS（仅 loopback 测试可用 HTTP）。
 
 ## 上报合同
 
@@ -88,6 +90,17 @@ GNAS 需启用其独立、默认关闭的 `reportMCPCapabilityCatalogV1` 处理�
 页面只读取 MCP 上报的目录快照；它不得回调 MCP，也不得以 `tools/list` 替代目录。
 实际执行仍需 OAuth access token、正确 audience/resource/tenant 和现有
 `ResolveAuthorizationV1`/introspection 决策。
+
+`app_id` 不作为可伪造的 JSON 字段发送；它必须取自已验证 Service JWT。GNAS
+持久化层的实际唯一键必须把 authenticated `app_id` 放在下面字段之前：
+
+```text
+(app_id, binding_id, mcp_instance_id, source, public_resource, authorization_resource)
+```
+
+仅使用 Binding/resource/source 而不带 app_id 会在多个 ServiceApp 复用标识时产生
+目录串租风险；当前进程内候选若未包含 app_id，只能作为联调证据，不能作为多应用
+共享持久化实现。
 
 当前候选没有主体目录或成员写代理。成员必须由 GNAS 已绑定的 managed Source
 实时验证；AI 主体、项目成员、任务和撤权继续由 GNAS 独立的 subject/authorization

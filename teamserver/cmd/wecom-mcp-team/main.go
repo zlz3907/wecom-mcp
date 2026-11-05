@@ -291,10 +291,5 @@ func bindingHandler(cfg team.Config, logger *slog.Logger) (http.Handler, error) 
 	if err != nil {
 		return nil, err
 	}
-	if cfg.CapabilityCatalogPushEnabled {
-		if err := service.PushCapabilityCatalog(context.Background()); err != nil {
-			return nil, fmt.Errorf("MCP capability catalog report failed: %w", err)
-		}
-	}
 	return service.Handler(verifier), nil
 }

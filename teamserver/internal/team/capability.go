@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -21,9 +22,13 @@ import (
 )
 
 const (
-	capabilityCatalogSchemaVersion = "mcp-capability-catalog.v1"
-	capabilityCatalogPurpose       = "capability_catalog_report"
-	capabilityCatalogMaxBodyBytes  = 64 << 10
+	capabilityCatalogSchemaVersion   = "mcp-capability-catalog.v1"
+	capabilityCatalogPurpose         = "capability_catalog_report"
+	capabilityCatalogMaxBodyBytes    = 64 << 10
+	capabilityCatalogRefreshInterval = 5 * time.Minute
+	capabilityCatalogRetryBase       = 30 * time.Second
+	capabilityCatalogRetryMax        = 5 * time.Minute
+	capabilityCatalogAttemptTimeout  = 10 * time.Second
 )
 
 var capabilityCatalogIdentifier = regexp.MustCompile(`^[A-Za-z0-9_.\/-]{1,128}$`)
@@ -264,6 +269,52 @@ func (s *Service) PushCapabilityCatalog(ctx context.Context) error {
 		RequestID: requestID, Purpose: capabilityCatalogPurpose,
 	}
 	return postCapabilityCatalog(ctx, endpoint, token, report, catalog, client)
+}
+
+// runCapabilityCatalogReporter keeps the GNAS directory fresh without making
+// the MCP data plane depend on the directory. The first report is attempted in
+// the background; failures use bounded exponential retry and do not stop
+// tools/list or tools/call. GNAS TTL expiry therefore makes only its admin
+// catalog unavailable until a later report succeeds.
+func runCapabilityCatalogReporter(ctx context.Context, push func(context.Context) error, logger *slog.Logger, refreshInterval, retryBase, retryMax time.Duration) {
+	if ctx == nil || push == nil || refreshInterval <= 0 || retryBase <= 0 || retryMax < retryBase {
+		return
+	}
+	nextDelay := time.Duration(0)
+	retryDelay := retryBase
+	for {
+		timer := time.NewTimer(nextDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return
+		case <-timer.C:
+		}
+		attemptContext, cancel := context.WithTimeout(ctx, capabilityCatalogAttemptTimeout)
+		err := push(attemptContext)
+		cancel()
+		if err == nil {
+			nextDelay = refreshInterval
+			retryDelay = retryBase
+		} else {
+			if logger != nil {
+				// Do not log err: transport errors can contain endpoint details or
+				// upstream response text. The report is directory-only and must
+				// never expose tokens, keys or identity assertions.
+				logger.Warn("MCP capability catalog report unavailable")
+			}
+			nextDelay = retryDelay
+			retryDelay *= 2
+			if retryDelay > retryMax {
+				retryDelay = retryMax
+			}
+		}
+	}
 }
 
 func postCapabilityCatalog(ctx context.Context, endpoint, token string, report capabilityCatalogReport, catalog capabilityCatalog, client *http.Client) error {

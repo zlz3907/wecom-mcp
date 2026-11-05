@@ -210,3 +210,39 @@ func TestCapabilityCatalogRejectsRedirectAndTimeout(t *testing.T) {
 		t.Fatal("timeout was accepted")
 	}
 }
+
+func TestCapabilityCatalogReporterRetriesOfflineRecoversAndRefreshes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Millisecond)
+	defer cancel()
+	var attempts, successes int
+	runCapabilityCatalogReporter(ctx, func(context.Context) error {
+		attempts++
+		if attempts <= 2 {
+			return context.DeadlineExceeded
+		}
+		successes++
+		return nil
+	}, nil, 12*time.Millisecond, 4*time.Millisecond, 16*time.Millisecond)
+	if attempts < 5 || successes < 2 {
+		t.Fatalf("reporter did not recover and refresh: attempts=%d successes=%d", attempts, successes)
+	}
+}
+
+func TestCapabilityCatalogStartupFailureDoesNotBlockMCPHandler(t *testing.T) {
+	service := newCapabilityService(t, "http://127.0.0.1:1")
+	started := time.Now()
+	handler := service.Handler(nil)
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("capability reporting blocked handler startup: %s", elapsed)
+	}
+	managed, ok := handler.(*managedServiceHandler)
+	if !ok {
+		t.Fatal("feature-enabled service handler is not lifecycle-managed")
+	}
+	defer managed.Close()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://mcp.example.test/healthz", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("background report failure affected MCP health: status=%d", response.Code)
+	}
+}
