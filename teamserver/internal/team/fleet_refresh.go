@@ -40,6 +40,10 @@ type fleetSnapshot struct {
 	unavailable bool
 }
 
+type closableFleetHandler interface {
+	Close()
+}
+
 // RefreshingFleet publishes a complete validated generation at once. An
 // unsuccessful refresh disables serving until a complete refresh succeeds:
 // stale database authority must not keep a removed tenant available.
