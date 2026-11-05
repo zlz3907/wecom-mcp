@@ -46,6 +46,9 @@ func TestOAuthMetadataAndUnauthorizedChallenge(t *testing.T) {
 	if metadata["resource"] != "https://mcp.example.test/mcp" {
 		t.Fatalf("metadata=%#v", metadata)
 	}
+	if metadata["resource_name"] != "企业微信 MCP" {
+		t.Fatalf("unexpected resource name %v", metadata["resource_name"])
+	}
 }
 
 func TestTenantPrefixedOAuthMetadataAndChallenge(t *testing.T) {

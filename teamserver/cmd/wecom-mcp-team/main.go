@@ -23,6 +23,9 @@ func main() {
 	staticRecoveryURL := flag.String("gnas-static-only", "", "recover one protected runtime mapping at this exact public URL; retains Service JWT and authoritative revocation")
 	stateRoot := flag.String("gnas-state-root", "", "existing dedicated absolute state directory for database discovery")
 	gnasFleetRefresh := flag.Duration("gnas-fleet-refresh", 0, "GNAS refresh interval (minimum 5s); discovery defaults to 30s, runtime manifest defaults to disabled")
+	gnasReadyWorker := flag.Bool("gnas-ready-worker", false, "internal child-process mode for an authenticated GNAS fleet worker")
+	gnasReadyWorkerIsolation := flag.Bool("gnas-ready-worker-isolation", false, "opt in to isolate ready additions in authenticated child workers (GNAS discovery only)")
+	gnasReadyWorkerTimeout := flag.Duration("gnas-ready-worker-timeout", 5*time.Second, "maximum ready-worker start/stop time (1ms to 30s; requires --gnas-ready-worker-isolation)")
 	listenAddress := flag.String("listen", "", "listen address; defaults to TEAM_MCP_LISTEN_ADDR or 127.0.0.1:17801")
 	checkConfig := flag.Bool("check-config", false, "validate configuration and initialize local handlers without listening")
 	flag.Parse()
@@ -40,12 +43,25 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if *gnasReadyWorker {
+		workerContext, stopWorker := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stopWorker()
+		if err := runReadyWorker(workerContext, logger); err != nil {
+			logger.Error("ready worker initialization failed")
+			os.Exit(1)
+		}
+		return
+	}
 	if staticRecoveryExplicit && (*staticRecoveryURL == "" || *discoveryPolicy == "" || *gnasFleetRuntimePath == "") {
 		logger.Error("static recovery requires hybrid discovery configuration")
 		os.Exit(2)
 	}
 	if *gnasFleetRefresh < 0 || *gnasFleetRefresh > 0 && ((*gnasFleetRuntimePath == "" && *discoveryPolicy == "") || *gnasFleetRefresh < 5*time.Second) || *discoveryPolicy != "" && (*stateRoot == "" || *gnasFleetRefresh == 0) || *stateRoot != "" && *discoveryPolicy == "" {
 		logger.Error("invalid GNAS fleet refresh interval or mode")
+		os.Exit(2)
+	}
+	if *gnasReadyWorkerIsolation && *discoveryPolicy == "" || *gnasReadyWorkerTimeout <= 0 || *gnasReadyWorkerTimeout > 30*time.Second {
+		logger.Error("invalid ready worker isolation configuration")
 		os.Exit(2)
 	}
 	configuredModes := 0
@@ -80,9 +96,16 @@ func main() {
 			os.Exit(2)
 		}
 		loadContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		refreshingFleet, err = team.NewDiscoveryFleet(loadContext, discovery.ListenAddress(), discovery.Load, func(bindingConfig team.Config) (http.Handler, error) {
+		buildHandler := func(bindingConfig team.Config) (http.Handler, error) {
 			return bindingHandler(bindingConfig, logger.With("binding_id", bindingConfig.AuthorizationTenant))
-		})
+		}
+		if *gnasReadyWorkerIsolation {
+			refreshingFleet, err = team.NewDiscoveryFleetWithReadyWorkers(loadContext, discovery.ListenAddress(), discovery.Load, buildHandler, func(workerContext context.Context, binding team.LoadedFleetBinding) (team.ReadyWorker, error) {
+				return startReadyWorker(workerContext, binding, logger)
+			}, *gnasReadyWorkerTimeout)
+		} else {
+			refreshingFleet, err = team.NewDiscoveryFleet(loadContext, discovery.ListenAddress(), discovery.Load, buildHandler)
+		}
 		cancel()
 		if err != nil {
 			logger.Error("GNAS discovery initialization failed; check resolver, policy and existing Registry readiness")
@@ -211,8 +234,22 @@ func main() {
 	case <-signalContext.Done():
 		shutdownContext, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 		defer cancel()
-		if err := httpServer.Shutdown(shutdownContext); err != nil {
-			logger.Error("team MCP graceful shutdown failed", "error", err)
+		var fleetShutdownErr error
+		if refreshingFleet != nil {
+			// Fence ready-worker admissions before the parent HTTP server starts
+			// its own drain.  This prevents a child from receiving new requests
+			// while systemd is stopping the shared parent process.
+			fleetShutdownErr = refreshingFleet.Close(shutdownContext)
+		}
+		httpShutdownErr := httpServer.Shutdown(shutdownContext)
+		if fleetShutdownErr != nil {
+			logger.Error("team MCP ready-worker shutdown failed")
+		}
+		if httpShutdownErr != nil {
+			logger.Error("team MCP graceful shutdown failed", "error", httpShutdownErr)
+			os.Exit(1)
+		}
+		if fleetShutdownErr != nil {
 			os.Exit(1)
 		}
 		logger.Info("team MCP stopped")
