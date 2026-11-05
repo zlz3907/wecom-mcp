@@ -62,6 +62,8 @@ def main():
     (out / 'recovery.conf').write_bytes(d.recovery_dropin(rid))
     manifest = {
         'schema_version': 2,
+        'recovery_mode': 'database-only',
+        'recovery_hosts': list(d.HOSTS),
         'profile': d.PROFILE,
         'environment': d.ENVIRONMENT,
         'service_unit': d.UNIT,
