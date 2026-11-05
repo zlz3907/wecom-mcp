@@ -26,16 +26,18 @@ const serverInstructions = "Fixed-tenant Enterprise WeCom Smart Sheet service. W
 const oauth21ServerInstructions = "Fixed-tenant Enterprise WeCom MCP authenticated by GNAS OAuth 2.1. The browser login already resolves the current Enterprise WeCom employee and the server exposes only that employee's current authorized tools. Never ask the user for an API key, userid, identity_binding_id, verification code, tenant key, resource-server credential, or GNAS secret. Do not call identity-binding tools merely to authenticate this session. The configured Z-S09 AI execution subject remains separate from the verified human initiator; never substitute one for the other. If a tool is absent, treat it as not currently authorized and do not attempt to bypass the policy."
 
 type Service struct {
-	config                Config
-	legacy                *legacymcp.Server
-	definitions           []legacymcp.ToolDefinition
-	auditor               *Auditor
-	logger                *slog.Logger
-	serversMu             sync.Mutex
-	servers               map[string]*sdkmcp.Server
-	toolSlots             chan struct{}
-	authorizationResolver AuthorizationResolver
-	instructions          string
+	config                 Config
+	legacy                 *legacymcp.Server
+	definitions            []legacymcp.ToolDefinition
+	auditor                *Auditor
+	logger                 *slog.Logger
+	serversMu              sync.Mutex
+	servers                map[string]*sdkmcp.Server
+	toolSlots              chan struct{}
+	authorizationResolver  AuthorizationResolver
+	instructions           string
+	capabilityReporterMu   sync.Mutex
+	capabilityReporterStop context.CancelFunc
 }
 
 func NewService(cfg Config, logger *slog.Logger) (*Service, error) {
@@ -148,13 +150,54 @@ func (s *Service) Handler(verifier sdkauth.TokenVerifier) http.Handler {
 	}
 	mux.HandleFunc("/healthz", s.health)
 	mux.HandleFunc("/readyz", s.ready)
-	return requestIDMiddleware(securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	baseHandler := requestIDMiddleware(securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := s.legacy.CheckBoundRuntime(); err != nil {
 			writeStatus(w, http.StatusServiceUnavailable, "not_ready")
 			return
 		}
 		mux.ServeHTTP(w, r)
 	})))
+	if !s.config.CapabilityCatalogPushEnabled {
+		return baseHandler
+	}
+	s.startCapabilityCatalogReporter()
+	return &managedServiceHandler{Handler: baseHandler, stop: s.stopCapabilityCatalogReporter}
+}
+
+// managedServiceHandler lets a fleet close a replaced tenant generation. The
+// capability reporter is best-effort directory plumbing; closing it never
+// changes existing MCP request behavior.
+type managedServiceHandler struct {
+	http.Handler
+	stop func()
+	once sync.Once
+}
+
+func (h *managedServiceHandler) Close() {
+	if h == nil || h.stop == nil {
+		return
+	}
+	h.once.Do(h.stop)
+}
+
+func (s *Service) startCapabilityCatalogReporter() {
+	s.capabilityReporterMu.Lock()
+	defer s.capabilityReporterMu.Unlock()
+	if s.capabilityReporterStop != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.capabilityReporterStop = cancel
+	go runCapabilityCatalogReporter(ctx, s.PushCapabilityCatalog, s.logger, capabilityCatalogRefreshInterval, capabilityCatalogRetryBase, capabilityCatalogRetryMax)
+}
+
+func (s *Service) stopCapabilityCatalogReporter() {
+	s.capabilityReporterMu.Lock()
+	defer s.capabilityReporterMu.Unlock()
+	if s.capabilityReporterStop != nil {
+		s.capabilityReporterStop()
+		s.capabilityReporterStop = nil
+	}
 }
 
 func (s *Service) serverForRole(role Role) *sdkmcp.Server {

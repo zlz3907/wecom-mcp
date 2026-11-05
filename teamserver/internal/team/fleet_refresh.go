@@ -135,6 +135,7 @@ func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 	handlers := make(map[string]http.Handler, len(loaded))
 	workers := make(map[string]ReadyWorker, len(loaded))
 	workerFailures := make(map[string]bool, len(loaded))
+	previousHandlersToClose := make([]closableFleetHandler, 0)
 	isolate := f.localWorkerTransition(loaded)
 	started := make([]ReadyWorker, 0)
 	defer func() {
@@ -157,6 +158,9 @@ func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 		if binding.RegistryUnavailable {
 			// An authoritative but unready Host has no MCP/authentication handler,
 			// including metadata and health paths. Never reuse its prior service.
+			if previousHandler, ok := handler.(closableFleetHandler); ok {
+				previousHandlersToClose = append(previousHandlersToClose, previousHandler)
+			}
 			handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Cache-Control", "no-store")
 				http.Error(w, "MCP instance unavailable", http.StatusServiceUnavailable)
@@ -181,6 +185,9 @@ func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 		} else if oldWorker != nil && oldWorker.Alive() && reflect.DeepEqual(old, binding) {
 			workers[id] = oldWorker
 		} else if handler == nil || !reflect.DeepEqual(old, binding) || oldWorker != nil && !oldWorker.Alive() {
+			if previousHandler, ok := handler.(closableFleetHandler); ok {
+				previousHandlersToClose = append(previousHandlersToClose, previousHandler)
+			}
 			handler, err = f.build(binding.Config)
 			if err != nil {
 				return fmt.Errorf("fleet binding handler initialization failed")
@@ -217,6 +224,14 @@ func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 	if f.listen == "" {
 		f.listen = listen
 	}
+	for id, previousHandler := range f.handlers {
+		if _, stillPresent := handlers[id]; stillPresent {
+			continue
+		}
+		if closable, ok := previousHandler.(closableFleetHandler); ok {
+			previousHandlersToClose = append(previousHandlersToClose, closable)
+		}
+	}
 	retired := f.retiredWorkers(workers)
 	// First fence the old worker's own admission path.  A request may have
 	// loaded the previous HostRouter immediately before the atomic publication
@@ -231,6 +246,9 @@ func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 	f.current.Store(&fleetSnapshot{router: router})
 	for _, worker := range retired {
 		f.closeWorker(worker)
+	}
+	for _, previousHandler := range previousHandlersToClose {
+		previousHandler.Close()
 	}
 	return nil
 }
