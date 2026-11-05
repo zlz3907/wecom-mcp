@@ -101,7 +101,16 @@ def main():
     for file in out.iterdir():
         file.chmod(0o500 if file.name == 'wecom-mcp-team' else 0o400)
     out.chmod(0o500)
-    d.verify(out, rid)
+    # A developer build is not root-owned on macOS. Production admission will
+    # re-read the archive into a root-owned immutable directory and execute
+    # the same verifier there; local validation keeps every structural/SHA
+    # check while only relaxing ownership for this not-yet-admitted artifact.
+    original_regular = d.c.regular
+    d.c.regular = lambda path, root=False: original_regular(path, False)
+    try:
+        d.verify(out, rid)
+    finally:
+        d.c.regular = original_regular
     print(json.dumps({
         'state': 'candidate', 'profile': d.PROFILE, 'release_id': rid,
         'binary_sha256': manifest['files']['wecom-mcp-team'],
