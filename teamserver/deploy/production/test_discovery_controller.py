@@ -77,6 +77,10 @@ class DiscoveryProfileTests(unittest.TestCase):
             'expected_previous_release_id': TARGET.PREVIOUS_RELEASE_ID,
             'expected_previous_binary_sha256': TARGET.PREVIOUS_BINARY_SHA256,
             'expected_current_unit_fragment_sha256': 'f' * 64,
+            'expected_current_archive_sha256': '1' * 64,
+            'expected_current_manifest_sha256': '2' * 64,
+            'expected_current_catalogue_sha256': '3' * 64,
+            'legacy_smoke_sha256': '4' * 64,
         }
         with patch.object(TARGET, '_base_deploy_fields', return_value={}):
             expected = TARGET.deploy_fields(base, directory)
