@@ -28,7 +28,7 @@ func TestLoadGNASFleetUsesRemoteBindingAuthority(t *testing.T) {
 	runtimePath := filepath.Join(directory, "runtime.json")
 	writeJSONFile(t, runtimePath, GNASFleetRuntimeManifest{Version: 1, Bindings: []GNASFleetRuntimeBinding{{BindingID: "company_a", InstanceConfigPath: instancePath, ClientID: "company-a-resource", ClientSecretEnv: "COMPANY_A_INTROSPECTION_SECRET"}}})
 	payload := signedGNASFleetPayload(t, []gnasFleetBinding{{
-		BindingID: "company_a", PublicResource: "https://mcp.company-a.example", AuthorizationResource: "existing_policy", Source: "wecom-company-a",
+		BindingID: "company_a", MCPInstanceID: "instance-a", PublicResource: "https://mcp.company-a.example", AuthorizationResource: "existing_policy", Source: "wecom-company-a",
 		Plugins: gnasFleetPlugins{Zoop: &gnasFleetZoopPlugin{RegistryDocumentID: "doc-a", RegistryKey: "company_a_zoop_v1"}},
 	}})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +55,7 @@ func TestLoadGNASFleetUsesRemoteBindingAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 1 || loaded[0].Binding.Source != "wecom-company-a" || loaded[0].Binding.Hosts[0] != "mcp.company-a.example" || loaded[0].Binding.AuthorizationResource != "existing_policy" || loaded[0].Config.AuthorizationResource != "existing_policy" || !loaded[0].Config.TrustedLoopbackProxy || loaded[0].Config.OIDCAudience != "https://mcp.company-a.example/mcp" || loaded[0].Config.OIDCIssuer != "https://mcp.company-a.example/gnas/oauth" {
+	if len(loaded) != 1 || loaded[0].Binding.Source != "wecom-company-a" || loaded[0].Binding.MCPInstanceID != "instance-a" || loaded[0].Config.CapabilityCatalogInstanceID != "instance-a" || loaded[0].Binding.Hosts[0] != "mcp.company-a.example" || loaded[0].Binding.AuthorizationResource != "existing_policy" || loaded[0].Config.AuthorizationResource != "existing_policy" || !loaded[0].Config.TrustedLoopbackProxy || loaded[0].Config.OIDCAudience != "https://mcp.company-a.example/mcp" || loaded[0].Config.OIDCIssuer != "https://mcp.company-a.example/gnas/oauth" {
 		t.Fatalf("loaded=%#v", loaded)
 	}
 }
@@ -80,7 +80,7 @@ func TestMergeGNASFleetRejectsRegistryDrift(t *testing.T) {
 }
 
 func TestGNASFleetPerBindingCredentials(t *testing.T) {
-	for _, scenario := range []string{"distinct", "missing_id", "missing_env", "unset_secret", "short_secret", "duplicate_client", "invalid_env", "oidc"} {
+	for _, scenario := range []string{"distinct", "missing_id", "missing_env", "unset_secret", "short_secret", "duplicate_client", "duplicate_instance", "invalid_env", "oidc"} {
 		t.Run(scenario, func(t *testing.T) {
 			setupFleetOAuthEnvironment(t) // Valid global credentials must never be a fallback.
 			dir := t.TempDir()
@@ -110,6 +110,9 @@ func TestGNASFleetPerBindingCredentials(t *testing.T) {
 				t.Setenv("TEST_FLEET_SECRET_B", "short")
 			case "duplicate_client":
 				manifest.Bindings[1].ClientID = manifest.Bindings[0].ClientID
+			case "duplicate_instance":
+				remote[0].MCPInstanceID = "shared-instance"
+				remote[1].MCPInstanceID = "shared-instance"
 			case "invalid_env":
 				manifest.Bindings[1].ClientSecretEnv = "invalid-env"
 			case "oidc":
