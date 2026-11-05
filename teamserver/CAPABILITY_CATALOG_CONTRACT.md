@@ -59,9 +59,11 @@ scope，不能映射成 `mcp.group.*`。没有真实 scope 时上报失败关闭
 通配符、跨 Binding/tenant/resource/instance 的值均拒绝。
 
 `catalog_digest` 与 GNAS `mcpAdminCapabilityDigest` 完全一致：以
-schema/instance/binding/source/public resource/authorization resource/version 及
-按名称排序的工具（含 description）和 scope 规范 JSON 做 SHA-256；不包含
-`request_id`、`purpose` 或 Service JWT。响应必须是 `application/json`，且包含：
+schema/instance/binding/source/public resource/authorization resource/version、按名称
+排序的工具（含 description）、scope，以及空字符串 `catalog_digest` 字段组成的
+规范 JSON 做 SHA-256；不包含 `request_id`、`purpose` 或 Service JWT。MCP 会发送
+该 digest 作为 echo，GNAS 也允许兼容客户端省略后自行计算。响应必须是
+`application/json`，且包含：
 
 ```json
 {
@@ -74,7 +76,9 @@ schema/instance/binding/source/public resource/authorization resource/version �
 ```
 
 旧 `request_id` 重放、HTTP 非 200、digest/version 不一致、非 JSON、超时或重定向
-均失败关闭。GNAS 侧负责保存/过期/重放控制和管理端读取；该目录本身不授予任何
+均失败关闭。当前 858d61a GNAS 适配器把目录保存在进程内；因此重启、实例切换
+或丢失上报时 UI 会显示不可用，不能称为持久化完成。GNAS 侧应由共享持久化
+repository 保存/过期/重放控制，管理 UI 读取同一 repository；该目录本身不授予任何
 员工、AI 主体、任务或项目权限。
 
 ## GNAS 侧配套
@@ -84,3 +88,8 @@ GNAS 需启用其独立、默认关闭的 `reportMCPCapabilityCatalogV1` 处理�
 页面只读取 MCP 上报的目录快照；它不得回调 MCP，也不得以 `tools/list` 替代目录。
 实际执行仍需 OAuth access token、正确 audience/resource/tenant 和现有
 `ResolveAuthorizationV1`/introspection 决策。
+
+当前候选没有主体目录或成员写代理。成员必须由 GNAS 已绑定的 managed Source
+实时验证；AI 主体、项目成员、任务和撤权继续由 GNAS 独立的 subject/authorization
+provider 提供。UI 不得从 capability report 推导员工或 AI 主体；若要显示主体，
+应读取同一 tenant+binding+source 范围内的最小、已验证 subject catalog。
