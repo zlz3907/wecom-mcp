@@ -81,6 +81,7 @@ def main():
         'expected_runtime_path': a.expected_runtime_path,
         'expected_binary_sha256': a.expected_binary_sha256,
         'expected_unit_fingerprint': a.expected_unit_fingerprint,
+        'expected_unmanaged_unit_fingerprint': a.expected_unit_fingerprint,
         'expected_runtime_config_fingerprint': a.expected_runtime_config_fingerprint,
         'expected_current_unit_fragment_sha256': a.expected_current_unit_fragment_sha256,
         'expected_gnas_release_id': a.expected_gnas_release_id,
