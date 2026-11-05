@@ -99,6 +99,17 @@ func TestCapabilityCatalogUsesActualPluginDefinitionsAndOAuthScopes(t *testing.T
 	}
 }
 
+func TestCapabilityCatalogDigestMatchesGNAS858d61aContract(t *testing.T) {
+	catalog := capabilityCatalog{
+		SchemaVersion: capabilityCatalogSchemaVersion, MCPInstanceID: "instance-a", BindingID: "tenant-a",
+		Source: "source-a", PublicResource: "https://mcp-a.example/mcp", AuthorizationResource: "resource-a",
+		CatalogVersion: "runtime-v1", Tools: []capabilityCatalogTool{{Name: "record.query", Description: "query records"}, {Name: "record.read", Description: "read records"}}, Scopes: []string{"mcp.group.records"},
+	}
+	if got, want := capabilityCatalogDigest(catalog), "sha256:731700a177fc63dbd90328c227a20d1c29ac28c1e9532bd480e8e9a3eccaf119"; got != want {
+		t.Fatalf("digest=%q want %q", got, want)
+	}
+}
+
 func TestCapabilityCatalogReportUsesExistingServiceJWTAndBindsIdentity(t *testing.T) {
 	var received capabilityCatalogReport
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

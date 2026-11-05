@@ -221,7 +221,8 @@ func capabilityCatalogDigest(catalog capabilityCatalog) string {
 		CatalogVersion        string                  `json:"catalog_version"`
 		Tools                 []capabilityCatalogTool `json:"tools"`
 		Scopes                []string                `json:"scopes"`
-	}{catalog.SchemaVersion, catalog.MCPInstanceID, catalog.BindingID, catalog.Source, catalog.PublicResource, catalog.AuthorizationResource, catalog.CatalogVersion, tools, scopes}
+		CatalogDigest         string                  `json:"catalog_digest"`
+	}{catalog.SchemaVersion, catalog.MCPInstanceID, catalog.BindingID, catalog.Source, catalog.PublicResource, catalog.AuthorizationResource, catalog.CatalogVersion, tools, scopes, ""}
 	encoded, _ := json.Marshal(payload)
 	digest := sha256.Sum256(encoded)
 	return "sha256:" + hex.EncodeToString(digest[:])
