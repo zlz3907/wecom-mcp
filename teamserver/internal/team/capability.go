@@ -73,6 +73,14 @@ type capabilityCatalogReportResponse struct {
 	Accepted      bool   `json:"accepted"`
 	PolicyVersion string `json:"policy_version"`
 	CatalogDigest string `json:"catalog_digest"`
+	// GNAS returns the verified scope and freshness metadata alongside the
+	// legacy readback fields. Keep the response decoder strict while declaring
+	// the complete shared contract, so a real GNAS response is accepted without
+	// allowing arbitrary fields through.
+	BindingDigest string `json:"binding_digest"`
+	AppID         string `json:"app_id"`
+	ReportedAt    string `json:"reported_at"`
+	ExpiresAt     string `json:"expires_at"`
 	SchemaVersion int    `json:"schema_version"`
 	MCPInstanceID string `json:"mcp_instance_id"`
 }

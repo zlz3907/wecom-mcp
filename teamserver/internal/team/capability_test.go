@@ -125,7 +125,12 @@ func TestCapabilityCatalogReportUsesExistingServiceJWTAndBindsIdentity(t *testin
 			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 				t.Fatal(err)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"accepted": true, "policy_version": received.CatalogVersion, "catalog_digest": received.CatalogDigest, "schema_version": 1, "mcp_instance_id": ""})
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"accepted": true, "policy_version": received.CatalogVersion, "catalog_digest": received.CatalogDigest,
+				"binding_digest": "sha256:verified-binding", "app_id": "mcp-service-a",
+				"reported_at": time.Now().UTC().Format(time.RFC3339Nano), "expires_at": time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339Nano),
+				"schema_version": 1, "mcp_instance_id": "",
+			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
