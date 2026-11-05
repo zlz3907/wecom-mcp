@@ -37,6 +37,15 @@ func TestGNASDiscoveryDerivesInstancesWithoutTenantFiles(t *testing.T) {
 		return gnasFleetBinding{BindingID: id, PublicResource: "https://" + id + ".example", AuthorizationResource: "zoop", Source: "source-" + id, Plugins: gnasFleetPlugins{Zoop: &gnasFleetZoopPlugin{RegistryDocumentID: "registry-" + id, RegistryKey: "key-" + id}}}
 	}
 	a, b := binding("a"), binding("b")
+	// Independent green and blue discovery instances must derive the exact
+	// same journal path for an unchanged binding, irrespective of peers.
+	other := &GNASDiscovery{stateRoot: root}
+	if d.runtimeFor(a, policy).StatePath != other.runtimeFor(a, policy).StatePath {
+		t.Fatal("same binding and state root produced different journals")
+	}
+	if d.runtimeFor(a, policy).SchemaAdminUser != "" {
+		t.Fatal("database discovery unexpectedly enabled schema administration")
+	}
 	load := func(bindings ...gnasFleetBinding) ([]LoadedFleetBinding, error) {
 		if bindings == nil {
 			bindings = []gnasFleetBinding{}

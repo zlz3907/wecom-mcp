@@ -31,6 +31,7 @@ type FleetManifest struct {
 // Source; callers never select that source in MCP tool arguments.
 type FleetBinding struct {
 	BindingID             string   `json:"binding_id"`
+	MCPInstanceID         string   `json:"mcp_instance_id,omitempty"`
 	Hosts                 []string `json:"hosts"`
 	PublicURL             string   `json:"public_url"`
 	AuthorizationTenant   string   `json:"authorization_tenant"`
@@ -80,6 +81,7 @@ func LoadFleetManifest(path, listenAddress string) ([]LoadedFleetBinding, error)
 	seenStates := map[string]bool{}
 	seenSchemas := map[string]bool{}
 	seenInstances := map[string]bool{}
+	seenCapabilityInstances := map[string]bool{}
 	loaded := make([]LoadedFleetBinding, 0, len(manifest.Bindings))
 	for index, binding := range manifest.Bindings {
 		if err := validateFleetBinding(binding, seenBindings, seenHosts, seenSources, seenConfigs); err != nil {
@@ -96,6 +98,12 @@ func LoadFleetManifest(path, listenAddress string) ([]LoadedFleetBinding, error)
 			return nil, fmt.Errorf("fleet binding %s reuses another instance_name", binding.BindingID)
 		}
 		seenInstances[runtime.InstanceName] = true
+		if binding.MCPInstanceID != "" {
+			if !fleetIdentifier.MatchString(binding.MCPInstanceID) || seenCapabilityInstances[binding.MCPInstanceID] {
+				return nil, fmt.Errorf("fleet binding %s mcp_instance_id is invalid or duplicated", binding.BindingID)
+			}
+			seenCapabilityInstances[binding.MCPInstanceID] = true
+		}
 		if seenStates[runtime.StatePath] {
 			return nil, fmt.Errorf("fleet binding %s reuses another instance state_path", binding.BindingID)
 		}
@@ -109,6 +117,9 @@ func LoadFleetManifest(path, listenAddress string) ([]LoadedFleetBinding, error)
 		cfg, err := LoadConfigForBinding(binding.InstanceConfigPath, listenAddress, BindingOverrides{
 			PublicURL: binding.PublicURL, AuthorizationTenant: binding.AuthorizationTenant,
 			AuthorizationResource: binding.AuthorizationResource, Plugins: binding.Plugins,
+			CapabilityCatalogBindingID: binding.BindingID, CapabilityCatalogSource: binding.Source,
+			CapabilityCatalogInstanceID: binding.MCPInstanceID, CapabilityCatalogPublicResource: binding.PublicURL,
+			CapabilityCatalogAuthorizationResource: binding.AuthorizationResource,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("fleet binding %s team config: %w", binding.BindingID, err)

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -94,6 +96,108 @@ func TestReservePreservesEntriesAcrossServerInstances(t *testing.T) {
 	}
 	if len(state.Entries) != 2 {
 		t.Fatalf("entries=%#v", state.Entries)
+	}
+}
+
+// TestStateReservationProcessHelper is executed by
+// TestReserveSerializesIndependentProcesses below.  It deliberately uses the
+// test binary as the second process so this covers the flock boundary, not
+// only Server.stateMu or two goroutines in one process.
+func TestStateReservationProcessHelper(t *testing.T) {
+	if os.Getenv("GNAS_STATE_RESERVATION_HELPER") != "1" {
+		return
+	}
+	server := &Server{}
+	err := server.reserveWithOperator(os.Getenv("GNAS_STATE_RESERVATION_PATH"), os.Getenv("GNAS_STATE_RESERVATION_KEY"), "same-digest", "same-operator")
+	if err != nil {
+		fmt.Printf("error:%s", err)
+		return
+	}
+	// Delay output so both child processes overlap in their lifecycle; reserve
+	// has already committed the state before its cross-process lock is released.
+	time.Sleep(75 * time.Millisecond)
+	fmt.Print("reserved")
+}
+
+func TestReserveSerializesIndependentProcesses(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	key := "cross-process-idempotency-key"
+	outputs := make([]chan []byte, 0, 2)
+	for range 2 {
+		command := exec.Command(os.Args[0], "-test.run=^TestStateReservationProcessHelper$", "--")
+		command.Env = append(os.Environ(),
+			"GNAS_STATE_RESERVATION_HELPER=1",
+			"GNAS_STATE_RESERVATION_PATH="+statePath,
+			"GNAS_STATE_RESERVATION_KEY="+key,
+		)
+		output := make(chan []byte, 1)
+		outputs = append(outputs, output)
+		go func(command *exec.Cmd, output chan<- []byte) {
+			data, err := command.CombinedOutput()
+			if err != nil {
+				output <- append(data, []byte("\nprocess error: "+err.Error())...)
+				return
+			}
+			output <- data
+		}(command, output)
+	}
+	results := make([]string, 0, 2)
+	for _, output := range outputs {
+		results = append(results, string(<-output))
+	}
+	reserved, rejected := 0, 0
+	for _, result := range results {
+		if strings.Contains(result, "reserved") {
+			reserved++
+		} else if strings.Contains(result, "error:") {
+			rejected++
+		} else {
+			t.Fatalf("unexpected helper output %q", result)
+		}
+	}
+	if reserved != 1 || rejected != 1 {
+		t.Fatalf("same-key process race was not serialized: reserved=%d rejected=%d outputs=%q", reserved, rejected, results)
+	}
+	state, err := loadState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Entries[key].Status != "pending" || state.Entries[key].Digest != "same-digest" {
+		t.Fatalf("cross-process reservation state=%#v", state)
+	}
+}
+
+func TestSharedJournalPreservesDifferentProcessReservationsAndRetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	keys := []string{"cross-process-distinct-key-one", "cross-process-distinct-key-two"}
+	results := make(chan string, len(keys))
+	for _, key := range keys {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestStateReservationProcessHelper$", "--")
+		cmd.Env = append(os.Environ(), "GNAS_STATE_RESERVATION_HELPER=1", "GNAS_STATE_RESERVATION_PATH="+path, "GNAS_STATE_RESERVATION_KEY="+key)
+		go func() {
+			out, err := cmd.CombinedOutput()
+			results <- fmt.Sprintf("%s %v", out, err)
+		}()
+	}
+	for range keys {
+		if got := <-results; !strings.Contains(got, "reserved") {
+			t.Fatalf("different-key reservation failed: %s", got)
+		}
+	}
+	state, err := loadState(path)
+	if err != nil || len(state.Entries) != len(keys) {
+		t.Fatalf("shared journal lost entries: %#v, %v", state, err)
+	}
+	if err := (&Server{}).completeStateWithOperator(path, keys[0], "same-digest", "same-operator"); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range keys {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestStateReservationProcessHelper$", "--")
+		cmd.Env = append(os.Environ(), "GNAS_STATE_RESERVATION_HELPER=1", "GNAS_STATE_RESERVATION_PATH="+path, "GNAS_STATE_RESERVATION_KEY="+key)
+		out, err := cmd.CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "error:") {
+			t.Fatalf("cross-process pending/completed retry was not refused: %s %v", out, err)
+		}
 	}
 }
 
