@@ -171,6 +171,10 @@ def _deploy_fields(manifest, directory):
         'expected_previous_release_id': manifest['expected_previous_release_id'],
         'expected_previous_binary_sha256': manifest['expected_previous_binary_sha256'],
         'expected_current_unit_fragment_sha256': manifest['expected_current_unit_fragment_sha256'],
+        'expected_current_archive_sha256': manifest['expected_current_archive_sha256'],
+        'expected_current_manifest_sha256': manifest['expected_current_manifest_sha256'],
+        'expected_current_catalogue_sha256': manifest['expected_current_catalogue_sha256'],
+        'legacy_smoke_sha256': manifest['legacy_smoke_sha256'],
     })
     return expected
 
@@ -184,7 +188,9 @@ def _verify(directory, release_id):
     require(manifest.get('readiness_file') == str(READINESS_FILE), 'readiness file binding mismatch')
     for key in ('expected_current_release_id', 'expected_previous_release_id'):
         require(isinstance(manifest.get(key), str) and manifest[key], 'release lineage missing')
-    for key in ('expected_current_binary_sha256', 'expected_previous_binary_sha256', 'expected_current_unit_fragment_sha256'):
+    for key in ('expected_current_binary_sha256', 'expected_previous_binary_sha256', 'expected_current_unit_fragment_sha256',
+                'expected_current_archive_sha256', 'expected_current_manifest_sha256',
+                'expected_current_catalogue_sha256', 'legacy_smoke_sha256'):
         require(SHA.fullmatch(manifest.get(key, '')), key + ' missing')
     require(manifest.get('expected_current_release_id') == CURRENT_RELEASE_ID, 'current release baseline mismatch')
     require(manifest.get('expected_current_binary_sha256') == CURRENT_BINARY_SHA256, 'current binary baseline mismatch')
