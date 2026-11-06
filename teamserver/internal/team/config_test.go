@@ -2,6 +2,7 @@ package team
 
 import (
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -207,6 +208,22 @@ func TestLoadConfigOAuth21NeedsOnlyServerManagedAuthentication(t *testing.T) {
 	}
 	if !cfg.UserAuthorizationEnabled || cfg.AuthorizationResource != "gmzoop" || len(cfg.AdvertisedScopes) != 1 || cfg.AdvertisedScopes[0] != "zoop.read" {
 		t.Fatalf("cfg=%#v", cfg)
+	}
+	t.Setenv("TEAM_MCP_ADVERTISED_SCOPES", "zoop.read zoop.write")
+	t.Setenv("TEAM_MCP_ADVERTISED_SCOPES_RESOURCE", "https://mcp.jyiai.com/gmzoop/mcp")
+	cfg, err = LoadConfig(filepath.Join(t.TempDir(), "instance.json"), "")
+	if err != nil || !slices.Equal(cfg.RequiredScopes, []string{"zoop.read"}) || !slices.Equal(cfg.AdvertisedScopes, []string{"zoop.read", "zoop.write"}) {
+		t.Fatalf("advertised optional scope: cfg=%#v err=%v", cfg, err)
+	}
+	t.Setenv("TEAM_MCP_ADVERTISED_SCOPES_RESOURCE", "https://other.example/mcp")
+	cfg, err = LoadConfig(filepath.Join(t.TempDir(), "instance.json"), "")
+	if err != nil || !slices.Equal(cfg.AdvertisedScopes, []string{"zoop.read"}) {
+		t.Fatalf("optional scopes leaked to other resource: cfg=%#v err=%v", cfg, err)
+	}
+	t.Setenv("TEAM_MCP_ADVERTISED_SCOPES_RESOURCE", "https://mcp.jyiai.com/gmzoop/mcp")
+	t.Setenv("TEAM_MCP_ADVERTISED_SCOPES", "zoop.write")
+	if _, err := LoadConfig(filepath.Join(t.TempDir(), "instance.json"), ""); err == nil {
+		t.Fatal("advertised scopes omitted a required scope")
 	}
 }
 
