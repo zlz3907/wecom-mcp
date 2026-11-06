@@ -9,7 +9,7 @@ interchangeable with this profile.
 
 ## Read-only live baseline
 
-The profile was built from the exact teamserver candidate `72601b3` and a
+The scope-discovery candidate is based on the live `21462d2` runtime and a
 read-only runtime check:
 
 - current process release: `20261105T001200-21462d2dfb22`
@@ -19,12 +19,16 @@ read-only runtime check:
 - unit fragment SHA-256: `4caa2abe6bed4650faee60084b1657d4e350c3724ead3d4815c7b17a6870d098`
 - effective unit fingerprint: `c2c21274a1c4d1f53d08a3cc5a0b321b63c94b5521bf4f982361198972a8b79f`
 
-The candidate manages only the fixed `zhycit_zoop` host. It also records a
-read-only surrounding-fleet snapshot: `mcp.wesiyu.com` and `mcp.rtyouth.com`
-are ready, `mcp.jianpinke.com` is tenant-local unavailable (local 503; the
-public endpoint currently resets TLS), and `mcp.jyiai.com`/gmzoop is unmapped
-(local 421, public 404). Those hosts are evidence only and are not restarted,
-switched, or included in the promotion target.
+The scope configuration applies only to the `zhycit_zoop` resource. The
+process itself is shared, so promotion can interrupt all four currently
+bound enterprises: `zhycit.com`, `mcp.wesiyu.com` and `mcp.rtyouth.com` were
+ready; `mcp.jianpinke.com` was already unavailable. Public failure on the
+last host has varied between 503 and connection failure. These values are a
+frozen observation, not fleet authority. The process-bound GNAS readiness
+attestation must independently confirm the complete current binding vector
+before promotion; a changed fleet requires a fresh candidate and evidence.
+The controller checks all four frozen local routes, plus public routes for
+the healthy hosts, before and after a switch.
 
 ## Candidate and rollback contracts
 

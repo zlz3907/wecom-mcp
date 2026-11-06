@@ -18,7 +18,7 @@ class DiscoveryProfileTests(unittest.TestCase):
         self.assertEqual(TARGET.LOOPBACK, '127.0.0.1:7703')
         self.assertEqual(TARGET.RESOURCES['zhycit.com'], 'https://zhycit.com/mcp')
         self.assertEqual(TARGET.HOSTS, ('zhycit.com',))
-        self.assertEqual(len(TARGET.OBSERVED_FLEET_SNAPSHOT), 5)
+        self.assertEqual(len(TARGET.OBSERVED_FLEET_SNAPSHOT), 4)
         self.assertNotIn('7702', str(TARGET.DROPIN))
 
     def test_dropin_preserves_discovery_flags_and_7703(self):
@@ -27,8 +27,23 @@ class DiscoveryProfileTests(unittest.TestCase):
         self.assertIn('--gnas-ready-worker-isolation', raw)
         self.assertIn('--gnas-ready-worker-timeout 5s', raw)
         self.assertIn('--gnas-fleet-refresh 30s', raw)
+        self.assertIn('Environment="TEAM_MCP_ADVERTISED_SCOPES=zoop.read zoop.write"', raw)
+        self.assertIn('Environment=TEAM_MCP_ADVERTISED_SCOPES_RESOURCE=https://zhycit.com/mcp', raw)
         self.assertNotIn('127.0.0.1:7702', raw)
         self.assertIn(str(TARGET.STATE), raw)
+
+    def test_health_checks_every_authoritative_binding(self):
+        with patch.object(TARGET.c, 'require_runtime'), patch.object(TARGET, '_ready') as ready, patch.object(TARGET, '_unready') as unready:
+            TARGET._healthy('/runtime', 'a' * 64, TARGET.HOSTS)
+        self.assertEqual({call.args[0] for call in ready.call_args_list}, {'zhycit.com', 'mcp.wesiyu.com', 'mcp.rtyouth.com'})
+        self.assertEqual([call.args[0] for call in unready.call_args_list], ['mcp.jianpinke.com'])
+
+    def test_gnas_readiness_must_include_exact_authoritative_fleet(self):
+        with patch.object(TARGET, '_base_check_gnas'), patch.object(TARGET.c, 'read_json', return_value={'authoritative_fleet_vector': TARGET.fleet_state_vector()}):
+            TARGET._check_gnas({})
+        with patch.object(TARGET, '_base_check_gnas'), patch.object(TARGET.c, 'read_json', return_value={'authoritative_fleet_vector': TARGET.fleet_state_vector()[:1]}):
+            with self.assertRaisesRegex(ValueError, 'authoritative fleet'):
+                TARGET._check_gnas({})
 
     def test_local_and_public_readiness_contracts_are_distinct(self):
         with patch.object(TARGET.c, 'probe') as probe:

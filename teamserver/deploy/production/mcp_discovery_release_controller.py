@@ -39,16 +39,19 @@ PREVIOUS_BINARY_SHA256 = 'e37bd4ec2103dd33bd2d923c2d827748c8f6b95a63db26c4a1835f
 TARGET_HOST = 'zhycit.com'
 HOSTS = (TARGET_HOST,)
 RESOURCES = {TARGET_HOST: 'https://zhycit.com/mcp'}
-# Read-only observation of the surrounding discovery fleet. These hosts are
-# evidence only; this profile never manages, restarts, or promotes them.
+# Frozen, read-only observation of the authoritative binding fleet. A fresh
+# process-bound GNAS attestation must independently confirm this exact vector
+# before promotion; these constants alone are not fleet authority.
 OBSERVED_FLEET_SNAPSHOT = (
     {'host': 'zhycit.com', 'state': 'ready', 'resource': 'https://zhycit.com/mcp', 'public_route': 'mcp'},
     {'host': 'mcp.wesiyu.com', 'state': 'ready', 'resource': 'https://mcp.wesiyu.com/mcp', 'public_route': 'mcp'},
     {'host': 'mcp.rtyouth.com', 'state': 'ready', 'resource': 'https://mcp.rtyouth.com/mcp', 'public_route': 'mcp'},
-    {'host': 'mcp.jianpinke.com', 'state': 'tenant_unavailable', 'resource': 'https://mcp.jianpinke.com/mcp', 'public_route': 'tls_reset'},
-    {'host': 'mcp.jyiai.com', 'state': 'resource_unmapped', 'resource': 'https://mcp.jyiai.com/gmzoop/mcp', 'public_route': '404', 'local_status': 421},
+    {'host': 'mcp.jianpinke.com', 'state': 'tenant_unavailable', 'resource': 'https://mcp.jianpinke.com/mcp', 'public_route': 'unavailable'},
 )
-FLEET_STATE_VECTOR = ({'host': TARGET_HOST, 'state': 'ready'},)
+FLEET_STATE_VECTOR = tuple(sorted(
+    ({'host': row['host'], 'state': row['state']} for row in OBSERVED_FLEET_SNAPSHOT),
+    key=lambda row: row['host'],
+))
 FLEET_STATE_VECTOR_SHA256 = c.fleet_state_vector_sha256(list(FLEET_STATE_VECTOR))
 FILES = c.FILES
 RID = c.RID
@@ -70,6 +73,8 @@ def _dropin(release_id):
     ) % (base / 'wecom-mcp-team', base / 'discovery-policy.json', STATE, LOOPBACK)
     return (
         '[Service]\nExecStartPre=\nExecStart=\n'
+        'Environment="TEAM_MCP_ADVERTISED_SCOPES=zoop.read zoop.write"\n'
+        'Environment=TEAM_MCP_ADVERTISED_SCOPES_RESOURCE=https://zhycit.com/mcp\n'
         'ExecStartPre=' + args + ' --check-config\n'
         'ExecStart=' + args + '\n'
         'ReadWritePaths=' + str(STATE) + '\n'
@@ -122,14 +127,24 @@ def _unmapped(host, loopback=LOOPBACK):
 
 def _healthy(path, digest, hosts, legacy=False):
     c.require_runtime(path, digest)
-    for host in hosts:
-        if host in UNREADY_HOSTS:
-            _unready(host, loopback=LOOPBACK)
-            continue
-        if host in UNMAPPED_HOSTS:
-            _unmapped(host, loopback=LOOPBACK)
-            continue
-        _ready(host, legacy=legacy, loopback=LOOPBACK, public_resource_metadata=True)
+    require(tuple(hosts) == HOSTS, 'unexpected deployment target')
+    for row in FLEET_STATE_VECTOR:
+        if row['state'] == 'tenant_unavailable':
+            _unready(row['host'], loopback=LOOPBACK)
+        elif row['state'] == 'ready':
+            _ready(row['host'], legacy=legacy, loopback=LOOPBACK, public_resource_metadata=True)
+        else:
+            raise ValueError('unsupported fleet state')
+
+
+def _check_gnas(manifest):
+    _base_check_gnas(manifest)
+    # Base validation binds the root-owned readiness evidence to the active
+    # GNAS PID, release, binary and a maximum age. Require that the operator
+    # also independently re-read all current bindings, not a static host list.
+    readiness = c.read_json(READINESS_FILE, True)
+    require(readiness.get('authoritative_fleet_vector') == fleet_state_vector(),
+            'authoritative fleet does not match the packaged snapshot')
 
 
 def _preflight_recovery(release_id):
@@ -204,6 +219,7 @@ def _verify(directory, release_id):
 # Keep the unpatched implementations used by the profile wrappers below.
 _base_verify = c.verify
 _base_deploy_fields = c.deploy_fields
+_base_check_gnas = c.check_gnas
 
 # Patch only the imported implementation's profile globals. The historical
 # controller file and its default 7702 behavior are not modified by this
@@ -224,6 +240,7 @@ c.recovery_dropin = _dropin
 c.ready = _ready
 c.unready = _unready
 c.healthy = _healthy
+c.check_gnas = _check_gnas
 c.preflight_recovery = _preflight_recovery
 c.deploy_fields = _deploy_fields
 c.verify = _verify
