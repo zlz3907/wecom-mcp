@@ -289,6 +289,16 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 	cfg.MCPURL = cfg.PublicURL + "/mcp"
 	cfg.MetadataURL = protectedResourceMetadataURL(cfg.MCPURL)
 	cfg.AdvertisedScopes = append([]string(nil), cfg.RequiredScopes...)
+	// Optional OAuth scopes can be offered to clients without requiring them
+	// from existing read-only sessions. Authorization of individual tools is
+	// still decided by the resource server and its live GNAS policy.
+	advertisedResource := strings.TrimSpace(os.Getenv("TEAM_MCP_ADVERTISED_SCOPES_RESOURCE"))
+	if advertised := splitList(os.Getenv("TEAM_MCP_ADVERTISED_SCOPES")); len(advertised) > 0 && advertisedResource == cfg.MCPURL {
+		if cfg.AuthenticationMode != AuthenticationModeOAuth21 || !containsAll(advertised, cfg.RequiredScopes) {
+			return Config{}, fmt.Errorf("TEAM_MCP_ADVERTISED_SCOPES must include required OAuth scopes")
+		}
+		cfg.AdvertisedScopes = advertised
+	}
 	if cfg.AuthenticationMode == AuthenticationModeOIDC {
 		cfg.AdvertisedScopes = append(cfg.AdvertisedScopes, "openid", "profile")
 	}
