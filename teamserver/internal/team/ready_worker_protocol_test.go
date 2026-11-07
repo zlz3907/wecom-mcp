@@ -1,7 +1,12 @@
 package team
 
 import (
+	"bytes"
+	"encoding/json"
+	"path/filepath"
 	"strings"
+
+	instanceconfig "github.com/zhonglizhi/wecom-mcp-v2/internal/config"
 	"testing"
 )
 
@@ -83,5 +88,43 @@ func TestBindingWorkerSpecRejectsAuthorityDrift(t *testing.T) {
 	bad.Config.AuthorizationResource = "other"
 	if _, err := NewBindingWorkerSpec(bad); err == nil {
 		t.Fatal("authority resource drift was accepted")
+	}
+}
+
+func TestReadyWorkerReconstructsAdminOnlyForExactBinding(t *testing.T) {
+	setupFleetOAuthEnvironment(t)
+	t.Setenv("GNAS_BASE_URL", "http://127.0.0.1:1")
+	t.Setenv("GNAS_APP_ID", "test-app")
+	t.Setenv("GNAS_APP_SECRET", "test-secret")
+	t.Setenv("GNAS_WECOM_TRANSPORT", "managed_executor")
+	t.Setenv("GNAS_SCHEMA_ADMIN_BINDING_DIGEST", strings.Repeat("a", 64))
+	t.Setenv("GNAS_SCHEMA_ADMIN_USERID", "verified-member")
+	runtime := instanceconfig.Config{Version: 1, InstanceName: "tenant_one", TenantRoute: "source-one", RegistryDocumentID: "registry-one", RegistryKey: "key-one", SchemaSource: "z-s00", StatePath: filepath.Join(t.TempDir(), "state.json"), APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}}, OAuthSchemaAdminUserID: "verified-member"}
+	start := BindingWorkerStart{Identity: BindingWorkerSpec{Version: BindingWorkerProtocolVersion, BindingID: "tenant_one", BindingDigest: strings.Repeat("a", 64), Tenant: "tenant_one", Resource: "zoop", PublicURL: "https://one.example"}, Runtime: &runtime}
+	wire, err := json.Marshal(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(wire, []byte("verified-member")) {
+		t.Fatal("internal grant serialized over worker pipe")
+	}
+	var decoded BindingWorkerStart
+	if err := json.Unmarshal(wire, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := decoded.LoadConfig("127.0.0.1:17801")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Runtime == nil || cfg.Runtime.OAuthSchemaAdminUserID != "verified-member" {
+		t.Fatal("matching worker lost admin grant")
+	}
+	decoded.Identity.BindingDigest = strings.Repeat("b", 64)
+	cfg, err = decoded.LoadConfig("127.0.0.1:17801")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Runtime == nil || cfg.Runtime.OAuthSchemaAdminUserID != "" {
+		t.Fatal("another worker received the grant")
 	}
 }

@@ -155,6 +155,9 @@ func (s *Server) applySchemaRegistryMigration(ctx context.Context, runtime confi
 	if err != nil {
 		return nil, err
 	}
+	if err := s.verifyDocumentSchemaAdmin(ctx, runtime, client, plan.DocumentID); err != nil {
+		return nil, err
+	}
 	if previewID != plan.PreviewID {
 		return nil, fmt.Errorf("Schema 迁移预览已失效，请重新预览当前线上结构")
 	}
