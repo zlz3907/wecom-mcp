@@ -4,7 +4,7 @@ import contextlib, datetime as dt, fcntl, hashlib, importlib.util, json, os, re,
 from pathlib import Path
 
 HERE=Path('/usr/local/sbin'); SELF=HERE/'zoop-schema-release.py'
-ROOT=Path('/var/lib/wecom-mcp-isolated'); APPROVALS=Path('/etc/gnas/release-approvals')
+ROOT=Path('/var/lib/wecom-mcp-isolated'); APPROVALS=Path('/etc/gnas/release-approvals'); GLOCK=Path('/var/lib/gnas-oauth-isolated/release.lock')
 UNIT='wecom-mcp-zhycit-schema.service'; UNIT_PATH=Path('/etc/systemd/system')/UNIT
 RELEASE='20261107T-schema-admin-b605951'; SOURCE='b605951aad28f607009623c4d4809f3ade767368'
 BIN_SHA='84bada3fd403b932e0c316c22aa90d161800ae4550ae482a138b5c710693e6a6'; POLICY_SHA='7d45dd145b1c4f604619046e305e031d42e807e5c7ee32450015d04123ccbba6'
@@ -54,6 +54,10 @@ def trusted_directory(p):
     st=p.lstat()
     return p.resolve()==p and st.st_uid==0 and stat.S_ISDIR(st.st_mode) and not st.st_mode&0o022
 
+def valid_target(p):
+    st=p.lstat()
+    return p.resolve()==p and st.st_uid==0 and stat.S_ISREG(st.st_mode) and not st.st_mode&0o022
+
 def root_owned_regular(p):
     st=p.lstat()
     return p.resolve()==p and st.st_uid==0 and stat.S_ISREG(st.st_mode) and stat.S_IMODE(st.st_mode)==0o400
@@ -92,12 +96,11 @@ def main(action,a):
     require(os.geteuid()==0 and Path(__file__).resolve()==SELF,'invalid controller')
     for path in (Path('/usr'),Path('/usr/local'),HERE,Path('/etc'),Path('/etc/gnas'),APPROVALS,Path('/var/lib'),ROOT,ROOT/'releases',ROOT/'used',CANDIDATE):
         require(trusted_directory(path),'untrusted release directory')
-    target_stat=TARGET.lstat()
-    require(TARGET.resolve()==TARGET and target_stat.st_uid==0 and stat.S_ISREG(target_stat.st_mode) and not target_stat.st_mode&0o022,'untrusted target route')
-    route_mode=stat.S_IMODE(target_stat.st_mode)
+    require(valid_target(TARGET),'untrusted target route')
+    route_mode=stat.S_IMODE(TARGET.lstat().st_mode)
     mcp=load('mcp_schema',MCP);route=load('route_schema',ROUTE);nextmod=load('next_schema',NEXT);helper=load('env_schema',ENV);gnas=load('gnas_schema',GNAS)
     with contextlib.ExitStack() as stack:
-        for path in (Path('/var/lib/gnas-oauth-isolated/release.lock'),ROOT/'release.lock'):
+        for path in (GLOCK,ROOT/'release.lock'):
             f=stack.enter_context(path.open('r+'));fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
         activation=json.loads(ACTIVATION.read_bytes()) if action=='rollback' else None
         current_sha=activation['new_route_sha256'] if activation else None

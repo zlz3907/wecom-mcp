@@ -44,4 +44,25 @@ class TargetSchemaReleaseTests(unittest.TestCase):
                 with self.assertRaises(ValueError):m.verify_receipt(a,'cutover-schema-target',{**fields,'old_mcp_pid':5})
                 with self.assertRaises(ValueError):m.verify_receipt(a,'rollback-schema-target',fields)
 
+
+class RollbackTests(unittest.TestCase):
+    def test_rollback_does_not_require_failed_candidate(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve()
+            route=root/'route'; old=b'x '+m.OLD_PORT+b' y '+m.OLD_PORT+b' z'; new=old.replace(m.OLD_PORT,m.NEW_PORT)
+            route.write_bytes(new);route.chmod(0o644)
+            (root/'release.lock').touch(); (root/'gnas.lock').touch()
+            baseline=(('123',9,()),(11,12),())
+            common={'old_route_sha256':m.digest(old),'old_oauth_pid':11,'old_mcp_pid':12,'shared_gnas_pid':'123','shared_mcp_pid':9,'route_mode':0o644}
+            prep=root/'prepared';prep.write_text(json.dumps({**common,'candidate_pid':99}))
+            activation=root/'activation';activation.write_text(json.dumps({'old_route':old.decode(),'old_route_sha256':m.digest(old),'new_route_sha256':m.digest(new)}))
+            route_api=SimpleNamespace(tls_probe=lambda _host,path:401 if path=='/mcp' else 200)
+            modules={'mcp_schema':object(),'route_schema':route_api,'next_schema':object(),'env_schema':object(),'gnas_schema':object()}
+            with mock.patch.object(m,'ROOT',root),mock.patch.object(m,'GLOCK',root/'gnas.lock'),mock.patch.object(m,'TARGET',route),mock.patch.object(m,'PREP',prep),mock.patch.object(m,'ACTIVATION',activation),mock.patch.object(m,'SELF',Path(m.__file__).resolve()),mock.patch.object(m.os,'geteuid',return_value=0),mock.patch.object(m,'trusted_directory',return_value=True),mock.patch.object(m,'valid_target',return_value=True),mock.patch.object(m,'load',side_effect=lambda name,_path:modules[name]),mock.patch.object(m,'baseline',return_value=baseline),mock.patch.object(m,'candidate',side_effect=AssertionError('must not need candidate')),mock.patch.object(m,'verify_receipt'),mock.patch.object(m,'consume'),mock.patch.object(m,'run',return_value=b'config'),mock.patch.object(m.time,'sleep'),redirect_stdout(StringIO()):
+                m.main('rollback','APR-20261107T010101Z-test00')
+            self.assertEqual(route.read_bytes(),old)
+
 if __name__=='__main__':unittest.main()
