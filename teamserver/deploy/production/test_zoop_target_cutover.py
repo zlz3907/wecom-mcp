@@ -61,7 +61,8 @@ class TargetCutoverTests(unittest.TestCase):
                                    'GNAS_CONTROL':controller,'HELPER':controller,'ORIGINAL_SHA':m.sha_bytes(self.old),
                                    'COMMON_SHA':m.sha_bytes(self.common)}.items():stack.enter_context(patch.object(m,name,value))
                 stack.enter_context(patch.object(m.os,'geteuid',return_value=0))
-                stack.enter_context(patch.object(m,'trusted'));stack.enter_context(patch.object(m,'load',return_value=mcp))
+                stack.enter_context(patch.object(m,'trusted'));stack.enter_context(patch.object(m,'trusted_nginx_tree'))
+                stack.enter_context(patch.object(m,'load',return_value=mcp))
                 stack.enter_context(patch.object(m,'active_canaries',return_value=(222,333)))
                 stack.enter_context(patch.object(m,'other_public_vector',return_value=vector))
                 stack.enter_context(patch.object(m,'unit',return_value={'MainPID':'111','ActiveState':'active'}))
@@ -85,5 +86,17 @@ class TargetCutoverTests(unittest.TestCase):
                     self.assertEqual(target.read_bytes(),m.expected_files(self.old,self.common)[0])
                     self.assertTrue((root/'target-route-activation.json').exists())
                 self.assertFalse(any('restart' in x for x in calls))
+
+
+    def test_protected_root_and_snippet_tree_with_maintenance_owned_parent(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(m,'trusted'):
+            root=Path(tmp).resolve();parent=root/'nginx';parent.mkdir(mode=0o755);snippets=parent/'snippets';snippets.mkdir(mode=0o700)
+            m.trusted_nginx_tree(root,parent,snippets)
+            root.chmod(0o755)
+            with self.assertRaisesRegex(ValueError,'traversable'):m.trusted_nginx_tree(root,parent,snippets)
+            root.chmod(0o700);snippets.chmod(0o755)
+            with self.assertRaisesRegex(ValueError,'accessible'):m.trusted_nginx_tree(root,parent,snippets)
+            snippets.chmod(0o700);parent.chmod(0o777)
+            with self.assertRaisesRegex(ValueError,'parent'):m.trusted_nginx_tree(root,parent,snippets)
 
 if __name__=='__main__':unittest.main()

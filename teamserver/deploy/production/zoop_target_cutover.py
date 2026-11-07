@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -46,6 +47,19 @@ def sha(path):return sha_bytes(path.read_bytes())
 def trusted(p,directory=False):
     s=p.lstat()
     require(p.resolve()==p and s.st_uid==0 and not s.st_mode&0o022 and (p.is_dir() if directory else p.is_file()),'untrusted path')
+
+
+def trusted_nginx_tree(root=Path('/root'), parent=Path('/root/nginx'), snippets=NGINX_DIR):
+    # Production /root/nginx is owned by the maintenance account.  /root and
+    # the snippets directory both exclude group/other traversal and writes.
+    # Verify these enclosing protections instead of changing live ownership.
+    trusted(root,True)
+    require(stat.S_IMODE(root.lstat().st_mode)&0o077==0,'root directory is traversable')
+    info=parent.lstat()
+    require(parent.resolve()==parent and stat.S_ISDIR(info.st_mode) and not info.st_mode&0o022,
+            'untrusted nginx parent')
+    trusted(snippets,True)
+    require(stat.S_IMODE(snippets.lstat().st_mode)&0o077==0,'snippet directory is accessible')
 
 
 def load(name,path):
@@ -134,7 +148,8 @@ def write_new(path,raw,mode):
 def main(approval,grant_sha):
     require(os.geteuid()==0 and Path(__file__).resolve()==SELF and re.fullmatch(r'[a-f0-9]{64}',grant_sha),'invalid arguments')
     for p in (Path('/usr'),Path('/usr/local'),HERE,Path('/etc'),Path('/etc/gnas'),APPROVALS,Path('/root'),
-              Path('/root/nginx'),NGINX_DIR,Path('/var/lib'),ROOT,ROOT/'used',Path('/etc/gnas/oauth21')):trusted(p,True)
+              Path('/var/lib'),ROOT,ROOT/'used',Path('/etc/gnas/oauth21')):trusted(p,True)
+    trusted_nginx_tree()
     for p in (SELF,MCP_CONTROL,GNAS_CONTROL,HELPER,TARGET,COMMON,GRANT,ROOT/'release.lock',GNAS_LOCK):trusted(p)
     require(GRANT.stat().st_mode&0o777==0o400 and sha(GRANT)==grant_sha,'grant changed')
     mcp=load('target_mcp_control',MCP_CONTROL);gnas=load('target_gnas_control',GNAS_CONTROL);helper=load('target_grant_helper',HELPER)
@@ -197,7 +212,8 @@ def rollback(approval):
     require(os.geteuid()==0 and Path(__file__).resolve()==SELF and
             re.fullmatch(r'APR-[0-9]{8}T[0-9]{6}Z-[a-zA-Z0-9._-]{6,64}',approval),'invalid rollback arguments')
     for p in (Path('/usr'),Path('/usr/local'),HERE,Path('/etc'),Path('/etc/gnas'),APPROVALS,Path('/root'),
-              Path('/root/nginx'),NGINX_DIR,Path('/var/lib'),ROOT,ROOT/'used'):trusted(p,True)
+              Path('/var/lib'),ROOT,ROOT/'used'):trusted(p,True)
+    trusted_nginx_tree()
     backup=ROOT/'target-route-original.conf';activation=ROOT/'target-route-activation.json'
     for p in (SELF,MCP_CONTROL,TARGET,COMMON,ISOLATED,backup,activation,ROOT/'release.lock'):trusted(p)
     mcp=load('rollback_mcp_control',MCP_CONTROL)
