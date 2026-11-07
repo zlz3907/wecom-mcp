@@ -21,6 +21,7 @@ import (
 )
 
 var bindingDigestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+var schemaAdminUserPattern = regexp.MustCompile(`^[A-Za-z0-9_.@-]{1,64}$`)
 
 func gnasBindingDigest(b gnasFleetBinding) string {
 	canonical, _ := json.Marshal(b)
@@ -41,14 +42,16 @@ type discoveredInstance struct {
 }
 
 type GNASDiscovery struct {
-	runtimeManifestPath string
-	staticRecoveryURL   string
-	policyPath          string
-	stateRoot           string
-	listen              string
-	mu                  sync.Mutex
-	instances           map[string]discoveredInstance
-	resolveName         func(context.Context, instanceconfig.Config) (string, error)
+	runtimeManifestPath      string
+	staticRecoveryURL        string
+	policyPath               string
+	stateRoot                string
+	listen                   string
+	schemaAdminBindingDigest string
+	schemaAdminUserID        string
+	mu                       sync.Mutex
+	instances                map[string]discoveredInstance
+	resolveName              func(context.Context, instanceconfig.Config) (string, error)
 }
 
 func NewGNASDiscovery(policyPath, stateRoot, listen string) (*GNASDiscovery, error) {
@@ -69,7 +72,11 @@ func NewGNASDiscovery(policyPath, stateRoot, listen string) (*GNASDiscovery, err
 	if err != nil || statErr != nil || !info.IsDir() || resolved != stateRoot {
 		return nil, fmt.Errorf("discovery state root must be an existing directory without symlink aliases")
 	}
-	return &GNASDiscovery{policyPath: policyPath, stateRoot: stateRoot, listen: listen, instances: map[string]discoveredInstance{}, resolveName: legacymcp.ResolveDiscoveredInstanceName}, nil
+	adminBinding, adminUser, err := configuredSchemaAdmin()
+	if err != nil {
+		return nil, err
+	}
+	return &GNASDiscovery{policyPath: policyPath, stateRoot: stateRoot, listen: listen, schemaAdminBindingDigest: adminBinding, schemaAdminUserID: adminUser, instances: map[string]discoveredInstance{}, resolveName: legacymcp.ResolveDiscoveredInstanceName}, nil
 }
 
 // NewGNASHybridDiscovery keeps explicitly mapped local instances and
@@ -100,6 +107,15 @@ func NewGNASStaticRecovery(policyPath, stateRoot, runtimeManifestPath, listen, p
 	}
 	d.staticRecoveryURL = publicURL
 	return d, nil
+}
+
+// A protected process environment is the only source of this optional grant.
+func configuredSchemaAdmin() (string, string, error) {
+	binding, user := os.Getenv("GNAS_SCHEMA_ADMIN_BINDING_DIGEST"), os.Getenv("GNAS_SCHEMA_ADMIN_USERID")
+	if (binding == "") != (user == "") || (binding != "" && (!bindingDigestPattern.MatchString(binding) || !schemaAdminUserPattern.MatchString(user))) {
+		return "", "", fmt.Errorf("schema admin binding configuration invalid")
+	}
+	return binding, user, nil
 }
 
 func (d *GNASDiscovery) ListenAddress() string { return d.listen }
@@ -267,9 +283,13 @@ func (d *GNASDiscovery) runtimeFor(b gnasFleetBinding, policy DiscoveryPolicy) i
 	for name, operations := range policy.APIWhitelist {
 		groups[name] = append([]string(nil), operations...)
 	}
-	return instanceconfig.Config{Version: 1, InstanceName: b.BindingID, TenantRoute: b.Source,
+	runtime := instanceconfig.Config{Version: 1, InstanceName: b.BindingID, TenantRoute: b.Source,
 		RegistryDocumentID: b.Plugins.Zoop.RegistryDocumentID, RegistryKey: b.Plugins.Zoop.RegistryKey,
 		SchemaSource: "z-s00", StatePath: filepath.Join(d.stateRoot, hex.EncodeToString(digest[:])+".json"), APIWhitelist: groups}
+	if d.schemaAdminBindingDigest != "" && gnasBindingDigest(b) == d.schemaAdminBindingDigest {
+		runtime.OAuthSchemaAdminUserID = d.schemaAdminUserID
+	}
+	return runtime
 }
 
 func loadDiscoveryPolicy(path string) (DiscoveryPolicy, error) {

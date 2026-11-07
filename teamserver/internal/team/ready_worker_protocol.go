@@ -123,6 +123,20 @@ func (s BindingWorkerStart) LoadConfig(listen string) (Config, error) {
 	if err := s.Validate(); err != nil {
 		return Config{}, err
 	}
+	// Dynamic runtime crosses a JSON pipe: reconstruct the internal-only grant
+	// from the inherited protected environment and authenticated binding digest.
+	if s.Runtime != nil {
+		adminBinding, adminUser, err := configuredSchemaAdmin()
+		if err != nil {
+			return Config{}, err
+		}
+		runtime := cloneWorkerRuntime(*s.Runtime)
+		runtime.OAuthSchemaAdminUserID = ""
+		if adminBinding != "" && adminBinding == s.Identity.BindingDigest {
+			runtime.OAuthSchemaAdminUserID = adminUser
+		}
+		s.Runtime = &runtime
+	}
 	u, _ := url.Parse(s.Identity.PublicURL)
 	cfg, err := LoadConfigForBinding(s.InstanceConfigPath, listen, BindingOverrides{
 		Runtime: s.Runtime, BoundRuntime: s.BoundRuntime, OAuth21ServiceJWT: true,

@@ -33,10 +33,12 @@ var supportedOperations = func() map[string]struct{} {
 }()
 
 type Config struct {
-	Version                    int                 `json:"version"`
-	InstanceName               string              `json:"instance_name"`
-	TenantRoute                string              `json:"tenant_route"`
-	SchemaAdminUser            string              `json:"schema_admin_user,omitempty"`
+	Version         int    `json:"version"`
+	InstanceName    string `json:"instance_name"`
+	TenantRoute     string `json:"tenant_route"`
+	SchemaAdminUser string `json:"schema_admin_user,omitempty"`
+	// OAuthSchemaAdminUserID is injected only by trusted discovery, never decoded from tenant JSON.
+	OAuthSchemaAdminUserID     string              `json:"-"`
 	WecomOperatorUserID        string              `json:"wecom_operator_userid,omitempty"`
 	AIExecutionSubjectRecordID string              `json:"ai_execution_subject_record_id,omitempty"`
 	RegistryDocumentID         string              `json:"registry_document_id"`
@@ -85,6 +87,9 @@ func (c Config) validate(requireRegistry bool) error {
 	}
 	if c.SchemaAdminUser != "" && !schemaAdminIdentity.MatchString(c.SchemaAdminUser) {
 		return fmt.Errorf("配置 schema_admin_user 非法")
+	}
+	if c.OAuthSchemaAdminUserID != "" && !wecomUserID.MatchString(c.OAuthSchemaAdminUserID) {
+		return fmt.Errorf("OAuth schema admin userid invalid")
 	}
 	if c.WecomOperatorUserID != "" && !wecomUserID.MatchString(c.WecomOperatorUserID) {
 		return fmt.Errorf("配置 wecom_operator_userid 非法")
@@ -200,7 +205,11 @@ func (c Config) Digest() string {
 		groups = append(groups, name+":"+strings.Join(copyOperations, ","))
 	}
 	sort.Strings(groups)
-	sum := sha256.Sum256([]byte(strings.Join([]string{fmt.Sprintf("%d", c.Version), c.InstanceName, c.TenantRoute, c.SchemaAdminUser, c.WecomOperatorUserID, c.AIExecutionSubjectRecordID, c.RegistryDocumentID, c.RegistryKey, c.SchemaMirrorPath, c.SchemaSource, c.StatePath, c.InitializationGeneration, c.SchemaVersion, c.SchemaDigest, c.RegistrySheetID, c.InitializedState, strings.Join(groups, ";")}, "\x00")))
+	parts := []string{fmt.Sprintf("%d", c.Version), c.InstanceName, c.TenantRoute, c.SchemaAdminUser, c.WecomOperatorUserID, c.AIExecutionSubjectRecordID, c.RegistryDocumentID, c.RegistryKey, c.SchemaMirrorPath, c.SchemaSource, c.StatePath, c.InitializationGeneration, c.SchemaVersion, c.SchemaDigest, c.RegistrySheetID, c.InitializedState, strings.Join(groups, ";")}
+	if c.OAuthSchemaAdminUserID != "" {
+		parts = append(parts, "oauth-schema-admin", c.OAuthSchemaAdminUserID)
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:])
 }
 
