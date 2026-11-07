@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -106,5 +107,29 @@ func TestMigrationCompatibilityRejectsTypeOptionAndReferenceDrift(t *testing.T) 
 	referenceCurrent["property_reference"] = map[string]any{"sub_id": "other", "field_id": "project-field", "is_multiple": true}
 	if err := compatibleMigrationField(referenceCurrent, referenceWanted); err == nil {
 		t.Fatal("reference drift must fail")
+	}
+}
+
+func TestMigrationPreviewAndApplyBindSameVerifiedActor(t *testing.T) {
+	base := config.Config{InstanceName: "tenant-one", TenantRoute: "source-one", RegistryDocumentID: "registry-one", RegistryKey: "key-one", OAuthSchemaAdminUserID: "member-one"}
+	ctx := context.WithValue(context.Background(), verifiedIdentityContextKey{}, verifiedIdentity{UserID: "member-one", SubjectRecordID: "subject-one"})
+	previewRuntime := migrationPreviewRuntime(ctx, base)
+	applyRuntime, err := runtimeWithBusinessActor(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := schemaMigrationPlan{MigrationID: subjectMigrationID, DocumentID: "doc-one", CurrentSummary: map[string]any{"fields": 16}}
+	registry := schemaRegistryMigrationPlan{DocumentID: "doc-one", CurrentSummary: map[string]any{"fields": 28}}
+	if schemaMigrationPreviewID(previewRuntime, subject) != schemaMigrationPreviewID(applyRuntime, subject) || schemaRegistryMigrationPreviewID(previewRuntime, registry) != schemaRegistryMigrationPreviewID(applyRuntime, registry) {
+		t.Fatal("unchanged migration preview was rejected for its verified actor")
+	}
+	otherCtx := context.WithValue(context.Background(), verifiedIdentityContextKey{}, verifiedIdentity{UserID: "member-two", SubjectRecordID: "subject-two"})
+	if schemaMigrationPreviewID(previewRuntime, subject) == schemaMigrationPreviewID(migrationPreviewRuntime(otherCtx, base), subject) {
+		t.Fatal("another employee inherited a preview")
+	}
+	local := base
+	local.WecomOperatorUserID = "configured-local-operator"
+	if migrationPreviewRuntime(context.Background(), local).Digest() != local.Digest() {
+		t.Fatal("local preview changed")
 	}
 }
