@@ -133,7 +133,10 @@ def main(action,a):
                     run('/usr/bin/systemctl','daemon-reload')
                 raise
             print(json.dumps({'state':'schema_candidate_ready','schema_admin_enabled':False,'shared_restarted':False},sort_keys=True));return
-        prepared=json.loads(PREP.read_bytes());pid=candidate(mcp);require(pid==prepared['candidate_pid'] and all(prepared.get(k)==v for k,v in common.items()),'prepared state changed')
+        prepared=json.loads(PREP.read_bytes());pid=prepared['candidate_pid']
+        require(all(prepared.get(k)==v for k,v in common.items()),'prepared state changed')
+        # A broken new process must never prevent restoring the healthy old route.
+        if action!='rollback': require(candidate(mcp)==pid,'candidate process changed')
         if action=='rollback':
             current=TARGET.read_bytes();require(digest(current)==activation['new_route_sha256'] and digest(old)==activation['old_route_sha256'],'rollback route drift')
             fields={**common,'candidate_pid':pid,'new_route_sha256':digest(current),'nginx_config_sha256':digest(run('/usr/sbin/nginx','-T',timeout=20))}
@@ -162,6 +165,7 @@ def main(action,a):
         except Exception:
             if TARGET.read_bytes()==new:
                 replace(TARGET,old,route_mode);run('/usr/sbin/nginx','-t');run('/usr/sbin/nginx','-s','reload')
+                require(baseline(mcp,route,nextmod,helper,gnas)==(shared,nextp,vector) and route.tls_probe('zhycit.com','/mcp')==401,'automatic rollback readback failed')
             raise
         print(json.dumps({'state':'schema_target_cutover_verified','schema_admin_enabled':False,'shared_restarted':False,'other_enterprises_unchanged':True},sort_keys=True))
 
