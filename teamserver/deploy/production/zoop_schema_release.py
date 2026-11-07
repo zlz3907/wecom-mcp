@@ -50,6 +50,10 @@ def replace(path,data,mode):
     finally:
         if os.path.exists(name): os.unlink(name)
 
+def trusted_directory(p):
+    st=p.lstat()
+    return p.resolve()==p and st.st_uid==0 and stat.S_ISDIR(st.st_mode) and not st.st_mode&0o022
+
 def root_owned_regular(p):
     st=p.lstat()
     return p.resolve()==p and st.st_uid==0 and stat.S_ISREG(st.st_mode) and stat.S_IMODE(st.st_mode)==0o400
@@ -86,6 +90,11 @@ def candidate(mcp):
 
 def main(action,a):
     require(os.geteuid()==0 and Path(__file__).resolve()==SELF,'invalid controller')
+    for path in (Path('/usr'),Path('/usr/local'),HERE,Path('/etc'),Path('/etc/gnas'),APPROVALS,Path('/var/lib'),ROOT,ROOT/'releases',ROOT/'used',CANDIDATE):
+        require(trusted_directory(path),'untrusted release directory')
+    target_stat=TARGET.lstat()
+    require(TARGET.resolve()==TARGET and target_stat.st_uid==0 and stat.S_ISREG(target_stat.st_mode) and not target_stat.st_mode&0o022,'untrusted target route')
+    route_mode=stat.S_IMODE(target_stat.st_mode)
     mcp=load('mcp_schema',MCP);route=load('route_schema',ROUTE);nextmod=load('next_schema',NEXT);helper=load('env_schema',ENV);gnas=load('gnas_schema',GNAS)
     with contextlib.ExitStack() as stack:
         for path in (Path('/var/lib/gnas-oauth-isolated/release.lock'),ROOT/'release.lock'):
@@ -95,9 +104,11 @@ def main(action,a):
         shared,nextp,vector=baseline(mcp,route,nextmod,helper,gnas,current_sha)
         old=activation['old_route'].encode() if activation else TARGET.read_bytes()
         require(old.count(OLD_PORT)==2 and NEW_PORT not in old,'unexpected route shape')
-        common={'old_route_sha256':digest(old),'old_oauth_pid':nextp[0],'old_mcp_pid':nextp[1],'shared_gnas_pid':str(shared[0]),'shared_mcp_pid':shared[1]}
+        common={'old_route_sha256':digest(old),'old_oauth_pid':nextp[0],'old_mcp_pid':nextp[1],'shared_gnas_pid':str(shared[0]),'shared_mcp_pid':shared[1],'route_mode':route_mode}
         if action=='prepare':
             require(not UNIT_PATH.exists() and not PREP.exists(),'candidate already prepared')
+            memory=re.search(r'^MemAvailable:\s+([0-9]+)\s+kB$',Path('/proc/meminfo').read_text(),re.MULTILINE)
+            require(memory and int(memory.group(1))>=384*1024,'insufficient available memory')
             for p,expected in ((CANDIDATE/'wecom-mcp-team',BIN_SHA),(CANDIDATE/'discovery-policy.json',POLICY_SHA)):
                 st=p.lstat();require(p.resolve()==p and st.st_uid==0 and stat.S_ISREG(st.st_mode) and not st.st_mode&0o022 and sha(p)==expected,'candidate mismatch')
             sock=socket.socket()
@@ -127,14 +138,14 @@ def main(action,a):
             current=TARGET.read_bytes();require(digest(current)==activation['new_route_sha256'] and digest(old)==activation['old_route_sha256'],'rollback route drift')
             fields={**common,'candidate_pid':pid,'new_route_sha256':digest(current),'nginx_config_sha256':digest(run('/usr/sbin/nginx','-T',timeout=20))}
             verify_receipt(a,'rollback-schema-target',fields);consume(a)
-            require(TARGET.read_bytes()==current,'route changed during rollback');replace(TARGET,old,0o600)
+            require(TARGET.read_bytes()==current,'route changed during rollback');replace(TARGET,old,route_mode)
             try:
                 run('/usr/sbin/nginx','-t');run('/usr/sbin/nginx','-s','reload');time.sleep(1)
                 require(baseline(mcp,route,nextmod,helper,gnas)==(shared,nextp,vector),'rollback baseline mismatch')
                 require(route.tls_probe('zhycit.com','/mcp')==401 and route.tls_probe('zhycit.com','/.well-known/oauth-protected-resource/mcp')==200,'rollback target unavailable')
             except Exception:
                 if TARGET.read_bytes()==old:
-                    replace(TARGET,current,0o600);run('/usr/sbin/nginx','-t');run('/usr/sbin/nginx','-s','reload')
+                    replace(TARGET,current,route_mode);run('/usr/sbin/nginx','-t');run('/usr/sbin/nginx','-s','reload')
                 raise
             print(json.dumps({'state':'schema_target_rollback_verified','shared_restarted':False},sort_keys=True));return
         require(action=='cutover','invalid action')
@@ -142,7 +153,7 @@ def main(action,a):
         fields={**common,'candidate_pid':pid,'new_route_sha256':digest(new),'nginx_config_sha256':ngsha}
         verify_receipt(a,'cutover-schema-target',fields);consume(a)
         try:
-            require(TARGET.read_bytes()==old,'route changed during cutover');replace(TARGET,new,0o600)
+            require(TARGET.read_bytes()==old,'route changed during cutover');replace(TARGET,new,route_mode)
             run('/usr/sbin/nginx','-t');run('/usr/sbin/nginx','-s','reload');time.sleep(1)
             require(sha(TARGET)==digest(new) and sha(INCLUDE)==json.loads(nextmod.ACTIVATION.read_bytes())['new_include_sha256'],'route readback failed')
             require(route.tls_probe('zhycit.com','/mcp')==401 and route.tls_probe('zhycit.com','/.well-known/oauth-protected-resource/mcp')==200,'target public probe failed')
@@ -150,7 +161,7 @@ def main(action,a):
             file_new(ACTIVATION,json.dumps({**fields,'old_route':old.decode()},sort_keys=True).encode(),0o440)
         except Exception:
             if TARGET.read_bytes()==new:
-                replace(TARGET,old,0o600);run('/usr/sbin/nginx','-t');run('/usr/sbin/nginx','-s','reload')
+                replace(TARGET,old,route_mode);run('/usr/sbin/nginx','-t');run('/usr/sbin/nginx','-s','reload')
             raise
         print(json.dumps({'state':'schema_target_cutover_verified','schema_admin_enabled':False,'shared_restarted':False,'other_enterprises_unchanged':True},sort_keys=True))
 
