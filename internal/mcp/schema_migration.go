@@ -61,7 +61,18 @@ func schemaMigrationTools() []tool {
 	}
 }
 
+// migrationPreviewRuntime binds OAuth previews to the same verified actor
+// that apply records in its runtime digest. Legacy local previews retain their
+// configured operator when no verified OAuth identity is present.
+func migrationPreviewRuntime(ctx context.Context, runtime config.Config) config.Config {
+	if identity, ok := verifiedIdentityFromContext(ctx); ok {
+		runtime.WecomOperatorUserID = identity.UserID
+	}
+	return runtime
+}
+
 func (s *Server) previewSchemaMigration(ctx context.Context, runtime config.Config, client *wecom.Client, raw json.RawMessage) (any, error) {
+	runtime = migrationPreviewRuntime(ctx, runtime)
 	var input struct {
 		MigrationID string `json:"migration_id"`
 	}
