@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 path=Path(__file__).with_name('zoop_oauth_unit_transaction.py')
 spec=importlib.util.spec_from_file_location('unit_transaction',path)
@@ -16,6 +17,15 @@ class UnitTransactionTests(unittest.TestCase):
             self.assertEqual(commands,[('/usr/bin/systemctl','daemon-reload'),('/usr/bin/systemctl','restart','gnas-oauth-zhycit-next.service')])
             with self.assertRaisesRegex(ValueError,'drifted'):m.activate(unit,b'old',b'bad',0o644,lambda *cmd:commands.append(cmd))
             self.assertEqual(unit.read_bytes(),b'new');self.assertEqual(len(commands),2)
+    def test_incomplete_record_is_never_published_on_crash_before_link(self):
+        with tempfile.TemporaryDirectory() as d:
+            journal=Path(d)/'success'
+            with patch.object(m.os,'link',side_effect=RuntimeError('simulated crash')):
+                with self.assertRaisesRegex(RuntimeError,'simulated crash'):m.write_exclusive(journal,b'complete',0o440)
+            self.assertFalse(journal.exists())
+            m.write_exclusive(journal,b'complete',0o440)
+            self.assertEqual(journal.read_bytes(),b'complete')
+
     def test_journal_creation_is_exclusive_and_cannot_follow_symlink(self):
         with tempfile.TemporaryDirectory() as d:
             journal=Path(d)/'journal';m.write_exclusive(journal,b'first',0o440)

@@ -15,12 +15,19 @@ def sync_directory(path):
 
 
 def write_exclusive(path, data, mode):
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
-    with os.fdopen(fd, 'wb') as target:
-        target.write(data)
-        target.flush()
-        os.fsync(target.fileno())
-    sync_directory(path.parent)
+    # Publish only complete records. A crash before link leaves no final marker;
+    # a crash after link leaves fully written, synced bytes at the final name.
+    fd, temp_name = tempfile.mkstemp(prefix='.zoop-record-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as target:
+            target.write(data)
+            target.flush()
+            os.fchmod(target.fileno(), mode)
+            os.fsync(target.fileno())
+        os.link(temp_name, path)
+        sync_directory(path.parent)
+    finally:
+        if os.path.exists(temp_name): os.unlink(temp_name)
 
 
 def replace_expected(path, expected, replacement, mode):

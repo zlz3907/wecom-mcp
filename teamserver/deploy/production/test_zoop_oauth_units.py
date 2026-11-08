@@ -21,6 +21,16 @@ class UnitTests(unittest.TestCase):
         self.assertIn(b' 7505\n',probe)
         self.assertNotIn(b'WantedBy',probe)
         self.assertIn(b'Restart=no\n',probe)
+    def test_adaptive_units_follow_verified_current_authority(self):
+        unit=m.adaptive(self.unit,self.old,self.new[0],self.new[1],self.new[4])
+        self.assertIn(b'zoop-oauth-adaptive-env-exec.py',unit)
+        self.assertIn(b' live\n',unit)
+        self.assertNotIn(self.old[2].encode(),unit)
+        probe=m.adaptive(self.unit,self.old,self.old[0],self.old[1],self.old[4],probe=True)
+        self.assertIn(b' probe\n',probe)
+        self.assertIn(b'Restart=no\n',probe)
+        self.assertNotIn(b'WantedBy',probe)
+
     def test_drift_and_injected_arguments_fail_closed(self):
         for unit,args in ((self.unit+b'ExecStart=other\n',self.new),(self.unit.replace(b'Restart',b'ExecStart=x\nRestart'),self.new),(self.unit,self.new[:-1]+['c'*63+';'])):
             with self.subTest(args=args):

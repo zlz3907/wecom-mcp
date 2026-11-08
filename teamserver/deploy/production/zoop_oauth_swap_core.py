@@ -63,6 +63,7 @@ def switch(plan, ops):
             if not touched:
                 raise
             try:
+                ops.ensure_restart_job_settled()
                 ops.install_and_restart_rollback(plan, before)
                 ops.verify_rollback(plan, before)
                 ops.verify_public_and_other_tenants(plan, before)

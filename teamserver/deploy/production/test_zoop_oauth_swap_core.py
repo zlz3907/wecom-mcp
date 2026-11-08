@@ -57,6 +57,13 @@ class SwapTests(unittest.TestCase):
                 self.assertIn('install_and_restart_rollback',o.calls)
                 self.assertIn('verify_rollback',o.calls)
                 self.assertIn('record_rollback',o.calls)
+    def test_unsettled_systemd_job_prevents_competing_rollback(self):
+        o=Ops('verify_candidate')
+        def busy(*args):o.calls.append('ensure_restart_job_settled');raise RuntimeError('job running')
+        o.ensure_restart_job_settled=busy
+        with self.assertRaisesRegex(m.SwapError,'rollback was not verified'):m.switch(self.plan,o)
+        self.assertNotIn('install_and_restart_rollback',o.calls)
+
     def test_rollback_failure_is_reported_as_unverified(self):
         o=Ops('verify_candidate')
         def rollback(*args): o.calls.append('install_and_restart_rollback'); raise RuntimeError('rollback')

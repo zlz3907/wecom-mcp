@@ -28,3 +28,19 @@ def rewrite(current, old_args, new_args, probe=False):
         current = current.replace(b'Restart=on-failure\n', b'Restart=no\n')
         current = current.replace(b'[Install]\nWantedBy=multi-user.target\n', b'')
     return current.replace(old, start, 1)
+
+
+def adaptive(current, old_args, release, binary_sha, grant_sha, probe=False):
+    if not (RID.fullmatch(release) and SHA.fullmatch(binary_sha) and SHA.fullmatch(grant_sha)):
+        raise ValueError('invalid release arguments')
+    # Validate the whole old startup before replacing any part of the unit.
+    rewrite(current, old_args, old_args)
+    old=PREFIX+' '.join(old_args).encode()+b'\n'
+    new=(b'ExecStart=/usr/bin/python3 -I /usr/local/sbin/zoop-oauth-adaptive-env-exec.py '
+         +f'{release} {binary_sha} {grant_sha} '.encode()+(b'probe' if probe else b'live')+b'\n')
+    if probe:
+        if current.count(b'[Install]\nWantedBy=multi-user.target\n')!=1 or current.count(b'Restart=on-failure\n')!=1:
+            raise ValueError('unexpected probe unit')
+        current=current.replace(b'Restart=on-failure\n',b'Restart=no\n')
+        current=current.replace(b'[Install]\nWantedBy=multi-user.target\n',b'')
+    return current.replace(old,new,1)
