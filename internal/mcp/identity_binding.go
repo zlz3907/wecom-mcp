@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -18,6 +19,8 @@ import (
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/config"
 	"github.com/zhonglizhi/wecom-mcp-v2/internal/wecom"
 )
+
+var errPersonnelSubjectNotFound = errors.New("企业微信员工未登记 Z-S09 人员主体")
 
 const (
 	identityBindingArgument      = "identity_binding_id"
@@ -611,18 +614,22 @@ func inputCellContainsText(value any, expected string) bool {
 
 func resolveUniquePersonnelSubjectRecordID(records []any, userid, memberFieldID, typeFieldID, statusFieldID string) (string, error) {
 	matches := make([]string, 0, 1)
+	humanRows := 0
 	for _, rawRecord := range records {
 		record, _ := rawRecord.(map[string]any)
 		recordID, _ := record["record_id"].(string)
 		values, _ := record["values"].(map[string]any)
-		if recordID != "" &&
-			identityCellContainsUserID(values[memberFieldID], userid) &&
-			identityCellContainsText(values[typeFieldID], "人员主体") &&
-			identityCellContainsText(values[statusFieldID], "启用") {
-			matches = append(matches, recordID)
+		if identityCellContainsUserID(values[memberFieldID], userid) && identityCellContainsText(values[typeFieldID], "人员主体") {
+			humanRows++
+			if recordID != "" && identityCellContainsText(values[statusFieldID], "启用") {
+				matches = append(matches, recordID)
+			}
 		}
 	}
-	if len(matches) != 1 {
+	if humanRows == 0 {
+		return "", errPersonnelSubjectNotFound
+	}
+	if humanRows != 1 || len(matches) != 1 {
 		return "", fmt.Errorf("企业微信员工未唯一登记为启用的 Z-S09 人员主体，拒绝建立业务主体绑定")
 	}
 	return matches[0], nil

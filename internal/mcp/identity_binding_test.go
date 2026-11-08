@@ -229,6 +229,11 @@ func TestResolveUniquePersonnelSubjectRequiresOneEnabledHuman(t *testing.T) {
 		records []any
 	}{
 		{name: "paused human", records: []any{identitySubjectRecord("human", "user-one", "人员主体", "暂停")}},
+		{name: "disabled human", records: []any{identitySubjectRecord("human", "user-one", "人员主体", "停用")}},
+		{name: "enabled and paused duplicates", records: []any{
+			identitySubjectRecord("human-one", "user-one", "人员主体", "启用"),
+			identitySubjectRecord("human-two", "user-one", "人员主体", "暂停"),
+		}},
 		{name: "AI only", records: []any{identitySubjectRecord("ai", "user-one", "AI 执行主体", "启用")}},
 		{name: "duplicate enabled humans", records: []any{
 			identitySubjectRecord("human-one", "user-one", "人员主体", "启用"),

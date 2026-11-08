@@ -121,6 +121,28 @@ func TestOAuthEmployeeWriteEndToEnd(t *testing.T) {
 				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(body))), Header: make(http.Header)}, nil
 			})
 			t.Cleanup(func() { http.DefaultTransport = previous })
+			if tc.name == "verified employee" {
+				server := New(configPath)
+				originalRows := fake.records
+				for _, state := range []string{"启用", "暂停", "停用"} {
+					fake.records = []any{identitySubjectRecord("human-subject", "employee-one", "人员主体", state)}
+					_, readErr := server.CallToolWithOAuthEmployee(context.Background(), "wecom_schema_status", json.RawMessage(`{}`), "employee-one")
+					if (readErr == nil) != (state == "启用") {
+						t.Fatalf("state %q reader error=%v", state, readErr)
+					}
+					if state != "启用" {
+						bootstrap := json.RawMessage(`{"target_role":"Z-S09","operation":"add_records","records":[{}]}`)
+						if _, bootstrapErr := server.CallToolWithOAuthEmployee(context.Background(), "wecom_record_apply", bootstrap, "employee-one"); bootstrapErr == nil {
+							t.Fatalf("state %q bypassed status via registration", state)
+						}
+					}
+				}
+				fake.records = nil
+				if _, readErr := server.CallToolWithOAuthEmployee(context.Background(), "wecom_schema_status", json.RawMessage(`{}`), "employee-one"); readErr != nil {
+					t.Fatalf("unregistered active employee cannot read: %v", readErr)
+				}
+				fake.records = originalRows
+			}
 			arguments := map[string]any{"recipient_userid": "recipient-one", "text": "fake message", "idempotency_key": "oauth-message-test-key"}
 			if tc.forged {
 				arguments["identity_binding_id"] = "other-employee-binding"

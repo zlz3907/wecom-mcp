@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -222,22 +223,43 @@ func (s *Server) CallToolWithOAuthEmployee(ctx context.Context, name string, arg
 			return nil, fmt.Errorf("OAuth identity cannot be supplied in tool arguments")
 		}
 	}
-	if access == ToolAccessReader {
-		return s.call(ctx, name, arguments)
+	if access == ToolAccessReader && strings.HasPrefix(name, "wecom_instance_initialize") {
+		candidate, err := s.store.BootstrapCandidate()
+		if err != nil {
+			return nil, err
+		}
+		if candidate.RegistryDocumentID == "" {
+			return s.call(ctx, name, arguments)
+		}
 	}
 	runtime, client, err := s.runtimeClient()
 	if err != nil {
 		return nil, err
 	}
-	if isPersonnelSubjectAddRecords(arguments) {
-		// Z-S09 registration is governed by the Enterprise WeCom API and the
-		// normal schema/write validation. It must not depend on an existing
-		// Z-S09 identity row, including during initialization.
+	bootstrap := access != ToolAccessReader && isPersonnelSubjectAddRecords(arguments)
+	if bootstrap {
 		s.personnelBootstrapMu.Lock()
 		defer s.personnelBootstrapMu.Unlock()
-		return s.callWithBootstrapIdentity(ctx, runtime, name, arguments, userid)
 	}
 	identity, err := resolvePersonnelIdentity(ctx, runtime, client, verifiedIdentity{UserID: userid})
+	if access == ToolAccessReader {
+		// An unregistered employee remains able to read; an explicitly paused,
+		// disabled, ambiguous or unreadable personnel record fails closed.
+		if err != nil && !errors.Is(err, errPersonnelSubjectNotFound) {
+			return nil, err
+		}
+		ctx = context.WithValue(ctx, oauthInstanceDigestKey{}, runtime.Digest())
+		return s.call(ctx, name, arguments)
+	}
+	if bootstrap {
+		// Z-S09 registration is governed by the Enterprise WeCom API and the
+		// normal schema/write validation. A missing row may be registered, but
+		// an explicitly disabled or ambiguous existing row cannot bypass policy.
+		if err != nil && !errors.Is(err, errPersonnelSubjectNotFound) {
+			return nil, err
+		}
+		return s.callWithBootstrapIdentity(ctx, runtime, name, arguments, userid)
+	}
 	if err != nil {
 		return nil, err
 	}
