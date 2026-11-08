@@ -35,3 +35,21 @@ class UnitTests(unittest.TestCase):
         for unit,args in ((self.unit+b'ExecStart=other\n',self.new),(self.unit.replace(b'Restart',b'ExecStart=x\nRestart'),self.new),(self.unit,self.new[:-1]+['c'*63+';'])):
             with self.subTest(args=args):
                 with self.assertRaises(ValueError): m.rewrite(unit,self.old,args)
+
+    def test_upgrade_existing_adaptive_unit_and_preserve_rollback(self):
+        p=Path(__file__).with_name('zoop_oauth_policy_units.py')
+        spec=importlib.util.spec_from_file_location('zoop_oauth_policy_units',p)
+        policy=importlib.util.module_from_spec(spec);spec.loader.exec_module(policy)
+        current=m.adaptive(self.unit,self.old,self.new[0],self.new[1],self.new[4])
+        newer='20261108T183843Z-caf00ecfff10'
+        upgraded=policy.upgrade_adaptive(current,self.new[0],self.new[1],self.new[4],newer,'f'*64,self.new[4])
+        self.assertIn((newer+' '+('f'*64)).encode(),upgraded)
+        rollback=policy.upgrade_adaptive(current,self.new[0],self.new[1],self.new[4],self.new[0],self.new[1],self.new[4])
+        self.assertEqual(rollback,current)
+        probe=policy.upgrade_adaptive(current,self.new[0],self.new[1],self.new[4],newer,'f'*64,self.new[4],probe=True)
+        self.assertIn(b' probe\n',probe)
+        self.assertIn(b'Restart=no\n',probe)
+        self.assertNotIn(b'WantedBy',probe)
+        for altered in (current+b'ExecStart=evil\n',current.replace(self.new[0].encode(),self.old[0].encode())):
+            with self.assertRaises(ValueError):
+                policy.upgrade_adaptive(altered,self.new[0],self.new[1],self.new[4],newer,'f'*64,self.new[4])
