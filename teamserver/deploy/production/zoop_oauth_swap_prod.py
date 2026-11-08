@@ -31,8 +31,12 @@ RID='20261108T144914Z-e3620ffda6aa';SHA='cc1a536c23715162b9c622a91fba1da0a4b36d3
 MANIFEST='0c6903f7f2161c190a1a7ec4af5d6dc976d8a271f58210e13d7422f5ff919e7f'
 OLD='20261106T203247Z-932ca8583c69';OLD_SHA='d5b8cb5c98e74f45e7cc54b645ae9d686fa7003e9391bcaa85317101f3d531df'
 MAIN_RID='20261107T193406Z-4c9c55635682';MAIN_SHA='a655935e3ab5cef0fb2aff9e2af770c0457c136cb77d3e0bee0f9de5a579553e'
+# Independent Reviewer audited every 443 server include for this exact dump.
+# A different configuration requires a new review before this one-off release.
+AUDITED_NGINX_SHA='150aeb9781623a6d87fe06e1db96d512d88ce877049bd246f3e4d1b9f028fdbf'
+VERIFY_INCLUDE=Path('/root/nginx/global.verify.conf')
+VERIFY_INCLUDE_SHA='a80aeecdf88e0425bc5da262b53e6de8b7d3ceb8aba6451f06b9866a48b25a65'
 SITE_ROUTE=Path('/root/nginx/sites/portal-zhycit.conf')
-SITE_ROUTE_SHA='a1776bba77df3249909154c063818d51d0cb7bdabc15ff2ad9add4a9486223c4'
 TARGET_ROUTE=Path('/root/nginx/snippets/zhycit-mcp-routes.conf')
 OAUTH_ROUTE=Path('/root/nginx/snippets/gnas-oauth21-zhycit-isolated.conf')
 TARGET_ROUTE_SHA='9a7479072284ca9704cebbf67cf8dfd36e0292ec99df73dacb88e00dfe02fea0'
@@ -187,23 +191,139 @@ def fields(c,old,before):
             'grant_sha256':GRANT,'shared_snapshot':before,'target_routes':routes(c),'systemd_unit':unit_no_overrides(UNIT),'prepared_controller_sha256':sha(SELF),
             'prepared_dependencies_sha256':dependencies()}
 
+def nginx_tokens(raw):
+    """Tokenize nginx directives, preserving quoted/variable braces."""
+    text=raw.decode('utf-8');tokens=[];word=[];i=0
+    def flush():
+        if word:tokens.append(''.join(word));word.clear()
+    while i<len(text):
+        ch=text[i]
+        if ch.isspace():flush();i+=1;continue
+        if ch=='#':
+            flush();end=text.find('\n',i);i=len(text) if end<0 else end+1;continue
+        if ch in ('"',"'"):
+            quote=ch;i+=1
+            while i<len(text) and text[i]!=quote:
+                if text[i]=='\\':
+                    i+=1;require(i<len(text),'invalid nginx escape')
+                word.append(text[i]);i+=1
+            require(i<len(text),'unterminated nginx string');i+=1;continue
+        if ch=='\\':
+            i+=1;require(i<len(text),'invalid nginx escape');word.append(text[i]);i+=1;continue
+        if ch=='{' and word:
+            close=text.find('}',i+1)
+            if close>=0 and (word[-1]=='$' or re.fullmatch(r'[0-9]+(?:,[0-9]*)?',text[i+1:close])):
+                word.extend(text[i:close+1]);i=close+1;continue
+        if ch in '{};':flush();tokens.append(ch);i+=1;continue
+        word.append(ch);i+=1
+    flush();return tokens
+
+
+def nginx_servers(raw):
+    tokens=nginx_tokens(raw);stack=[];directive=[];servers=[];current=None;server_depth=0
+    for token in tokens:
+        if token=='{':
+            if current is not None and len(stack)==server_depth and directive:
+                current.append(tuple(directive)+('{',))
+            if directive==['server']:
+                require(current is None,'nested nginx server');current=[];servers.append(current);server_depth=len(stack)+1
+            stack.append(tuple(directive));directive=[]
+        elif token=='}':
+            require(stack,'invalid nginx block nesting')
+            if current is not None and len(stack)==server_depth:current=None
+            stack.pop();directive=[]
+        elif token==';':
+            if current is not None and len(stack)==server_depth and directive:current.append(tuple(directive))
+            directive=[]
+        else:directive.append(token)
+    require(not stack and not directive,'invalid nginx syntax')
+    return servers
+
+
+def listen_443(row):
+    if not row or row[0]!='listen' or len(row)<2:return None
+    value=row[1]
+    if value in ('443','*:443','0.0.0.0:443'):return 'wildcard_v4'
+    if value=='[::]:443':return 'wildcard_v6'
+    if value.endswith(':443'):return 'specific_address'
+    return None
+
+
+def validate_target_server(server):
+    allowed={'listen','server_name','ssl_certificate','ssl_certificate_key','gzip','gzip_http_version',
+             'gzip_disable','gzip_comp_level','gzip_types','location','include'}
+    require(all(x[0] in allowed for x in server),'target server has unreviewed top-level directive')
+    includes=[x for x in server if x[0]=='include']
+    require(sorted(includes)==sorted([('include','/root/nginx/snippets/zhycit-mcp-routes.conf'),
+      ('include','/root/nginx/global.verify.conf')]),'target server has unreviewed include')
+    exact={'/mcp','/.well-known/oauth-protected-resource/mcp','/zhycit/mcp',
+      '/.well-known/oauth-protected-resource/zhycit/mcp','/.well-known/oauth-authorization-server/gnas/oauth',
+      '/.well-known/openid-configuration/gnas/oauth'}
+    for item in server:
+        if item[0]!='location':continue
+        require(item[-1]=='{' and len(item)>=3,'invalid target location')
+        args=list(item[1:-1]);modifier=''
+        if args[0] in ('=','^~','~','~*'):
+            modifier=args.pop(0)
+        elif args[0].startswith('^~'):
+            modifier='^~';args[0]=args[0][2:]
+        require(len(args)==1 and args[0],'invalid target location')
+        if modifier in ('~','~*'):continue # Exact and ^~ OAuth locations win before regex.
+        path=args[0]
+        require(path not in exact and not path.startswith('/gnas/oauth/'),'target server contains competing MCP location')
+
+
+def validate_site_topology(site):
+    matching=[]
+    for server in nginx_servers(site):
+        has_name=any(x[0]=='server_name' and 'zhycit.com' in [v.lower().rstrip('.') for v in x[1:]] for x in server)
+        has_tls=any(listen_443(x) is not None and 'ssl' in x[2:] for x in server)
+        if has_name and has_tls:matching.append(server)
+    require(len(matching)==1,'target HTTPS server ambiguous')
+    include=('include','/root/nginx/snippets/zhycit-mcp-routes.conf')
+    require(matching[0].count(include)==1,'target HTTPS server does not include MCP routes')
+    validate_target_server(matching[0])
+
+
+def validate_global_topology(config):
+    servers=nginx_servers(config);matching=[];v6=False
+    for server in servers:
+        listeners=[x for x in server if listen_443(x) is not None]
+        for row in listeners:
+            kind=listen_443(row)
+            require(kind!='specific_address','address-specific 443 server may shadow target')
+            if kind=='wildcard_v6':v6=True
+        has_name=any(x[0]=='server_name' and 'zhycit.com' in [v.lower().rstrip('.') for v in x[1:]] for x in server)
+        if has_name and listeners:matching.append((server,listeners))
+    require(len(matching)==1,'global target HTTPS server ambiguous')
+    server,listeners=matching[0]
+    require(any(listen_443(x)=='wildcard_v4' and 'ssl' in x[2:] for x in listeners),'target IPv4 HTTPS listener unavailable')
+    if v6:require(any(listen_443(x)=='wildcard_v6' and 'ssl' in x[2:] for x in listeners),'target IPv6 listener may be shadowed')
+    require(server.count(('include','/root/nginx/snippets/zhycit-mcp-routes.conf'))==1,'global target HTTPS server missing MCP routes')
+    validate_target_server(server)
+
+
 def routes(c):
     c['route'].trusted_nginx_tree()
     for path in (SITE_ROUTE,TARGET_ROUTE,OAUTH_ROUTE):trusted(path)
-    site=SITE_ROUTE.read_bytes();target=TARGET_ROUTE.read_bytes();oauth=OAUTH_ROUTE.read_bytes()
+    v=VERIFY_INCLUDE.lstat()
+    require(VERIFY_INCLUDE.resolve()==VERIFY_INCLUDE and stat.S_ISREG(v.st_mode) and not v.st_mode&0o022,'untrusted target include')
+    site=SITE_ROUTE.read_bytes();target=TARGET_ROUTE.read_bytes();oauth=OAUTH_ROUTE.read_bytes();verify=VERIFY_INCLUDE.read_bytes()
     config=run('/usr/sbin/nginx','-T',timeout=20)
-    require(len(config)<=8*1024*1024 and digest(site)==SITE_ROUTE_SHA and digest(target)==TARGET_ROUTE_SHA and
+    require(len(config)<=8*1024*1024 and digest(config)==AUDITED_NGINX_SHA,'nginx configuration lacks matching independent review')
+    validate_site_topology(site);validate_global_topology(config)
+    require( digest(verify)==VERIFY_INCLUDE_SHA and digest(target)==TARGET_ROUTE_SHA and
       digest(oauth)==OAUTH_ROUTE_SHA and target.count(b'proxy_pass http://127.0.0.1:7709;')==2 and
       oauth.count(b'proxy_pass http://127.0.0.1:7504;')==1 and
       site.count(b'include /root/nginx/snippets/zhycit-mcp-routes.conf;')==1 and
       target.count(b'include /root/nginx/snippets/gnas-oauth21-zhycit-isolated.conf;')==3,
       'target route changed')
-    for path in (SITE_ROUTE,TARGET_ROUTE,OAUTH_ROUTE):
+    for path in (SITE_ROUTE,TARGET_ROUTE,OAUTH_ROUTE,VERIFY_INCLUDE):
         marker=('# configuration file '+str(path)+':\n').encode()
         require(config.count(marker)==1,'target nginx include topology changed')
     require(config.count(b'include /root/nginx/snippets/zhycit-mcp-routes.conf;')==1 and
       config.count(b'include /root/nginx/snippets/gnas-oauth21-zhycit-isolated.conf;')==3,'target nginx include topology changed')
-    return {'site_sha256':SITE_ROUTE_SHA,'mcp_route_sha256':TARGET_ROUTE_SHA,'oauth_route_sha256':OAUTH_ROUTE_SHA,
+    return {'site_sha256':digest(site),'verification_include_sha256':VERIFY_INCLUDE_SHA,'mcp_route_sha256':TARGET_ROUTE_SHA,'oauth_route_sha256':OAUTH_ROUTE_SHA,
             'nginx_config_sha256':digest(config)}
 
 def target_ready(c):

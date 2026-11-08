@@ -100,20 +100,57 @@ class ControllerTests(unittest.TestCase):
 
     def test_drifted_nginx_target_or_full_config_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp,contextlib.ExitStack() as stack:
-            root=Path(tmp).resolve();site=root/'site';target=root/'target';oauth=root/'oauth'
-            site.write_bytes(b'include /root/nginx/snippets/zhycit-mcp-routes.conf;\n')
+            root=Path(tmp).resolve();site=root/'site';target=root/'target';oauth=root/'oauth';verify=root/'verify'
+            site.write_bytes(b'server { listen 443 ssl; server_name zhycit.com; include /root/nginx/snippets/zhycit-mcp-routes.conf; include /root/nginx/global.verify.conf; }\n')
+            verify.write_bytes(b'location /verified.txt { return 200; }\n')
             target.write_bytes(b'proxy_pass http://127.0.0.1:7709;\n'*2+b'include /root/nginx/snippets/gnas-oauth21-zhycit-isolated.conf;\n'*3)
             oauth.write_bytes(b'proxy_pass http://127.0.0.1:7504;\n')
-            for name,value in {'SITE_ROUTE':site,'TARGET_ROUTE':target,'OAUTH_ROUTE':oauth,'SITE_ROUTE_SHA':m.digest(site.read_bytes()),'TARGET_ROUTE_SHA':m.digest(target.read_bytes()),'OAUTH_ROUTE_SHA':m.digest(oauth.read_bytes())}.items():stack.enter_context(patch.object(m,name,value))
+            for name,value in {'SITE_ROUTE':site,'TARGET_ROUTE':target,'OAUTH_ROUTE':oauth,'VERIFY_INCLUDE':verify,'VERIFY_INCLUDE_SHA':m.digest(verify.read_bytes()),'TARGET_ROUTE_SHA':m.digest(target.read_bytes()),'OAUTH_ROUTE_SHA':m.digest(oauth.read_bytes())}.items():stack.enter_context(patch.object(m,name,value))
             stack.enter_context(patch.object(m,'trusted'));c={'route':types.SimpleNamespace(trusted_nginx_tree=lambda:None)}
-            config=b''.join((f'# configuration file {p}:\n'.encode()+p.read_bytes()) for p in (site,target,oauth))
-            mocked=stack.enter_context(patch.object(m,'run',return_value=config))
-            baseline=m.routes(c);mocked.return_value=config+b'other global configuration changed\n'
-            self.assertNotEqual(m.routes(c)['nginx_config_sha256'],baseline['nginx_config_sha256'])
+            config=b''.join((f'# configuration file {p}:\n'.encode()+p.read_bytes()) for p in (site,target,oauth,verify))
+            mocked=stack.enter_context(patch.object(m,'run',return_value=config));stack.enter_context(patch.object(m,'AUDITED_NGINX_SHA',m.digest(config)))
+            m.routes(c);mocked.return_value=config+b'# other global configuration changed\n'
+            with self.assertRaisesRegex(ValueError,'matching independent review'):m.routes(c)
             mocked.return_value=config.replace(b'include /root/nginx/snippets/zhycit-mcp-routes.conf;',b'')
-            with self.assertRaisesRegex(ValueError,'topology changed'):m.routes(c)
+            with patch.object(m,'AUDITED_NGINX_SHA',m.digest(mocked.return_value)):
+                with self.assertRaisesRegex(ValueError,'topology changed|missing MCP routes'):m.routes(c)
             mocked.return_value=config;target.write_bytes(b'proxy_pass http://127.0.0.1:7708;\n'*2)
             with self.assertRaisesRegex(ValueError,'route changed'):m.routes(c)
+
+    def test_https_include_must_be_inside_unique_correct_server(self):
+        include='/root/nginx/snippets/zhycit-mcp-routes.conf'
+        site=('server { listen 80; server_name zhycit.com; return 301 https://$host${request_uri}; }\n'
+              'server { listen 443 ssl; server_name www.zhycit.com zhycit.com; '
+              'location /x { return 200 "quoted { value }"; } include '+include+'; include /root/nginx/global.verify.conf; }').encode()
+        m.validate_site_topology(site)
+        with self.assertRaisesRegex(ValueError,'does not include'):
+            m.validate_site_topology(site.replace(('include '+include+';').encode(),('location /mcp { include '+include+'; }').encode()))
+        with self.assertRaisesRegex(ValueError,'ambiguous'):
+            m.validate_site_topology(site+b' server { listen 443 ssl; server_name zhycit.com; }')
+        with self.assertRaisesRegex(ValueError,'does not include'):
+            m.validate_site_topology(site.replace(('include '+include+';').encode(),b'# include intentionally disabled\n'))
+
+    def test_global_topology_refuses_duplicate_and_address_specific_servers(self):
+        include='/root/nginx/snippets/zhycit-mcp-routes.conf'
+        good=('server { listen 443 ssl; server_name zhycit.com; include '+include+'; include /root/nginx/global.verify.conf; }').encode()
+        m.validate_global_topology(good)
+        with self.assertRaisesRegex(ValueError,'ambiguous'):
+            m.validate_global_topology(b'server { listen 443 ssl; server_name zhycit.com; } '+good)
+        with self.assertRaisesRegex(ValueError,'address-specific'):
+            m.validate_global_topology(b'server { listen 127.0.0.1:443 ssl default_server; server_name _; } '+good)
+        with self.assertRaisesRegex(ValueError,'IPv6'):
+            m.validate_global_topology(b'server { listen [::]:443 ssl default_server; server_name _; } '+good)
+        with self.assertRaisesRegex(ValueError,'HTTPS listener'):
+            m.validate_global_topology(good.replace(b'443 ssl',b'443'))
+
+    def test_target_server_refuses_auth_intercept_and_competing_locations(self):
+        good=b'server { listen 443 ssl; server_name zhycit.com; include /root/nginx/snippets/zhycit-mcp-routes.conf; include /root/nginx/global.verify.conf; }'
+        m.validate_site_topology(good)
+        for injection in (b'if ($http_authorization != "") { return 403; } ',b'auth_request /deny; ',
+                          b'location = /gnas/oauth/authorize { return 403; } ',b'include /tmp/unreviewed.conf; '):
+            with self.subTest(injection=injection):
+                changed=good.replace(b'include /root/nginx/snippets/zhycit-mcp-routes.conf;',injection+b'include /root/nginx/snippets/zhycit-mcp-routes.conf;')
+                with self.assertRaises(ValueError):m.validate_site_topology(changed)
 
     def test_systemd_override_refuses_restart(self):
         unit=Path('/etc/systemd/system/gnas-oauth-zhycit-next.service')
