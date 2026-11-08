@@ -99,13 +99,10 @@ func TestOAuth21EndToEndMCPClientAndImmediateRevocation(t *testing.T) {
 		t.Fatalf("tools=%#v", tools.Tools)
 	}
 	managed.Store(true)
-	tools, err = session.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 1 || tools.Tools[0].Name != "wecom_schema_status" {
-		t.Fatalf("managed tools=%#v err=%v", tools, err)
+	if _, err := session.ListTools(ctx, nil); err == nil {
+		t.Fatal("bootstrap accepted a managed policy response")
 	}
-	if result, callErr := session.CallTool(ctx, &sdkmcp.CallToolParams{Name: "wecom_employee_list", Arguments: map[string]any{}}); callErr == nil && (result == nil || !result.IsError) {
-		t.Fatal("managed policy allowed an unassigned employee-list call")
-	}
+	managed.Store(false)
 	// A rejected call can close this SDK session. Verify later revocation on a
 	// fresh connection rather than mistaking that client-side close for denial.
 	secondSession, err := client.Connect(ctx, &sdkmcp.StreamableClientTransport{Endpoint: resourceServer.URL + "/mcp", HTTPClient: httpClient, DisableStandaloneSSE: true, MaxRetries: -1}, nil)

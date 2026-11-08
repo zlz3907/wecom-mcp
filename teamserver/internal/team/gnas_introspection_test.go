@@ -11,7 +11,7 @@ import (
 )
 
 func TestGNASIntrospectionUsesServiceIdentityAndChecksTenant(t *testing.T) {
-	for _, scenario := range []string{"valid", "old_auth_server", "wrong_tenant", "wrong_issuer", "wrong_audience", "inactive", "bad_code", "unavailable", "redirect", "stale_binding"} {
+	for _, scenario := range []string{"valid", "managed_auth_server", "wrong_tenant", "wrong_issuer", "wrong_audience", "inactive", "bad_code", "unavailable", "redirect", "stale_binding"} {
 		t.Run(scenario, func(t *testing.T) {
 			var grants, checks, leaked atomic.Int32
 			redirect := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { leaked.Add(1) }))
@@ -45,11 +45,10 @@ func TestGNASIntrospectionUsesServiceIdentityAndChecksTenant(t *testing.T) {
 					return
 				}
 				result := map[string]any{"active": true, "iss": "https://jyiai.com/gnas/oauth", "sub": "wecom:gm:member-001", "aud": "https://mcp.jyiai.com/gmzoop/mcp", "exp": time.Now().Add(time.Minute).Unix(), "scope": "zoop.read", "token_use": "access", "tenant": "gm", "wecom_userid": "member-001", "mcp_role": "member", "effective_tools": []string{"wecom_schema_status"}}
-				result["tool_policy_contract_v1"] = true
 				code := 200
 				switch scenario {
-				case "old_auth_server":
-					delete(result, "tool_policy_contract_v1")
+				case "managed_auth_server":
+					result["tool_policy_contract_v1"] = true
 				case "wrong_tenant":
 					result["tenant"] = "other"
 				case "wrong_issuer":

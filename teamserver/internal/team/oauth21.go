@@ -142,9 +142,10 @@ func (a *OAuth21IntrospectionAuthenticator) Verify(ctx context.Context, rawToken
 }
 
 func validOAuth21IntrospectionResponse(result oauth21IntrospectionResponse, cfg Config, now time.Time) bool {
-	// A service advertising managed policy capability must not accept an older
-	// authorization server that silently ignores policies after a rollback.
-	if (cfg.OAuth21ServiceJWT || cfg.CapabilityCatalogPushEnabled) && !result.PolicyContractV1 {
+	// Bootstrap release: the running authorization servers do not yet support
+	// managed policies. Refuse a managed-policy server until a coordinated
+	// policy-compatible MCP release and rollback path have been installed.
+	if result.PolicyContractV1 || result.ManagedToolPolicy {
 		return false
 	}
 	if !result.Active || result.Issuer != cfg.OIDCIssuer || result.Subject == "" || result.Subject != strings.TrimSpace(result.Subject) || result.ExpiresAt <= now.Unix() || result.TokenUse != "access" || result.Tenant != cfg.AuthorizationTenant || result.WeComUserID == "" || result.WeComUserID != strings.TrimSpace(result.WeComUserID) || result.MCPRole == "" || result.MCPRole != strings.TrimSpace(result.MCPRole) || !oauth21AudienceContains(result.Audience, cfg.OIDCAudience) {

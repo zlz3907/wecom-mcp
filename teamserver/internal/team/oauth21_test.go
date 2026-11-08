@@ -88,7 +88,7 @@ func TestOAuth21IntrospectionAuthenticatorFailsClosed(t *testing.T) {
 	}
 }
 
-func TestOAuth21PolicyReporterRejectsOldAuthorizationServer(t *testing.T) {
+func TestOAuth21BootstrapAcceptsOldServerAndRejectsManagedContract(t *testing.T) {
 	payload := map[string]any{
 		"active": true, "iss": "https://jyiai.com/gnas/oauth", "sub": "wecom:gm:member-001",
 		"aud": "https://mcp.jyiai.com/gmzoop/mcp", "exp": time.Now().Add(time.Minute).Unix(),
@@ -106,16 +106,16 @@ func TestOAuth21PolicyReporterRejectsOldAuthorizationServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := authenticator.Verify(context.Background(), "opaque-token", nil); err == nil {
-		t.Fatal("old authorization server accepted in managed reporter mode")
+	if _, err := authenticator.Verify(context.Background(), "opaque-token", nil); err != nil {
+		t.Fatal("bootstrap rejected legacy server")
 	}
 	payload["tool_policy_contract_v1"] = true
-	if _, err := authenticator.Verify(context.Background(), "opaque-token", nil); err != nil {
-		t.Fatalf("compatible authorization server rejected: %v", err)
+	if _, err := authenticator.Verify(context.Background(), "opaque-token", nil); err == nil {
+		t.Fatal("bootstrap accepted policy-aware server")
 	}
 }
 
-func TestOAuth21ManagedPolicyKeepsNonZoopScopesAndOriginalTokenScope(t *testing.T) {
+func TestOAuth21BootstrapRejectsPolicyServerAndRetainsScopes(t *testing.T) {
 	cfg := testOAuth21Config("https://example.invalid/introspect")
 	cfg.RequiredScopes = []string{"zoop.write", "other.permission"}
 	response := oauth21IntrospectionResponse{Active: true, Issuer: cfg.OIDCIssuer, Subject: "employee:member", Audience: json.RawMessage(`"https://mcp.jyiai.com/gmzoop/mcp"`), ExpiresAt: time.Now().Add(time.Minute).Unix(), Scope: "zoop.read", TokenUse: "access", Tenant: cfg.AuthorizationTenant, WeComUserID: "member", MCPRole: "member", EffectiveTools: []string{"wecom_record_apply"}, PolicyContractV1: true}
@@ -123,8 +123,8 @@ func TestOAuth21ManagedPolicyKeepsNonZoopScopesAndOriginalTokenScope(t *testing.
 		t.Fatal("managed contract bypassed a non-Zoop scope")
 	}
 	cfg.RequiredScopes = []string{"zoop.write"}
-	if !validOAuth21IntrospectionResponse(response, cfg, time.Now()) {
-		t.Fatal("managed policy rejected an old read-labelled token")
+	if validOAuth21IntrospectionResponse(response, cfg, time.Now()) {
+		t.Fatal("bootstrap accepted managed policy contract")
 	}
 	response.PolicyContractV1 = false
 	if validOAuth21IntrospectionResponse(response, cfg, time.Now()) {
