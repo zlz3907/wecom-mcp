@@ -19,7 +19,7 @@ def module(name):
 m=module('zoop_oauth_swap_prod');core=module('zoop_oauth_swap_core');txn=module('zoop_oauth_unit_transaction')
 
 class ControllerTests(unittest.TestCase):
-    def execute(self,fail=False,manual=False,interrupted=False,drift=False):
+    def execute(self,fail=False,manual=False,interrupted=False,drift=False,fsync_failure=False):
         with tempfile.TemporaryDirectory() as tmp,contextlib.ExitStack() as stack:
             root=Path(tmp).resolve();(root/'used').mkdir();unit=root/'unit';unit.write_bytes(b'old-unit')
             prep=root/'prep';before={'shared':{'main_pid':'1','mcp_pid':2},'other_enterprises':[['other',401,200]]}
@@ -42,7 +42,16 @@ class ControllerTests(unittest.TestCase):
             olddir=root/'releases'/m.OLD;olddir.mkdir();(olddir/'GNASServer').touch()
             c={'core':core,'txn':txn};plan=core.Plan(m.RID,m.SHA,m.MANIFEST,m.OLD,m.OLD_SHA,m.MAIN_RID,m.MAIN_SHA,m.OLD_UNIT,m.digest(generated['candidate']),m.digest(generated['rollback']),m.GRANT)
             ops=m.ProductionOps(c,'APR-20261108T150000Z-test002')
-            if drift:
+            if fsync_failure:
+                real_sync=txn.sync_directory;seen=[False]
+                def fail_after_link(path):
+                    if (root/'success').exists() and not seen[0]:seen[0]=True;raise OSError('simulated directory fsync failure')
+                    return real_sync(path)
+                with patch.object(txn,'sync_directory',side_effect=fail_after_link):
+                    with self.assertRaisesRegex(core.SwapError,'durability is uncertain'):core.switch(plan,ops)
+                self.assertEqual(unit.read_bytes(),b'new-unit');self.assertTrue((root/'success').exists());self.assertFalse((root/'rolled').exists())
+                return
+            elif drift:
                 with self.assertRaisesRegex(ValueError,'prepared baseline changed'):core.switch(plan,ops)
                 self.assertEqual(unit.read_bytes(),b'old-unit');self.assertFalse((root/'journal').exists())
                 self.assertFalse((root/'used'/'APR-20261108T150000Z-test002').exists())
@@ -207,6 +216,7 @@ class ControllerTests(unittest.TestCase):
     def test_success_uses_candidate_and_keeps_durable_journal(self):self.execute()
     def test_candidate_failure_restores_rebased_old_unit(self):self.execute(fail=True)
     def test_dependency_drift_after_probes_refuses_deploy(self):self.execute(drift=True)
+    def test_fsync_error_after_success_link_does_not_trigger_rollback(self):self.execute(fsync_failure=True)
     def test_interrupted_switch_can_recover_even_when_candidate_process_is_gone(self):self.execute(interrupted=True)
     def test_manual_rollback_uses_separate_receipt_and_rebased_old(self):self.execute(manual=True)
 

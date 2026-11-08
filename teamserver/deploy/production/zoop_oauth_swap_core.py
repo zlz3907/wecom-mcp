@@ -63,6 +63,12 @@ def switch(plan, ops):
             if not touched:
                 raise
             try:
+                published = ops.success_record_published(plan, before)
+            except Exception as marker_error:
+                raise SwapError('success record state is uncertain; no rollback attempted') from marker_error
+            if published:
+                raise SwapError('candidate verified; success record durability is uncertain') from initial
+            try:
                 ops.ensure_restart_job_settled()
                 ops.install_and_restart_rollback(plan, before)
                 ops.verify_rollback(plan, before)

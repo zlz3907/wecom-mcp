@@ -312,6 +312,10 @@ def prepare(c,aid):
 
 
 def read_json_trusted(p):
+    # Ensure any previously linked marker is durable before acting on it.
+    fd=os.open(p.parent,os.O_RDONLY|os.O_DIRECTORY)
+    try:os.fsync(fd)
+    finally:os.close(fd)
     trusted(p);require(stat.S_IMODE(p.stat().st_mode)==0o440 and p.stat().st_size<=65536,'untrusted release record')
     v=json.loads(p.read_bytes());require(isinstance(v,dict),'invalid release record');return v
 
@@ -398,6 +402,12 @@ class ProductionOps:
                 return
             except Exception:
                 require(time.monotonic()<deadline,'public or fleet health failed');time.sleep(2)
+    def success_record_published(self,plan,before):
+        if not SUCCESS.exists():return False
+        trusted(SUCCESS);require(stat.S_IMODE(SUCCESS.stat().st_mode)==0o440,'untrusted success record')
+        value=json.loads(SUCCESS.read_bytes())
+        require(value=={'journal_sha256':sha(JOURNAL),'state':'switched'},'invalid success record')
+        return True
     def record_success(self,plan,before):
         self.c['txn'].write_exclusive(SUCCESS,(json.dumps({'journal_sha256':sha(JOURNAL),'state':'switched'},sort_keys=True)+'\n').encode(),0o440)
     def record_rollback(self,plan,before,reason):

@@ -57,6 +57,13 @@ class SwapTests(unittest.TestCase):
                 self.assertIn('install_and_restart_rollback',o.calls)
                 self.assertIn('verify_rollback',o.calls)
                 self.assertIn('record_rollback',o.calls)
+    def test_published_success_marker_does_not_trigger_unsafe_rollback(self):
+        o=Ops('record_success')
+        def published(*args):o.calls.append('success_record_published');return True
+        o.success_record_published=published
+        with self.assertRaisesRegex(m.SwapError,'durability is uncertain'):m.switch(self.plan,o)
+        self.assertNotIn('install_and_restart_rollback',o.calls)
+
     def test_unsettled_systemd_job_prevents_competing_rollback(self):
         o=Ops('verify_candidate')
         def busy(*args):o.calls.append('ensure_restart_job_settled');raise RuntimeError('job running')
