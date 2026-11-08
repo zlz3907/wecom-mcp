@@ -49,6 +49,18 @@ def current_baseline():
     return directory.name,binary['sha256']
 
 
+def same_grant(left,right):
+    def canonical(raw):
+        value=json.loads(raw)
+        require(isinstance(value,list) and len(value)==1 and isinstance(value[0],dict) and
+          set(value[0])=={'userid','tools'},'invalid inherited target grant')
+        user=value[0]['userid'];tools=value[0]['tools']
+        require(isinstance(user,str) and isinstance(tools,list) and all(isinstance(x,str) for x in tools) and
+          len(tools)==len(set(tools)),'invalid inherited target grant')
+        return user,tuple(sorted(tools))
+    return canonical(left)==canonical(right)
+
+
 def prepare(argv):
     require(len(argv)==4 and RID.fullmatch(argv[0]) and SHA.fullmatch(argv[1]) and SHA.fullmatch(argv[2])
             and argv[3] in ('live','probe'),'invalid arguments')
@@ -60,7 +72,11 @@ def prepare(argv):
     spec=importlib.util.spec_from_file_location('isolated_loader',BASE)
     helper=importlib.util.module_from_spec(spec);spec.loader.exec_module(helper)
     binary,env=helper.prepare(argv[0],argv[1],baseline,baseline_sha)
-    helper.add_target_grant(env,raw)
+    expected={};helper.add_target_grant(expected,raw)
+    require(len(expected)==1,'invalid target grant')
+    key,value=next(iter(expected.items()))
+    if key in env:require(same_grant(env[key],value),'inherited target grant conflicts')
+    else:env[key]=value
     env['GNAS_OAUTH21_ISOLATED_LISTEN']='127.0.0.1:'+('7504' if argv[3]=='live' else '7505')
     return binary,env
 

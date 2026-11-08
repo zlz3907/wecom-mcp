@@ -31,6 +31,8 @@ RID='20261108T144914Z-e3620ffda6aa';SHA='cc1a536c23715162b9c622a91fba1da0a4b36d3
 MANIFEST='0c6903f7f2161c190a1a7ec4af5d6dc976d8a271f58210e13d7422f5ff919e7f'
 OLD='20261106T203247Z-932ca8583c69';OLD_SHA='d5b8cb5c98e74f45e7cc54b645ae9d686fa7003e9391bcaa85317101f3d531df'
 MAIN_RID='20261107T193406Z-4c9c55635682';MAIN_SHA='a655935e3ab5cef0fb2aff9e2af770c0457c136cb77d3e0bee0f9de5a579553e'
+SITE_ROUTE=Path('/root/nginx/sites/portal-zhycit.conf')
+SITE_ROUTE_SHA='a1776bba77df3249909154c063818d51d0cb7bdabc15ff2ad9add4a9486223c4'
 TARGET_ROUTE=Path('/root/nginx/snippets/zhycit-mcp-routes.conf')
 OAUTH_ROUTE=Path('/root/nginx/snippets/gnas-oauth21-zhycit-isolated.conf')
 TARGET_ROUTE_SHA='9a7479072284ca9704cebbf67cf8dfd36e0292ec99df73dacb88e00dfe02fea0'
@@ -187,27 +189,38 @@ def fields(c,old,before):
 
 def routes(c):
     c['route'].trusted_nginx_tree()
-    trusted(TARGET_ROUTE);trusted(OAUTH_ROUTE)
-    target=TARGET_ROUTE.read_bytes();oauth=OAUTH_ROUTE.read_bytes()
-    require(digest(target)==TARGET_ROUTE_SHA and digest(oauth)==OAUTH_ROUTE_SHA and
-      target.count(b'proxy_pass http://127.0.0.1:7709;')==2 and
-      oauth.count(b'proxy_pass http://127.0.0.1:7504;')==1,'target route changed')
-    return {'mcp_route_sha256':TARGET_ROUTE_SHA,'oauth_route_sha256':OAUTH_ROUTE_SHA}
+    for path in (SITE_ROUTE,TARGET_ROUTE,OAUTH_ROUTE):trusted(path)
+    site=SITE_ROUTE.read_bytes();target=TARGET_ROUTE.read_bytes();oauth=OAUTH_ROUTE.read_bytes()
+    config=run('/usr/sbin/nginx','-T',timeout=20)
+    require(len(config)<=8*1024*1024 and digest(site)==SITE_ROUTE_SHA and digest(target)==TARGET_ROUTE_SHA and
+      digest(oauth)==OAUTH_ROUTE_SHA and target.count(b'proxy_pass http://127.0.0.1:7709;')==2 and
+      oauth.count(b'proxy_pass http://127.0.0.1:7504;')==1 and
+      site.count(b'include /root/nginx/snippets/zhycit-mcp-routes.conf;')==1 and
+      target.count(b'include /root/nginx/snippets/gnas-oauth21-zhycit-isolated.conf;')==3,
+      'target route changed')
+    for path in (SITE_ROUTE,TARGET_ROUTE,OAUTH_ROUTE):
+        marker=('# configuration file '+str(path)+':\n').encode()
+        require(config.count(marker)==1,'target nginx include topology changed')
+    require(config.count(b'include /root/nginx/snippets/zhycit-mcp-routes.conf;')==1 and
+      config.count(b'include /root/nginx/snippets/gnas-oauth21-zhycit-isolated.conf;')==3,'target nginx include topology changed')
+    return {'site_sha256':SITE_ROUTE_SHA,'mcp_route_sha256':TARGET_ROUTE_SHA,'oauth_route_sha256':OAUTH_ROUTE_SHA,
+            'nginx_config_sha256':digest(config)}
 
 def target_ready(c):
     require(c['route'].tls_probe('zhycit.com','/mcp')==401 and
       c['route'].tls_probe('zhycit.com','/.well-known/oauth-protected-resource/mcp')==200 and
       c['mcp'].probe(7709,'zhycit.com','/healthz')[0]==200,'target baseline unavailable')
 
-def check_probe_absent():
+def check_probe_absent(require_memory=True):
     require(not PROBE.exists() and not PROBE.is_symlink(),'probe unit exists')
     p=properties(PROBE.name);require(p.get('MainPID','0')=='0' and p.get('ActiveState') in ('inactive','failed'),'probe service active')
     s=socket.socket()
     try:s.bind(('127.0.0.1',7505))
     finally:s.close()
     require(not re.search(rb'(?<![0-9])7505(?![0-9])',run('/usr/sbin/nginx','-T',timeout=20)),'probe port routed')
-    memory=re.search(r'^MemAvailable:\s+([0-9]+)\s+kB$',Path('/proc/meminfo').read_text(),re.M)
-    require(memory and int(memory.group(1))>=384*1024,'insufficient memory for isolated probe')
+    if require_memory:
+        memory=re.search(r'^MemAvailable:\s+([0-9]+)\s+kB$',Path('/proc/meminfo').read_text(),re.M)
+        require(memory and int(memory.group(1))>=384*1024,'insufficient memory for isolated probe')
 
 def probe_version(c,unit_bytes,binary_sha):
     c['txn'].write_exclusive(PROBE,unit_bytes,0o644)
@@ -270,7 +283,7 @@ def recover_probe(c,aid):
             p=properties(PROBE.name);require(p.get('MainPID')=='0' and p.get('ActiveState') in ('inactive','failed'),'probe did not stop')
             require(PROBE.read_bytes()==raw,'probe unit drifted');PROBE.unlink();c['txn'].sync_directory(PROBE.parent)
             run('/usr/bin/systemctl','daemon-reload')
-        check_probe_absent()
+        check_probe_absent(require_memory=False)
         record=ROOT/('open-consent-probe-recovered-'+aid+'.json')
         c['txn'].write_exclusive(record,(json.dumps({'approval_id':aid,'probe_start_sha256':sha(probe_record(aid))},sort_keys=True)+'\n').encode(),0o440)
         print(json.dumps({'state':'isolated_probe_recovered','live_switched':False}))
@@ -338,7 +351,7 @@ class ProductionOps:
           'candidate_sha256':SHA,'old_sha256':OLD_SHA,'grant_sha256':GRANT}
         self.c['txn'].write_exclusive(JOURNAL,(json.dumps(self.record,sort_keys=True)+'\n').encode(),0o440)
     def assert_unchanged(self,plan,before):
-        unit_no_overrides(UNIT);routes(self.c)
+        unit_no_overrides(UNIT);require(routes(self.c)==self.prepared['target_routes'],'nginx configuration changed')
         require(common(self.c)=={'shared':before['shared'],'other_enterprises':before['other_enterprises']} and
                 runtime(UNIT.name,OLD_SHA)==before['old_pid'] and UNIT.read_bytes()==self.record['old_unit'].encode(),'baseline changed before switch')
     def ensure_restart_job_settled(self):ensure_unit_job_settled(UNIT)
@@ -378,7 +391,8 @@ class ProductionOps:
         deadline=time.monotonic()+60
         while True:
             try:
-                actual=common(self.c,allow_advanced=True);routes(self.c)
+                actual=common(self.c,allow_advanced=True)
+                require(routes(self.c)==self.prepared['target_routes'],'nginx configuration changed')
                 require(actual==expected,'shared service or other enterprise health changed')
                 target_ready(self.c)
                 return

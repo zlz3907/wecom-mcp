@@ -23,13 +23,13 @@ class ControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp,contextlib.ExitStack() as stack:
             root=Path(tmp).resolve();(root/'used').mkdir();unit=root/'unit';unit.write_bytes(b'old-unit')
             prep=root/'prep';before={'shared':{'main_pid':'1','mcp_pid':2},'other_enterprises':[['other',401,200]]}
-            prep.write_text(json.dumps({'old_unit':'old-unit','old_sha256':m.OLD_SHA,'candidate_sha256':m.SHA,'prepare_approval_id':'APR-20261108T150000Z-test001','binding':'expected','prepared_dependencies_sha256':{'helper':'original'}}));prep.chmod(0o440)
+            prep.write_text(json.dumps({'old_unit':'old-unit','old_sha256':m.OLD_SHA,'candidate_sha256':m.SHA,'prepare_approval_id':'APR-20261108T150000Z-test001','binding':'expected','target_routes':{'nginx_config_sha256':'test'},'prepared_dependencies_sha256':{'helper':'original'}}));prep.chmod(0o440)
             (root/'used'/'APR-20261108T150000Z-test001').write_text('consumed');(root/'used'/'APR-20261108T150000Z-test001').chmod(0o440)
             paths={'ROOT':root,'UNIT':unit,'PREP':prep,'JOURNAL':root/'journal','SUCCESS':root/'success','ROLLED':root/'rolled','ROLLBACK_START':root/'rollback-start'}
             for name,value in paths.items():stack.enter_context(patch.object(m,name,value))
             generated={'candidate':b'new-unit','rollback':b'rebased-old','probe_candidate':b'pnew','probe_rollback':b'pold'}
             stack.enter_context(patch.object(m,'units',return_value=generated));stack.enter_context(patch.object(m,'fields',return_value={'binding':'expected','prepared_dependencies_sha256':{'helper':'changed' if drift else 'original'}}))
-            stack.enter_context(patch.object(m,'trusted'));stack.enter_context(patch.object(m,'target_ready'));stack.enter_context(patch.object(m,'unit_no_overrides'));stack.enter_context(patch.object(m,'routes'));stack.enter_context(patch.object(m,'ensure_unit_job_settled')); stack.enter_context(patch.object(m,'sha',side_effect=lambda p:(m.OLD_SHA if p.parent.name==m.OLD else m.SHA) if p.name=='GNASServer' else (m.MANIFEST if p.name=='manifest.json' else m.digest(p.read_bytes()))))
+            stack.enter_context(patch.object(m,'trusted'));stack.enter_context(patch.object(m,'target_ready'));stack.enter_context(patch.object(m,'unit_no_overrides'));stack.enter_context(patch.object(m,'routes',return_value={'nginx_config_sha256':'test'}));stack.enter_context(patch.object(m,'ensure_unit_job_settled')); stack.enter_context(patch.object(m,'sha',side_effect=lambda p:(m.OLD_SHA if p.parent.name==m.OLD else m.SHA) if p.name=='GNASServer' else (m.MANIFEST if p.name=='manifest.json' else m.digest(p.read_bytes()))))
             stack.enter_context(patch.object(m,'common',side_effect=lambda c,**kw:copy.deepcopy(before)));stack.enter_context(patch.object(m,'runtime',return_value=22));stack.enter_context(patch.object(m,'locks',return_value=contextlib.nullcontext()))
             stack.enter_context(patch.object(m,'receipt'));stack.enter_context(patch.object(m,'run',return_value=b''))
             stack.enter_context(patch.object(m.ProductionOps,'verify_public_and_other_tenants'))
@@ -89,13 +89,21 @@ class ControllerTests(unittest.TestCase):
         with patch.object(m,'run',side_effect=[b'45 /org/freedesktop/job/45',b'']),patch.object(m.time,'sleep'):
             m.ensure_unit_job_settled(Path('/unit'))
 
-    def test_drifted_nginx_target_is_rejected_before_switch(self):
+    def test_drifted_nginx_target_or_full_config_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp,contextlib.ExitStack() as stack:
-            root=Path(tmp).resolve();target=root/'target';oauth=root/'oauth'
-            target.write_bytes(b'proxy_pass http://127.0.0.1:7709;\n'*2);oauth.write_bytes(b'proxy_pass http://127.0.0.1:7504;\n')
-            for name,value in {'TARGET_ROUTE':target,'OAUTH_ROUTE':oauth,'TARGET_ROUTE_SHA':m.digest(target.read_bytes()),'OAUTH_ROUTE_SHA':m.digest(oauth.read_bytes())}.items():stack.enter_context(patch.object(m,name,value))
+            root=Path(tmp).resolve();site=root/'site';target=root/'target';oauth=root/'oauth'
+            site.write_bytes(b'include /root/nginx/snippets/zhycit-mcp-routes.conf;\n')
+            target.write_bytes(b'proxy_pass http://127.0.0.1:7709;\n'*2+b'include /root/nginx/snippets/gnas-oauth21-zhycit-isolated.conf;\n'*3)
+            oauth.write_bytes(b'proxy_pass http://127.0.0.1:7504;\n')
+            for name,value in {'SITE_ROUTE':site,'TARGET_ROUTE':target,'OAUTH_ROUTE':oauth,'SITE_ROUTE_SHA':m.digest(site.read_bytes()),'TARGET_ROUTE_SHA':m.digest(target.read_bytes()),'OAUTH_ROUTE_SHA':m.digest(oauth.read_bytes())}.items():stack.enter_context(patch.object(m,name,value))
             stack.enter_context(patch.object(m,'trusted'));c={'route':types.SimpleNamespace(trusted_nginx_tree=lambda:None)}
-            m.routes(c);target.write_bytes(b'proxy_pass http://127.0.0.1:7708;\n'*2)
+            config=b''.join((f'# configuration file {p}:\n'.encode()+p.read_bytes()) for p in (site,target,oauth))
+            mocked=stack.enter_context(patch.object(m,'run',return_value=config))
+            baseline=m.routes(c);mocked.return_value=config+b'other global configuration changed\n'
+            self.assertNotEqual(m.routes(c)['nginx_config_sha256'],baseline['nginx_config_sha256'])
+            mocked.return_value=config.replace(b'include /root/nginx/snippets/zhycit-mcp-routes.conf;',b'')
+            with self.assertRaisesRegex(ValueError,'topology changed'):m.routes(c)
+            mocked.return_value=config;target.write_bytes(b'proxy_pass http://127.0.0.1:7708;\n'*2)
             with self.assertRaisesRegex(ValueError,'route changed'):m.routes(c)
 
     def test_systemd_override_refuses_restart(self):
@@ -117,12 +125,13 @@ class ControllerTests(unittest.TestCase):
             actual_sha=m.sha
             stack.enter_context(patch.object(m,'sha',side_effect=lambda p:'a'*64 if p==m.SELF else (m.OLD_SHA if str(p).startswith('/proc/') else actual_sha(p))))
             stack.enter_context(patch.object(m,'dependencies',return_value={'h':'b'}));stack.enter_context(patch.object(m,'units',return_value=generated))
-            stack.enter_context(patch.object(m,'trusted'));stack.enter_context(patch.object(m,'unit_no_overrides'));stack.enter_context(patch.object(m,'routes'));stack.enter_context(patch.object(m,'ensure_unit_job_settled'));stack.enter_context(patch.object(m,'check_probe_absent'))
+            stack.enter_context(patch.object(m,'trusted'));stack.enter_context(patch.object(m,'unit_no_overrides'));stack.enter_context(patch.object(m,'routes',return_value={'nginx_config_sha256':'test'}));stack.enter_context(patch.object(m,'ensure_unit_job_settled'));stack.enter_context(patch.object(m,'check_probe_absent'))
             stack.enter_context(patch.object(m,'locks',return_value=contextlib.nullcontext()))
             stack.enter_context(patch.object(m,'properties',side_effect=[{'MainPID':'42','ActiveState':'active'},{'MainPID':'0','ActiveState':'inactive'}]))
             commands=[]
             stack.enter_context(patch.object(m,'run',side_effect=lambda *args,**kw:commands.append(args) or b''))
             m.recover_probe({'txn':txn},aid)
+            m.check_probe_absent.assert_called_once_with(require_memory=False)
             self.assertFalse(unit.exists());self.assertTrue((root/('open-consent-probe-recovered-'+aid+'.json')).exists())
             self.assertIn(('/usr/bin/systemctl','stop',unit.name),commands)
             self.assertLess(commands.index(('/usr/bin/systemctl','daemon-reload')),commands.index(('/usr/bin/systemctl','stop',unit.name)))

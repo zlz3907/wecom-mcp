@@ -31,7 +31,7 @@ class AdaptiveTests(unittest.TestCase):
             grant=Path(tmp)/'grant';grant.write_bytes(b'grant');grant.chmod(0o400)
             digest=hashlib.sha256(grant.read_bytes()).hexdigest();calls=[];env={}
             def prep(*args):calls.append(args);return Path('/release/GNASServer'),env
-            helper=types.SimpleNamespace(prepare=prep,add_target_grant=lambda e,r:e.update({'GRANT_TEST':'present'}))
+            helper=types.SimpleNamespace(prepare=prep,add_target_grant=lambda e,r:e.update({'GRANT_TEST':'[{\"userid\":\"u\",\"tools\":[\"one\",\"two\"]}]'}))
             spec=types.SimpleNamespace(loader=types.SimpleNamespace(exec_module=lambda _:None))
             with patch.object(m,'GRANT',grant),patch.object(m,'trusted'),patch.object(m,'current_baseline',return_value=('20261107T193406Z-4c9c55635682','b'*64)),patch.object(m.importlib.util,'spec_from_file_location',return_value=spec),patch.object(m.importlib.util,'module_from_spec',return_value=helper):
                 args=['20261108T144914Z-e3620ffda6aa','a'*64,digest,'live']
@@ -39,3 +39,7 @@ class AdaptiveTests(unittest.TestCase):
                 self.assertEqual(calls[0][2:],('20261107T193406Z-4c9c55635682','b'*64))
                 _,result=m.prepare(args[:-1]+['probe']);self.assertEqual(result['GNAS_OAUTH21_ISOLATED_LISTEN'],'127.0.0.1:7505')
                 with self.assertRaisesRegex(ValueError,'arguments'):m.prepare(args[:-1]+['0.0.0.0:7504'])
+                env['GRANT_TEST']='[{"tools":["two","one"],"userid":"u"}]'
+                m.prepare(args)
+                env['GRANT_TEST']='[{"userid":"u","tools":["one","other"]}]'
+                with self.assertRaisesRegex(ValueError,'conflicts'):m.prepare(args)
