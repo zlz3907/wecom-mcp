@@ -28,7 +28,7 @@ func (f tableOAuthTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 // handlers and managed request construction; fake authorization/GNAS upstreams.
 // This does not test QR login, token issuance, a real gateway or WeCom writes.
 func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
-	for _, scenario := range []string{"success", "missing personnel", "forged identity", "gateway 503"} {
+	for _, scenario := range []string{"success", "missing personnel", "forged identity", "gateway 503", "write denied", "missing contract", "missing other scope", "revoked"} {
 		t.Run(scenario, func(t *testing.T) {
 			cfg := testServiceConfig(t)
 			dir := filepath.Dir(cfg.InstanceConfigPath)
@@ -61,7 +61,12 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 			cfg.OAuth21IntrospectionURL = "https://fake.invalid/introspect"
 			cfg.OAuth21ClientID, cfg.OAuth21ClientSecret = "fake-resource", "0123456789abcdef0123456789abcdef"
 			cfg.AuthorizationTenant, cfg.AuthorizationResource = "fixture-tenant", "fixture-resource"
-			cfg.RequiredScopes = []string{"zoop.read"}
+			// A pre-existing read-labelled token must still use the tools
+			// granted by the current trusted policy contract.
+			cfg.RequiredScopes = []string{"zoop.write"}
+			if scenario == "missing other scope" {
+				cfg.RequiredScopes = append(cfg.RequiredScopes, "other.permission")
+			}
 			writes, readbacks, introspections := 0, 0, 0
 			var stored []any
 			var resourceHost string
@@ -88,7 +93,11 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 						return nil, fmt.Errorf("invalid introspection request")
 					}
 					introspections++
-					out = map[string]any{"active": true, "iss": cfg.OIDCIssuer, "sub": "wecom:fixture:employee-one", "aud": cfg.MCPURL, "exp": time.Now().Add(time.Minute).Unix(), "scope": "zoop.read zoop.write", "token_use": "access", "tenant": cfg.AuthorizationTenant, "wecom_userid": "employee-one", "mcp_role": "member", "effective_tools": []string{"wecom_record_apply", "wecom_record_query"}}
+					granted := []string{"wecom_record_apply", "wecom_record_query"}
+					if scenario == "write denied" {
+						granted = []string{"wecom_record_query"}
+					}
+					out = map[string]any{"active": scenario != "revoked", "iss": cfg.OIDCIssuer, "sub": "wecom:fixture:employee-one", "aud": cfg.MCPURL, "exp": time.Now().Add(time.Minute).Unix(), "scope": "zoop.read", "token_use": "access", "tenant": cfg.AuthorizationTenant, "wecom_userid": "employee-one", "mcp_role": "member", "effective_tools": granted, "tool_policy_contract_v1": scenario != "missing contract", "tool_policy_managed": true}
 				case "/gnas/service/getJwtToken":
 					out = map[string]any{"code": 200, "data": map[string]any{"token": "fake-jwt", "expires_at": time.Now().Add(time.Hour).Unix()}}
 				case "/gnas/service/wecomExecute":
@@ -197,6 +206,12 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 			defer cancel()
 			client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "fixture-table-client", Version: "1"}, nil)
 			session, err := client.Connect(ctx, &sdkmcp.StreamableClientTransport{Endpoint: server.URL + "/mcp", HTTPClient: &http.Client{Transport: bearerRoundTripper{token: "fake-access", base: http.DefaultTransport}}, DisableStandaloneSSE: true, MaxRetries: -1}, nil)
+			if scenario == "missing contract" || scenario == "missing other scope" || scenario == "revoked" {
+				if err == nil || writes != 0 {
+					t.Fatalf("unqualified token connected: scenario=%s writes=%d err=%v", scenario, writes, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}

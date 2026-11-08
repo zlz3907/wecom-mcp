@@ -136,7 +136,7 @@ func (a *OAuth21IntrospectionAuthenticator) Verify(ctx context.Context, rawToken
 		Scopes: splitList(result.Scope), Expiration: time.Unix(result.ExpiresAt, 0), UserID: result.Subject,
 		Extra: map[string]any{
 			"issuer": result.Issuer, "role": string(RolePolicy), "wecom_userid": result.WeComUserID,
-			"mcp_role": result.MCPRole, "effective_tools": append([]string(nil), result.EffectiveTools...), "tool_policy_managed": result.ManagedToolPolicy,
+			"mcp_role": result.MCPRole, "effective_tools": append([]string(nil), result.EffectiveTools...), "tool_policy_managed": result.ManagedToolPolicy, "tool_policy_contract_v1": result.PolicyContractV1,
 		},
 	}, nil
 }
@@ -151,7 +151,7 @@ func validOAuth21IntrospectionResponse(result oauth21IntrospectionResponse, cfg 
 		return false
 	}
 	scopes := splitList(result.Scope)
-	if len(scopes) == 0 || !containsAll(scopes, cfg.RequiredScopes) {
+	if len(scopes) == 0 || !containsPolicyScopes(scopes, cfg.RequiredScopes, result.PolicyContractV1) {
 		return false
 	}
 	if len(result.EffectiveTools) == 0 || len(result.EffectiveTools) > 128 {

@@ -129,6 +129,11 @@ func (s *Service) Handler(verifier sdkauth.TokenVerifier) http.Handler {
 		Scopes:    s.config.RequiredScopes,
 		ClockSkew: 30 * time.Second,
 	}
+	// OAuth scopes are checked against the verified introspection contract in
+	// the verifier and authorization middleware, not by this static SDK gate.
+	if s.config.AuthenticationMode == AuthenticationModeOAuth21 {
+		requireOptions.Scopes = nil
+	}
 	if s.config.AuthenticationMode != AuthenticationModeConnectorAPIKey {
 		requireOptions.ResourceMetadataURL = s.config.MetadataURL
 	}
@@ -388,13 +393,14 @@ func authorizationFromOAuth21TokenInfo(info *sdkauth.TokenInfo, cfg Config, eval
 	mcpRole, roleOK := info.Extra["mcp_role"].(string)
 	rawTools, toolsOK := info.Extra["effective_tools"].([]string)
 	managedPolicy, _ := info.Extra["tool_policy_managed"].(bool)
+	policyContract, _ := info.Extra["tool_policy_contract_v1"].(bool)
 	if !useridOK || !roleOK || !toolsOK || userid == "" || userid != strings.TrimSpace(userid) || mcpRole == "" || mcpRole != strings.TrimSpace(mcpRole) {
 		return AuthorizationDecision{}, fmt.Errorf("OAuth 2.1 employee policy claims are invalid")
 	}
 	decision := AuthorizationDecision{
 		SchemaVersion: resolveAuthorizationSchemaV1, Tenant: cfg.AuthorizationTenant, UserID: userid,
 		Resource: cfg.AuthorizationResource, Active: true, EffectiveScopes: append([]string(nil), info.Scopes...),
-		EffectiveTools: append([]string(nil), rawTools...), ManagedToolPolicy: managedPolicy, PolicyVersion: "oauth21-introspection", EvaluatedAt: evaluatedAt,
+		EffectiveTools: append([]string(nil), rawTools...), ManagedToolPolicy: managedPolicy, PolicyContractV1: policyContract, PolicyVersion: "oauth21-introspection", EvaluatedAt: evaluatedAt,
 	}
 	if decision.Tenant == "" || decision.Tenant != strings.TrimSpace(decision.Tenant) || decision.UserID == "" || decision.UserID != strings.TrimSpace(decision.UserID) || decision.Resource == "" || decision.Resource != strings.TrimSpace(decision.Resource) {
 		return AuthorizationDecision{}, fmt.Errorf("OAuth 2.1 authorization identity is invalid")

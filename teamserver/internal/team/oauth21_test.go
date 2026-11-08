@@ -115,6 +115,23 @@ func TestOAuth21PolicyReporterRejectsOldAuthorizationServer(t *testing.T) {
 	}
 }
 
+func TestOAuth21ManagedPolicyKeepsNonZoopScopesAndOriginalTokenScope(t *testing.T) {
+	cfg := testOAuth21Config("https://example.invalid/introspect")
+	cfg.RequiredScopes = []string{"zoop.write", "other.permission"}
+	response := oauth21IntrospectionResponse{Active: true, Issuer: cfg.OIDCIssuer, Subject: "employee:member", Audience: json.RawMessage(`"https://mcp.jyiai.com/gmzoop/mcp"`), ExpiresAt: time.Now().Add(time.Minute).Unix(), Scope: "zoop.read", TokenUse: "access", Tenant: cfg.AuthorizationTenant, WeComUserID: "member", MCPRole: "member", EffectiveTools: []string{"wecom_record_apply"}, PolicyContractV1: true}
+	if validOAuth21IntrospectionResponse(response, cfg, time.Now()) {
+		t.Fatal("managed contract bypassed a non-Zoop scope")
+	}
+	cfg.RequiredScopes = []string{"zoop.write"}
+	if !validOAuth21IntrospectionResponse(response, cfg, time.Now()) {
+		t.Fatal("managed policy rejected an old read-labelled token")
+	}
+	response.PolicyContractV1 = false
+	if validOAuth21IntrospectionResponse(response, cfg, time.Now()) {
+		t.Fatal("legacy server bypassed required write scope")
+	}
+}
+
 func TestOAuth21ServiceFiltersToolsFromCurrentIntrospectionPolicy(t *testing.T) {
 	cfg := testServiceConfig(t)
 	cfg.AuthenticationMode = AuthenticationModeOAuth21

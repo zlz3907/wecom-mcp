@@ -50,6 +50,7 @@ type AuthorizationDecision struct {
 	EffectiveScopes   []string  `json:"effective_scopes"`
 	EffectiveTools    []string  `json:"effective_tools"`
 	ManagedToolPolicy bool      `json:"tool_policy_managed,omitempty"`
+	PolicyContractV1  bool      `json:"-"`
 	PolicyVersion     string    `json:"policy_version"`
 	EvaluatedAt       time.Time `json:"evaluated_at"`
 }
@@ -351,11 +352,25 @@ func validateStringSet(name string, values []string, allowWildcard bool) error {
 	return nil
 }
 
+// The managed tool-policy contract makes only the historical Zoop scope
+// labels informational. Other required scopes remain enforced.
+func containsPolicyScopes(scopes, required []string, policyContract bool) bool {
+	for _, scope := range required {
+		if policyContract && (scope == "zoop.read" || scope == "zoop.write") {
+			continue
+		}
+		if !slices.Contains(scopes, scope) {
+			return false
+		}
+	}
+	return true
+}
+
 func authorizedToolSet(decision AuthorizationDecision, definitions []legacymcp.ToolDefinition, requiredScopes []string) (map[string]bool, error) {
 	if !decision.Active {
 		return nil, fmt.Errorf("authorization is inactive")
 	}
-	if !containsAll(decision.EffectiveScopes, requiredScopes) {
+	if !containsPolicyScopes(decision.EffectiveScopes, requiredScopes, decision.PolicyContractV1) {
 		return nil, fmt.Errorf("authorization is missing required scopes")
 	}
 	publicTools := make(map[string]bool, len(definitions))
