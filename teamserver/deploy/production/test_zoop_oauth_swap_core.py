@@ -22,6 +22,7 @@ class Ops:
             self.calls.append(name)
             if name == self.fail: raise RuntimeError(name)
             if name == 'snapshot': return {'old_pid': 42}
+            if name == 'snapshot_for_recovery': return {'candidate_pid': 0}
         return call
     def release_lock(self): self.calls.append('release_lock'); return Lock()
 
@@ -69,6 +70,8 @@ class SwapTests(unittest.TestCase):
         self.assertLess(o.calls.index('verify_recovery_journal'),o.calls.index('install_and_restart_rollback'))
         self.assertLess(o.calls.index('verify_recovery_preconditions'),o.calls.index('install_and_restart_rollback'))
         self.assertIn('verify_rollback',o.calls)
+        self.assertIn('snapshot_for_recovery',o.calls)
+        self.assertNotIn('snapshot',o.calls)
     def test_recovery_refuses_changed_or_completed_state(self):
         for point in ('verify_recovery_journal','verify_recovery_preconditions'):
             with self.subTest(point=point):

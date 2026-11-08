@@ -81,7 +81,8 @@ def recover_incomplete(plan, ops):
     unit and shared baseline remain valid before making any change.
     """
     with ops.release_lock():
-        before = ops.snapshot()
+        # Recovery must remain available even if the candidate has exited.
+        before = ops.snapshot_for_recovery()
         ops.verify_recovery_journal(plan, before)
         ops.verify_recovery_preconditions(plan, before)
         ops.install_and_restart_rollback(plan, before)
