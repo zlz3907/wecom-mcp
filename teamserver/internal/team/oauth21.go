@@ -25,17 +25,19 @@ type OAuth21IntrospectionAuthenticator struct {
 }
 
 type oauth21IntrospectionResponse struct {
-	Active         bool            `json:"active"`
-	Issuer         string          `json:"iss"`
-	Subject        string          `json:"sub"`
-	Audience       json.RawMessage `json:"aud"`
-	ExpiresAt      int64           `json:"exp"`
-	Scope          string          `json:"scope"`
-	TokenUse       string          `json:"token_use"`
-	Tenant         string          `json:"tenant"`
-	WeComUserID    string          `json:"wecom_userid"`
-	MCPRole        string          `json:"mcp_role"`
-	EffectiveTools []string        `json:"effective_tools"`
+	Active            bool            `json:"active"`
+	Issuer            string          `json:"iss"`
+	Subject           string          `json:"sub"`
+	Audience          json.RawMessage `json:"aud"`
+	ExpiresAt         int64           `json:"exp"`
+	Scope             string          `json:"scope"`
+	TokenUse          string          `json:"token_use"`
+	Tenant            string          `json:"tenant"`
+	WeComUserID       string          `json:"wecom_userid"`
+	MCPRole           string          `json:"mcp_role"`
+	EffectiveTools    []string        `json:"effective_tools"`
+	ManagedToolPolicy bool            `json:"tool_policy_managed"`
+	PolicyContractV1  bool            `json:"tool_policy_contract_v1"`
 }
 
 func NewOAuth21IntrospectionAuthenticator(cfg Config) (*OAuth21IntrospectionAuthenticator, error) {
@@ -134,12 +136,17 @@ func (a *OAuth21IntrospectionAuthenticator) Verify(ctx context.Context, rawToken
 		Scopes: splitList(result.Scope), Expiration: time.Unix(result.ExpiresAt, 0), UserID: result.Subject,
 		Extra: map[string]any{
 			"issuer": result.Issuer, "role": string(RolePolicy), "wecom_userid": result.WeComUserID,
-			"mcp_role": result.MCPRole, "effective_tools": append([]string(nil), result.EffectiveTools...),
+			"mcp_role": result.MCPRole, "effective_tools": append([]string(nil), result.EffectiveTools...), "tool_policy_managed": result.ManagedToolPolicy,
 		},
 	}, nil
 }
 
 func validOAuth21IntrospectionResponse(result oauth21IntrospectionResponse, cfg Config, now time.Time) bool {
+	// A service advertising managed policy capability must not accept an older
+	// authorization server that silently ignores policies after a rollback.
+	if (cfg.OAuth21ServiceJWT || cfg.CapabilityCatalogPushEnabled) && !result.PolicyContractV1 {
+		return false
+	}
 	if !result.Active || result.Issuer != cfg.OIDCIssuer || result.Subject == "" || result.Subject != strings.TrimSpace(result.Subject) || result.ExpiresAt <= now.Unix() || result.TokenUse != "access" || result.Tenant != cfg.AuthorizationTenant || result.WeComUserID == "" || result.WeComUserID != strings.TrimSpace(result.WeComUserID) || result.MCPRole == "" || result.MCPRole != strings.TrimSpace(result.MCPRole) || !oauth21AudienceContains(result.Audience, cfg.OIDCAudience) {
 		return false
 	}

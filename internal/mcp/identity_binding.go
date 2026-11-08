@@ -568,16 +568,12 @@ func resolvePersonnelIdentity(ctx context.Context, runtime config.Config, client
 	if err != nil {
 		return verifiedIdentity{}, err
 	}
-	recordResponse, err := client.Request(ctx, "get_records", map[string]any{
-		"docid": target.DocumentID, "sheet_id": target.SheetID,
-		"key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID", "limit": 200,
-		"field_ids": []string{memberField.ID, typeField.ID, statusField.ID},
-	})
-	if err != nil || apiError(recordResponse) != nil || recordSetMayBeIncomplete(recordResponse, 200) {
+	records, err := readPersonnelSubjectRecords(ctx, client, target.DocumentID, target.SheetID, []string{memberField.ID, typeField.ID, statusField.ID}, identity.UserID)
+	if err != nil {
 		return verifiedIdentity{}, fmt.Errorf("无法取得完整 Z-S09 主体快照")
 	}
 	subjectRecordID, err := resolveUniquePersonnelSubjectRecordID(
-		recordsFrom(recordResponse),
+		records,
 		identity.UserID,
 		memberField.ID,
 		typeField.ID,
@@ -588,6 +584,110 @@ func resolvePersonnelIdentity(ctx context.Context, runtime config.Config, client
 	}
 	identity.SubjectRecordID = subjectRecordID
 	return identity, nil
+}
+
+func readPersonnelSubjectRecords(ctx context.Context, client wecomRequester, documentID, sheetID string, fields []string, userid string) ([]any, error) {
+	const pageSize = 200
+	if len(fields) != 3 || !validMessageRecipient(userid) {
+		return nil, fmt.Errorf("人员主体查询参数无效")
+	}
+	// One member-filtered snapshot avoids offset pagination skipping a paused
+	// row while other rows are inserted, moved or removed. A large or partial
+	// result is refused rather than interpreted as an unregistered employee.
+	response, err := client.Request(ctx, "get_records", map[string]any{
+		"docid": documentID, "sheet_id": sheetID, "key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID",
+		"offset": 0, "limit": pageSize, "field_ids": fields,
+		"filter_spec": map[string]any{"conjunction": "CONJUNCTION_AND", "conditions": []any{map[string]any{"field_id": fields[0], "field_type": "FIELD_TYPE_USER", "operator": "OPERATOR_IS", "user_value": map[string]any{"value": []string{userid}}}}},
+	})
+	if err != nil || apiError(response) != nil {
+		return nil, fmt.Errorf("人员主体读取失败")
+	}
+	result, ok := response["result"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("人员主体响应缺少结果")
+	}
+	code, validCode := errorCode(result["errcode"])
+	items, validItems := result["records"].([]any)
+	more, validMore := result["has_more"].(bool)
+	if !validCode || code != 0 || !validItems || items == nil || !validMore {
+		return nil, fmt.Errorf("人员主体分页响应无效")
+	}
+	if value, exists := result["next_cursor"]; exists {
+		cursor, ok := value.(string)
+		if !ok || cursor != "" {
+			return nil, fmt.Errorf("人员主体分页方式不受支持")
+		}
+	}
+	for _, item := range items {
+		if !validPersonnelSubjectRow(item, fields[0], fields[1], fields[2]) {
+			return nil, fmt.Errorf("人员主体记录不完整")
+		}
+		row := item.(map[string]any)
+		values := row["values"].(map[string]any)
+		if !identityCellContainsUserID(values[fields[0]], userid) {
+			return nil, fmt.Errorf("人员主体筛选结果不匹配")
+		}
+	}
+	if more || len(items) >= pageSize {
+		return nil, fmt.Errorf("人员主体分页不完整")
+	}
+	return items, nil
+}
+
+func validPersonnelSubjectRow(raw any, memberID, typeID, statusID string) bool {
+	row, ok := raw.(map[string]any)
+	if !ok {
+		return false
+	}
+	id, ok := row["record_id"].(string)
+	if !ok || id == "" || id != strings.TrimSpace(id) {
+		return false
+	}
+	values, ok := row["values"].(map[string]any)
+	if !ok {
+		return false
+	}
+	selectText := func(raw any) string {
+		cells, ok := raw.([]any)
+		if !ok || len(cells) != 1 {
+			return ""
+		}
+		cell, ok := cells[0].(map[string]any)
+		if !ok {
+			return ""
+		}
+		value, _ := cell["text"].(string)
+		return value
+	}
+	subjectType := selectText(values[typeID])
+	if subjectType == "AI 执行主体" || subjectType == "系统执行主体" {
+		return true
+	}
+	if subjectType != "人员主体" {
+		return false
+	}
+	status := selectText(values[statusID])
+	if status != "启用" && status != "暂停" && status != "停用" {
+		return false
+	}
+	members, ok := values[memberID].([]any)
+	if !ok || len(members) == 0 {
+		return false
+	}
+	for _, item := range members {
+		member, ok := item.(map[string]any)
+		if !ok {
+			return false
+		}
+		userid, ok := member["user_id"].(string)
+		if !ok {
+			userid, ok = member["userid"].(string)
+		}
+		if !ok || !validMessageRecipient(userid) {
+			return false
+		}
+	}
+	return true
 }
 
 // isPersonnelSubjectAddRecords identifies the Z-S09 registration path. The
@@ -731,6 +831,8 @@ type actorReferenceSpec struct {
 	Source     actorReferenceSource
 }
 
+type oauthUnregisteredActorContextKey struct{}
+
 var actorReferenceFields = map[string][]actorReferenceSpec{
 	"Z-S01": {{FieldTitle: "需求提出主体", Source: actorReferenceInitiator}},
 	"Z-S02": {{FieldTitle: "决策主体", Source: actorReferenceInitiator}},
@@ -745,7 +847,8 @@ var actorReferenceFields = map[string][]actorReferenceSpec{
 func withVerifiedActorReferences(ctx context.Context, input applyInput) (applyInput, error) {
 	initiator, hasInitiator := verifiedIdentityFromContext(ctx)
 	executor, hasExecutor := verifiedExecutionSubjectFromContext(ctx)
-	if !hasInitiator && !hasExecutor {
+	unregistered, _ := ctx.Value(oauthUnregisteredActorContextKey{}).(bool)
+	if !hasInitiator && !hasExecutor && !unregistered {
 		return input, nil
 	}
 	specs := actorReferenceFields[input.TargetRole]
@@ -769,6 +872,12 @@ func withVerifiedActorReferences(ctx context.Context, input applyInput) (applyIn
 				}
 			}
 			if recordID == "" {
+				if unregistered {
+					_, supplied := input.Records[index].Values[spec.FieldTitle]
+					if supplied || input.Operation == "add_records" {
+						return input, fmt.Errorf("字段 %s 需要已登记并启用的业务主体", spec.FieldTitle)
+					}
+				}
 				continue
 			}
 			want := []any{map[string]any{"record_id": recordID}}

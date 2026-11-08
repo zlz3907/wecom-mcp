@@ -42,15 +42,16 @@ type AuthorizationQuery struct {
 // AuthorizationDecision is the normalized MCP-side contract. It deliberately
 // contains no Mongo identifiers or storage details.
 type AuthorizationDecision struct {
-	SchemaVersion   int       `json:"schema_version"`
-	Tenant          string    `json:"tenant"`
-	UserID          string    `json:"userid"`
-	Resource        string    `json:"resource"`
-	Active          bool      `json:"active"`
-	EffectiveScopes []string  `json:"effective_scopes"`
-	EffectiveTools  []string  `json:"effective_tools"`
-	PolicyVersion   string    `json:"policy_version"`
-	EvaluatedAt     time.Time `json:"evaluated_at"`
+	SchemaVersion     int       `json:"schema_version"`
+	Tenant            string    `json:"tenant"`
+	UserID            string    `json:"userid"`
+	Resource          string    `json:"resource"`
+	Active            bool      `json:"active"`
+	EffectiveScopes   []string  `json:"effective_scopes"`
+	EffectiveTools    []string  `json:"effective_tools"`
+	ManagedToolPolicy bool      `json:"tool_policy_managed,omitempty"`
+	PolicyVersion     string    `json:"policy_version"`
+	EvaluatedAt       time.Time `json:"evaluated_at"`
 }
 
 type resolveAuthorizationV1Envelope struct {
@@ -371,11 +372,13 @@ func authorizedToolSet(decision AuthorizationDecision, definitions []legacymcp.T
 		}
 		result[name] = true
 	}
-	for name := range authenticatedEmployeeBaselineTools {
-		if !publicTools[name] {
-			return nil, fmt.Errorf("MCP authenticated employee baseline references an unknown tool")
+	if !decision.ManagedToolPolicy {
+		for name := range authenticatedEmployeeBaselineTools {
+			if !publicTools[name] {
+				return nil, fmt.Errorf("MCP authenticated employee baseline references an unknown tool")
+			}
+			result[name] = true
 		}
-		result[name] = true
 	}
 	return result, nil
 }

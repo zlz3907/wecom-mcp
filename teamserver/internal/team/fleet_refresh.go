@@ -140,10 +140,14 @@ func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 	workers := make(map[string]ReadyWorker, len(loaded))
 	workerFailures := make(map[string]bool, len(loaded))
 	previousHandlersToClose := make([]closableFleetHandler, 0)
+	newHandlersToCloseOnFailure := make([]closableFleetHandler, 0)
 	isolate := f.localWorkerTransition(loaded)
 	started := make([]ReadyWorker, 0)
 	defer func() {
 		if err != nil {
+			for _, handler := range newHandlersToCloseOnFailure {
+				handler.Close()
+			}
 			for _, worker := range started {
 				f.closeWorker(worker)
 			}
@@ -193,6 +197,9 @@ func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 				previousHandlersToClose = append(previousHandlersToClose, previousHandler)
 			}
 			handler, err = f.build(binding.Config)
+			if closable, ok := handler.(closableFleetHandler); ok {
+				newHandlersToCloseOnFailure = append(newHandlersToCloseOnFailure, closable)
+			}
 			if err != nil {
 				return fmt.Errorf("fleet binding handler initialization failed")
 			}
@@ -380,6 +387,12 @@ func (f *RefreshingFleet) Close(ctx context.Context) error {
 	}
 	f.closed = true
 	workers := make([]ReadyWorker, 0, len(f.workers))
+	handlers := make([]closableFleetHandler, 0, len(f.handlers))
+	for _, handler := range f.handlers {
+		if closable, ok := handler.(closableFleetHandler); ok {
+			handlers = append(handlers, closable)
+		}
+	}
 	for _, worker := range f.workers {
 		if worker != nil {
 			workers = append(workers, worker)
@@ -392,6 +405,9 @@ func (f *RefreshingFleet) Close(ctx context.Context) error {
 		f.current.Store(&fleetSnapshot{router: previous.router, unavailable: true})
 	}
 	f.mu.Unlock()
+	for _, handler := range handlers {
+		handler.Close()
+	}
 
 	var closeErr error
 	for _, worker := range workers {

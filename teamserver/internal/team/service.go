@@ -387,13 +387,14 @@ func authorizationFromOAuth21TokenInfo(info *sdkauth.TokenInfo, cfg Config, eval
 	userid, useridOK := info.Extra["wecom_userid"].(string)
 	mcpRole, roleOK := info.Extra["mcp_role"].(string)
 	rawTools, toolsOK := info.Extra["effective_tools"].([]string)
+	managedPolicy, _ := info.Extra["tool_policy_managed"].(bool)
 	if !useridOK || !roleOK || !toolsOK || userid == "" || userid != strings.TrimSpace(userid) || mcpRole == "" || mcpRole != strings.TrimSpace(mcpRole) {
 		return AuthorizationDecision{}, fmt.Errorf("OAuth 2.1 employee policy claims are invalid")
 	}
 	decision := AuthorizationDecision{
 		SchemaVersion: resolveAuthorizationSchemaV1, Tenant: cfg.AuthorizationTenant, UserID: userid,
 		Resource: cfg.AuthorizationResource, Active: true, EffectiveScopes: append([]string(nil), info.Scopes...),
-		EffectiveTools: append([]string(nil), rawTools...), PolicyVersion: "oauth21-introspection", EvaluatedAt: evaluatedAt,
+		EffectiveTools: append([]string(nil), rawTools...), ManagedToolPolicy: managedPolicy, PolicyVersion: "oauth21-introspection", EvaluatedAt: evaluatedAt,
 	}
 	if decision.Tenant == "" || decision.Tenant != strings.TrimSpace(decision.Tenant) || decision.UserID == "" || decision.UserID != strings.TrimSpace(decision.UserID) || decision.Resource == "" || decision.Resource != strings.TrimSpace(decision.Resource) {
 		return AuthorizationDecision{}, fmt.Errorf("OAuth 2.1 authorization identity is invalid")

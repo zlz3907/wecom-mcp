@@ -422,6 +422,9 @@ func (s *Server) instanceInitializeApply(ctx context.Context, runtime config.Con
 	if err != nil {
 		return nil, fmt.Errorf("锁内重新加载实例配置失败")
 	}
+	if err := verifyOAuthInitializerActor(ctx, lockedRuntime); err != nil {
+		return nil, err
+	}
 	if err := s.verifyInitializeLocalIdentity(lockedRuntime); err != nil {
 		return nil, fmt.Errorf("锁内实例初始化本机受保护身份校验失败")
 	}

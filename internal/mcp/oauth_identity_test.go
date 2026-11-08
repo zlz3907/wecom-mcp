@@ -23,6 +23,102 @@ type oauthPersonnelFake struct {
 
 type oauthFakeTransport func(*http.Request) (*http.Response, error)
 
+type personnelPagingFake struct {
+	records []any
+	fail    bool
+}
+
+type personnelInvalidFake struct{ response map[string]any }
+
+func (f personnelInvalidFake) Request(context.Context, string, any) (map[string]any, error) {
+	return f.response, nil
+}
+
+func TestPersonnelStatusRejectsMalformedPagesAndRows(t *testing.T) {
+	paused := identitySubjectRecord("id", "employee-one", "人员主体", "暂停")
+	missingMember := identitySubjectRecord("id", "employee-one", "人员主体", "暂停")
+	delete(missingMember["values"].(map[string]any), "member")
+	for name, response := range map[string]map[string]any{
+		"missing result":     {},
+		"missing errcode":    {"result": map[string]any{"records": []any{}, "has_more": false}},
+		"null records":       {"result": map[string]any{"errcode": float64(0), "records": nil, "has_more": false}},
+		"missing pagination": {"result": map[string]any{"errcode": float64(0), "records": []any{paused}}},
+		"missing subject":    {"result": map[string]any{"errcode": float64(0), "records": []any{missingMember}, "has_more": false}},
+		"filter ignored":     {"result": map[string]any{"errcode": float64(0), "records": []any{identitySubjectRecord("other-id", "other-user", "人员主体", "启用")}, "has_more": false}},
+		"incomplete page":    {"result": map[string]any{"errcode": float64(0), "records": []any{paused}, "has_more": true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := readPersonnelSubjectRecords(context.Background(), personnelInvalidFake{response}, "doc", "sheet", []string{"member", "type", "status"}, "employee-one"); err == nil {
+				t.Fatal("malformed response accepted")
+			}
+		})
+	}
+}
+
+func (f personnelPagingFake) Request(_ context.Context, operation string, payload any) (map[string]any, error) {
+	if f.fail || operation != "get_records" {
+		return nil, fmt.Errorf("unavailable")
+	}
+	input := payload.(map[string]any)
+	filtered := filterFakePersonnel(f.records, input)
+	start := input["offset"].(int)
+	end := start + input["limit"].(int)
+	if start > len(filtered) {
+		return nil, fmt.Errorf("bad offset")
+	}
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	return map[string]any{"result": map[string]any{"errcode": float64(0), "records": filtered[start:end], "has_more": end < len(filtered)}}, nil
+}
+
+func filterFakePersonnel(records []any, input map[string]any) []any {
+	filter := input["filter_spec"].(map[string]any)
+	condition := filter["conditions"].([]any)[0].(map[string]any)
+	value := condition["user_value"].(map[string]any)["value"]
+	var userid string
+	switch list := value.(type) {
+	case []string:
+		userid = list[0]
+	case []any:
+		userid, _ = list[0].(string)
+	}
+	matched := []any{}
+	for _, item := range records {
+		row, _ := item.(map[string]any)
+		values, _ := row["values"].(map[string]any)
+		if identityCellContainsUserID(values["member"], userid) {
+			matched = append(matched, item)
+		}
+	}
+	return matched
+}
+
+func TestPersonnelStatusFiltersLargeTableAndFailsClosed(t *testing.T) {
+	records := make([]any, 0, 201)
+	for i := 0; i < 200; i++ {
+		records = append(records, identitySubjectRecord(fmt.Sprintf("other-%d", i), fmt.Sprintf("other-%d", i), "人员主体", "启用"))
+	}
+	records = append(records, identitySubjectRecord("last", "employee-one", "人员主体", "暂停"))
+	all, err := readPersonnelSubjectRecords(context.Background(), personnelPagingFake{records: records}, "doc", "sheet", []string{"member", "type", "status"}, "employee-one")
+	if err != nil || len(all) != 1 {
+		t.Fatalf("filtered lookup failed: %d %v", len(all), err)
+	}
+	if _, err := resolveUniquePersonnelSubjectRecordID(all, "employee-one", "member", "type", "status"); err == nil {
+		t.Fatal("paused person in large table was accepted")
+	}
+	if _, err := readPersonnelSubjectRecords(context.Background(), personnelPagingFake{fail: true}, "doc", "sheet", []string{"member", "type", "status"}, "employee-one"); err == nil {
+		t.Fatal("unavailable personnel status failed open")
+	}
+	duplicates := make([]any, 200)
+	for i := range duplicates {
+		duplicates[i] = identitySubjectRecord(fmt.Sprintf("duplicate-%d", i), "employee-one", "人员主体", "启用")
+	}
+	if _, err := readPersonnelSubjectRecords(context.Background(), personnelPagingFake{records: duplicates}, "doc", "sheet", []string{"member", "type", "status"}, "employee-one"); err == nil {
+		t.Fatal("full page of matching records was accepted as complete")
+	}
+}
+
 func (f oauthFakeTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 // Exercise the public trusted entrypoint and the real message write handler,
@@ -35,7 +131,7 @@ func TestOAuthEmployeeWriteEndToEnd(t *testing.T) {
 		wantWrites     int
 	}{
 		{"verified employee", "employee-one", false, 1},
-		{"missing personnel", "employee-two", false, 0},
+		{"missing personnel", "employee-two", false, 1},
 		{"missing employee", "", false, 0},
 		{"forged binding", "employee-one", true, 0},
 		{"configuration changes during lookup", "employee-one", false, 0},
@@ -84,7 +180,7 @@ func TestOAuthEmployeeWriteEndToEnd(t *testing.T) {
 					writes++
 					response = map[string]any{"errcode": 0, "msgid": "fake-message"}
 				} else if r.URL.Path == "/api/fixture-source/cgi-bin/user/list" {
-					response = map[string]any{"userlist": []any{map[string]any{"userid": "application-operator", "status": 1}, map[string]any{"userid": "employee-one", "status": 1}, map[string]any{"userid": "recipient-one", "status": 1}}}
+					response = map[string]any{"userlist": []any{map[string]any{"userid": "application-operator", "status": 1}, map[string]any{"userid": "employee-one", "status": 1}, map[string]any{"userid": "employee-two", "status": 1}, map[string]any{"userid": "recipient-one", "status": 1}}}
 				} else {
 					operation := ""
 					for _, op := range []string{"get_sheet", "get_fields", "get_records"} {
@@ -154,10 +250,16 @@ func TestOAuthEmployeeWriteEndToEnd(t *testing.T) {
 			}
 			if tc.wantWrites == 1 {
 				out := value.(map[string]any)
-				for key, want := range map[string]string{"verified_initiator_userid": "employee-one", "verified_initiator_subject_record_id": "human-subject", "verified_execution_subject_record_id": "ai-subject", "business_operator_userid": "employee-one"} {
+				for key, want := range map[string]string{"verified_initiator_userid": tc.employee, "business_operator_userid": tc.employee} {
 					if out[key] != want {
 						t.Fatalf("%s=%v want %s", key, out[key], want)
 					}
+				}
+				if tc.name == "verified employee" && (out["verified_initiator_subject_record_id"] != "human-subject" || out["verified_execution_subject_record_id"] != "ai-subject") {
+					t.Fatal("missing verified subjects")
+				}
+				if tc.name == "missing personnel" && (out["personnel_subject_missing"] != true || out["verified_initiator_subject_record_id"] != nil) {
+					t.Fatal("fabricated a personnel subject")
 				}
 			}
 		})
@@ -186,7 +288,8 @@ func (f *oauthPersonnelFake) Request(_ context.Context, op string, raw any) (map
 	case op == "get_sheet" && p["docid"] == "instance-doc":
 		result = map[string]any{"sheet_list": []any{map[string]any{"type": "smartsheet", "sheet_id": "personnel", "title": "Z-S09｜主体"}}}
 	case op == "get_records" && p["docid"] == "instance-doc" && p["sheet_id"] == "personnel":
-		result = map[string]any{"records": f.records, "has_more": false}
+		records := filterFakePersonnel(f.records, p)
+		result = map[string]any{"errcode": float64(0), "records": records, "has_more": false}
 	default:
 		return nil, fmt.Errorf("unexpected or cross-instance request")
 	}

@@ -113,7 +113,7 @@ func (s *Service) CapabilityCatalog() (capabilityCatalog, error) {
 		Source:                cfg.CapabilityCatalogSource,
 		PublicResource:        cfg.CapabilityCatalogPublicResource,
 		AuthorizationResource: cfg.CapabilityCatalogAuthorizationResource,
-		CatalogVersion:        "teamserver-" + serverVersion + "-" + runtime.Digest(),
+		CatalogVersion:        "teamserver-" + serverVersion + "-" + runtime.Digest() + "-toolpolicy-v1",
 		Tools:                 tools,
 		Scopes:                scopes,
 	}

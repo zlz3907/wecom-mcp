@@ -137,7 +137,7 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 						if scenario != "missing personnel" {
 							rows = append(rows, map[string]any{"record_id": "human-subject", "values": map[string]any{"member": []any{map[string]any{"user_id": "employee-one"}}, "type": []any{map[string]any{"text": "人员主体"}}, "status": []any{map[string]any{"text": "启用"}}}})
 						}
-						out = map[string]any{"records": rows, "has_more": false}
+						out = map[string]any{"errcode": float64(0), "records": rows, "has_more": false}
 					case op == "add_records" && p["docid"] == "instance-doc" && p["sheet_id"] == "sessions":
 						if p["key_type"] != "CELL_VALUE_KEY_TYPE_FIELD_ID" {
 							return nil, fmt.Errorf("wrong table field encoding")

@@ -17,6 +17,42 @@ func refreshTestBinding(id string) LoadedFleetBinding {
 	}
 }
 
+type countingFleetHandler struct{ closed int }
+
+func (h *countingFleetHandler) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
+}
+func (h *countingFleetHandler) Close() { h.closed++ }
+
+func TestRefreshingFleetClosesUnpublishedAndShutdownHandlers(t *testing.T) {
+	loaded := []LoadedFleetBinding{refreshTestBinding("a")}
+	created := map[string]*countingFleetHandler{}
+	f, err := NewRefreshingFleet(t.Context(), func(context.Context) ([]LoadedFleetBinding, error) { return loaded, nil }, func(cfg Config) (http.Handler, error) {
+		if cfg.AuthorizationTenant == "c" {
+			return nil, errors.New("fixture build failure")
+		}
+		h := &countingFleetHandler{}
+		created[cfg.AuthorizationTenant] = h
+		return h, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded = []LoadedFleetBinding{refreshTestBinding("a"), refreshTestBinding("b"), refreshTestBinding("c")}
+	if err := f.Refresh(t.Context()); err == nil {
+		t.Fatal("invalid generation accepted")
+	}
+	if created["b"].closed != 1 || created["a"].closed != 0 {
+		t.Fatal("unpublished or serving handler lifetime is wrong")
+	}
+	if err := f.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if created["a"].closed != 1 {
+		t.Fatal("serving reporter not stopped on shutdown")
+	}
+}
+
 func fleetStatus(handler http.Handler, host string) int {
 	r := httptest.NewRequest(http.MethodGet, "http://"+host+"/readyz", nil)
 	r.Header.Set("X-Forwarded-Host", "a.example")

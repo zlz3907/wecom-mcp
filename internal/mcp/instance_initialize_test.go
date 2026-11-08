@@ -629,6 +629,43 @@ func TestInstanceInitializeApplyReadyIsIdempotentAndNeverWritesRemote(t *testing
 	}
 }
 
+func TestOAuthInitializeApplyRejectsOperatorChangedUnderLock(t *testing.T) {
+	runtime, fake := readyInitializeFixture(t)
+	path := filepath.Join(t.TempDir(), "instance.json")
+	write := func(value config.Config) {
+		t.Helper()
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(runtime)
+	server := &Server{store: config.NewStore(path), initializeLocalUser: func() (string, error) { return "symbolic-admin", nil }}
+	ctx := context.WithValue(context.Background(), oauthInitializerActorKey{}, "symbolic-admin")
+	status, err := server.instanceInitializeFacade(ctx, runtime, fake, nil, json.RawMessage(`{"action":"status"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := status.(map[string]any)
+	input, _ := json.Marshal(map[string]string{"action": "apply", "preview_id": result["preview_id"].(string), "preview_expires_at": result["expires_at"].(string), "owner_authorization": instanceInitializeAuthorization})
+	changed := runtime
+	changed.WecomOperatorUserID = "other-employee"
+	write(changed)
+	before := len(fake.operations)
+	_, err = server.instanceInitializeFacade(ctx, runtime, fake, nil, input)
+	if err == nil || !strings.Contains(err.Error(), "操作人与当前登录用户不一致") {
+		t.Fatalf("locked operator change was not rejected: %v", err)
+	}
+	for _, operation := range fake.operations[before:] {
+		if operation != "list_employees" && operation != "get_doc_base_info" && operation != "get_doc_auth" && operation != "get_sheet" && operation != "get_fields" && operation != "get_records" {
+			t.Fatalf("operator change caused remote write: %s", operation)
+		}
+	}
+}
+
 func TestInstanceInitializeReadyNoopPersistsPendingActiveRowConvergence(t *testing.T) {
 	runtime, fake := readyInitializeFixture(t)
 	configPath := filepath.Join(t.TempDir(), "instance.json")
