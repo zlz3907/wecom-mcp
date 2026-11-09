@@ -27,6 +27,7 @@ func TestOAuth21EndToEndMCPClientAndImmediateRevocation(t *testing.T) {
 	active.Store(true)
 	var managed atomic.Bool
 	var noTools atomic.Bool
+	var alternateTools atomic.Bool
 	var introspectionCalls atomic.Int32
 	authorizationServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		introspectionCalls.Add(1)
@@ -41,6 +42,8 @@ func TestOAuth21EndToEndMCPClientAndImmediateRevocation(t *testing.T) {
 		effectiveTools := []string{"wecom_schema_status"}
 		if noTools.Load() {
 			effectiveTools = []string{}
+		} else if alternateTools.Load() {
+			effectiveTools = []string{"wecom_employee_list"}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"active": active.Load(), "iss": issuer, "sub": "wecom:gm:member-001",
@@ -113,7 +116,7 @@ func TestOAuth21EndToEndMCPClientAndImmediateRevocation(t *testing.T) {
 	if err != nil || len(emptyTools.Tools) != 0 {
 		t.Fatalf("empty policy tools=%#v err=%v", emptyTools, err)
 	}
-	if result, callErr := session.CallTool(ctx, &sdkmcp.CallToolParams{Name: "wecom_schema_status", Arguments: map[string]any{}}); callErr == nil && result != nil && !result.IsError {
+	if result, callErr := session.CallTool(ctx, &sdkmcp.CallToolParams{Name: "wecom_schema_status", Arguments: map[string]any{}}); callErr == nil && (result == nil || !result.IsError) {
 		t.Fatal("previously permitted tool remained callable after policy was emptied")
 	}
 	noTools.Store(false)
@@ -122,9 +125,23 @@ func TestOAuth21EndToEndMCPClientAndImmediateRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer deniedSession.Close()
-	if result, callErr := deniedSession.CallTool(ctx, &sdkmcp.CallToolParams{Name: "wecom_employee_list", Arguments: map[string]any{}}); callErr == nil && result != nil && !result.IsError {
+	if result, callErr := deniedSession.CallTool(ctx, &sdkmcp.CallToolParams{Name: "wecom_employee_list", Arguments: map[string]any{}}); callErr == nil && (result == nil || !result.IsError) {
 		t.Fatal("tool outside the assigned policy was callable")
 	}
+	changedSession, err := client.Connect(ctx, &sdkmcp.StreamableClientTransport{Endpoint: resourceServer.URL + "/mcp", HTTPClient: httpClient, DisableStandaloneSSE: true, MaxRetries: -1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer changedSession.Close()
+	alternateTools.Store(true)
+	changedTools, err := changedSession.ListTools(ctx, nil)
+	if err != nil || len(changedTools.Tools) != 1 || changedTools.Tools[0].Name != "wecom_employee_list" {
+		t.Fatalf("changed policy tools=%#v err=%v", changedTools, err)
+	}
+	if result, callErr := changedSession.CallTool(ctx, &sdkmcp.CallToolParams{Name: "wecom_schema_status", Arguments: map[string]any{}}); callErr == nil && (result == nil || !result.IsError) {
+		t.Fatal("tool removed by a nonempty policy change remained callable")
+	}
+	alternateTools.Store(false)
 	managed.Store(false)
 	secondSession, err := client.Connect(ctx, &sdkmcp.StreamableClientTransport{Endpoint: resourceServer.URL + "/mcp", HTTPClient: httpClient, DisableStandaloneSSE: true, MaxRetries: -1}, nil)
 	if err != nil {
