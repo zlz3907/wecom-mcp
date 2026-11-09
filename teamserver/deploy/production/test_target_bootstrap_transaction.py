@@ -54,8 +54,9 @@ class FakeOps:
         self.step('stop_old')
         self.old_stopped = True
 
-    def replace_route(self, route):
+    def replace_route(self, expected, route):
         assert self.old_stopped
+        assert self.route == expected
         self.step('replace')
         self.route = route
 
@@ -85,6 +86,9 @@ class FakeOps:
 
     def write_incident(self, _intent):
         self.step('incident')
+
+    def stop_candidate_and_verify_no_listener(self):
+        self.step('isolate_candidate')
 
     def write_closed(self, _intent):
         self.step('closed')
@@ -142,6 +146,14 @@ class TargetBootstrapTransactionTest(unittest.TestCase):
         self.assertTrue(ops.old_stopped)
         self.assertEqual(ops.route, b'changed by another actor')
 
+    def test_recovery_reports_unconfirmed_when_old_stop_fails(self):
+        ops = FakeOps('stop_old')
+        with self.assertRaises(transaction.RecoveryUnconfirmed):
+            transaction.recover(ops, routes.make_intent(ops.initial), ops.initial)
+        self.assertEqual(ops.route, ops.initial)
+        self.assertNotIn('replace', ops.events)
+        self.assertIn('isolate_candidate', ops.events)
+
     def test_recovery_reloads_even_if_file_was_already_replaced(self):
         for ready in (True, False):
             ops = FakeOps()
@@ -186,6 +198,69 @@ class TargetBootstrapTransactionTest(unittest.TestCase):
             transaction.recover(ops, routes.make_intent(ops.initial), ops.initial)
         self.assertTrue(ops.old_stopped)
         self.assertEqual(ops.route, routes.route_variants(ops.initial)[1])
+        self.assertTrue(ops.closed)
+
+    def test_unreloadable_configuration_isolates_candidate_and_reports_unconfirmed(self):
+        ops = FakeOps()
+        def never_reload():
+            raise RuntimeError('nginx unavailable')
+        ops.test_and_reload = never_reload
+        with self.assertRaises(transaction.RecoveryUnconfirmed):
+            transaction.recover(ops, routes.make_intent(ops.initial), ops.initial)
+        self.assertIn('isolate_candidate', ops.events)
+        self.assertFalse(ops.committed)
+        self.assertFalse(ops.closed)
+
+    def test_unreadable_marker_isolates_candidate_without_changing_route(self):
+        ops = FakeOps()
+        ops.route = routes.route_variants(ops.initial)[0]
+        def unreadable(_intent):
+            raise OSError('unreadable')
+        ops.committed_state = unreadable
+        with self.assertRaises(transaction.RecoveryUnconfirmed):
+            transaction.recover(ops, routes.make_intent(ops.initial), ops.initial)
+        self.assertIn('isolate_candidate', ops.events)
+        self.assertEqual(ops.route, routes.route_variants(ops.initial)[0])
+        self.assertFalse(ops.closed)
+
+    def test_uncertain_commit_marker_isolates_candidate(self):
+        ops = FakeOps('commit')
+        def unreadable(_intent):
+            if 'commit' in ops.events:
+                raise OSError('unreadable')
+            return 'absent'
+        ops.committed_state = unreadable
+        with self.assertRaises(transaction.RecoveryUnconfirmed):
+            transaction.switch(ops)
+        self.assertIn('isolate_candidate', ops.events)
+        self.assertFalse(ops.closed)
+
+    def test_failed_candidate_isolation_never_claims_closed(self):
+        ops = FakeOps('boot_guard')
+        def isolation_failed():
+            raise OSError('listener still active')
+        ops.stop_candidate_and_verify_no_listener = isolation_failed
+        with self.assertRaisesRegex(transaction.RecoveryUnconfirmed, 'not verified'):
+            transaction.recover(ops, routes.make_intent(ops.initial), ops.initial)
+        self.assertFalse(ops.closed)
+
+    def test_existing_terminal_refuses_new_switch_before_mutation(self):
+        ops = FakeOps()
+        ops.closed = True
+        with self.assertRaises(transaction.RecoveryUnconfirmed):
+            transaction.switch(ops)
+        self.assertFalse(ops.old_stopped)
+        self.assertNotIn('prepare', ops.events)
+
+    def test_unexpected_closed_marker_during_commit_isolates_candidate(self):
+        ops = FakeOps()
+        def unexpected_close(_intent):
+            ops.closed = True
+            raise OSError('injected')
+        ops.write_committed = unexpected_close
+        with self.assertRaises(transaction.RecoveryUnconfirmed):
+            transaction.switch(ops)
+        self.assertIn('isolate_candidate', ops.events)
         self.assertTrue(ops.closed)
 
 

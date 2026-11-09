@@ -103,7 +103,7 @@ class TargetOldStartGuardTest(unittest.TestCase):
             child = subprocess.Popen([sys.executable, '-c',
                 'import os,sys; from pathlib import Path; import target_bootstrap_old_start_guard as g; '
                 'fd=g.acquire_start_lock(Path(sys.argv[1]),Path(sys.argv[2]),os.getuid()); '
-                'assert fd is not None; print("locked",flush=True); os.execv(sys.argv[3],[sys.argv[3]])',
+                'assert fd is not None; print("locked",flush=True); os.execv("/usr/bin/env",["env","FIXTURE=1",sys.argv[3]])',
                 str(directory), str(root), str(binary)], cwd=Path(__file__).parent,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:

@@ -84,6 +84,8 @@ def may_start(directory, trusted_root, owner):
 
 
 def main():
+    if sys.argv[1:] == ['--check']:
+        return 0 if may_start(DIRECTORY, Path('/'), 0) else 1
     if len(sys.argv) < 3 or sys.argv[1] != '--exec':
         return 1
     lock_fd = acquire_start_lock(DIRECTORY, Path('/'), 0)
