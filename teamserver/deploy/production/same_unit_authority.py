@@ -15,6 +15,7 @@ AUTHORITIES = {
     'target': ('gnas-oauth-zhycit-next.service', 'cc1a536c23715162b9c622a91fba1da0a4b36d3ac529d8982cc86b0347210ce1'),
     'shared': ('gnas-server.service', 'a655935e3ab5cef0fb2aff9e2af770c0457c136cb77d3e0bee0f9de5a579553e'),
 }
+SHARED_SUCCESSOR = '2c945014b8088a0728b4416eb34c29b452bf05f8a9ece8843152a7d632306c7b'
 ENV_KEYS = (b'GNAS_OAUTH21_EMPLOYEE_AUTHORIZATION_MODE', b'GNAS_OAUTH21_EMPLOYEE_SCOPES_JSON',
             b'GNAS_OAUTH21_EMPLOYEE_TOOLS_JSON')
 
@@ -40,7 +41,7 @@ def evaluate_environ(raw):
         raise ValueError('authority grants changed')
 
 
-def verify(profile, proc=Path('/proc'), runner=subprocess.run):
+def verify(profile, proc=Path('/proc'), runner=subprocess.run, allow_successor=False):
     if profile not in AUTHORITIES:
         raise ValueError('unknown authority')
     unit, expected_sha = AUTHORITIES[profile]
@@ -57,10 +58,14 @@ def verify(profile, proc=Path('/proc'), runner=subprocess.run):
         return data
     before = props()
     process = proc / before['MainPID']
-    if digest(process / 'exe') != expected_sha:
+    actual_sha = digest(process / 'exe')
+    allowed = {expected_sha}
+    if allow_successor and profile == 'shared':
+        allowed.add(SHARED_SUCCESSOR)
+    if actual_sha not in allowed:
         raise ValueError('authority binary changed')
     evaluate_environ((process / 'environ').read_bytes())
-    if props() != before or digest(process / 'exe') != expected_sha:
+    if props() != before or digest(process / 'exe') != actual_sha:
         raise ValueError('authority changed during inspection')
-    return {'unit': unit, 'pid': int(before['MainPID']), 'binary_sha256': expected_sha,
+    return {'unit': unit, 'pid': int(before['MainPID']), 'binary_sha256': actual_sha,
             'all_members': True, 'policy_contract': 'absent-in-pinned-binary'}

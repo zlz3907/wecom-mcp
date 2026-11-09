@@ -28,18 +28,18 @@ def switch(ops):
         ops.verify_candidate_config()
         if ops.terminal_state() != 'none':
             raise ValueError('existing transaction requires recovery')
-        # A partial prepare has no permission to start a candidate. The adapter
-        # must durably bind the exact old and new configuration to the receipt.
         ops.write_prepare()
         attempted_commit = False
         try:
             ops.disable_stop_and_verify_closed()
             ops.install_candidate_dropin()
             ops.reload_and_verify_candidate_config()
-            ops.enable_candidate_durably()
+            # Start while disabled. A reboot before durable commit cannot start
+            # an unverified unit via an existing boot link.
             ops.start_and_verify_candidate()
             attempted_commit = True
             ops.write_committed()
+            ops.enable_candidate_durably()
         except Exception as original:
             if attempted_commit:
                 try:
@@ -48,7 +48,9 @@ def switch(ops):
                     _close(ops)
                     raise RecoveryUnconfirmed('terminal status is unknown') from error
                 if state == 'committed':
-                    raise CommitPersistenceUncertain('commit marker durability is uncertain') from original
+                    _close(ops)
+                    ops.write_incident()
+                    raise CommitPersistenceUncertain('committed candidate closed; recovery required') from original
                 if state != 'none':
                     _close(ops)
                     raise RecoveryUnconfirmed('unexpected terminal state') from original
@@ -59,21 +61,26 @@ def switch(ops):
 
 def recover(ops):
     with ops.lock():
-        # Only an already-authorized recovery for this exact unit/transaction
-        # may reach the close-on-uncertainty logic below.
+        # An invalid receipt never grants the right to stop a unit.
         ops.verify_recovery_authority()
         try:
             ops.verify_prepared()
         except Exception as error:
+            try:
+                if ops.unprepared_untouched():
+                    return
+            except Exception:
+                pass
             _close(ops)
             raise RecoveryUnconfirmed('prepared transaction is not verified') from error
         try:
+            ops.establish_recovery_guard()
             terminal = ops.terminal_state()
             if terminal not in ('none', 'committed', 'closed'):
                 raise ValueError('unknown terminal state')
         except Exception as error:
             _close(ops)
-            raise RecoveryUnconfirmed('terminal status is unknown') from error
+            raise RecoveryUnconfirmed('authority or terminal state is unknown') from error
         if terminal == 'closed':
             _close(ops)
             return
@@ -82,11 +89,11 @@ def recover(ops):
             ops.disable_stop_and_verify_closed()
             ops.install_candidate_dropin()
             ops.reload_and_verify_candidate_config()
-            ops.enable_candidate_durably()
             ops.start_and_verify_candidate()
             if terminal == 'none':
                 attempted_commit = True
                 ops.write_committed()
+            ops.enable_candidate_durably()
         except Exception as original:
             if attempted_commit:
                 try:
@@ -95,7 +102,9 @@ def recover(ops):
                     _close(ops)
                     raise RecoveryUnconfirmed('terminal status is unknown') from error
                 if state == 'committed':
-                    raise CommitPersistenceUncertain('commit marker durability is uncertain') from original
+                    _close(ops)
+                    ops.write_incident()
+                    raise CommitPersistenceUncertain('committed candidate closed; recovery required') from original
                 if state != 'none':
                     _close(ops)
                     raise RecoveryUnconfirmed('unexpected terminal state') from original

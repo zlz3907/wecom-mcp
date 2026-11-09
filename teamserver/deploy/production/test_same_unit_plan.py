@@ -11,7 +11,9 @@ def fixture(profile):
             'candidate_binary_sha256': contract.BINARY_SHA, 'candidate_policy_sha256': contract.POLICY_SHA,
             'ci_evidence_sha256': contract.CI_EVIDENCE_SHA, 'smoke_sha256': 'c' * 64,
             'fleet_snapshot_sha256': 'd' * 64, 'recovery_mode': 'same-candidate-or-closed',
-            'authorization_mode': 'wecom-all-members-policy-disabled',
+            'authorization_mode': 'wecom-all-members-policy-disabled', 'previous_pid': 123,
+            'authority_pids': {'target': 456, 'shared': 789},
+            'recovery_authority_sha256': contract.RECOVERY_AUTHORITY_SHAS,
             'environment_file_sha256': {p: 'e' * 64 for p in contract.PROFILES[profile]['environment_files']}}
 
 

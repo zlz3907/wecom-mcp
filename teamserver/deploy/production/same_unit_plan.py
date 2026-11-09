@@ -8,6 +8,9 @@ RELEASE_ID = '20261109T074119Z-eab7c778c79f'
 CI_URL = 'https://github.com/zlz3907/wecom-mcp/actions/runs/42580859163'
 CI_EVIDENCE_SHA = 'ef08dc70235ea3b713313747ed3b33e964355d88c91e86278f46f07ffc59668d'
 POLICY_SHA = '7d45dd145b1c4f604619046e305e031d42e807e5c7ee32450015d04123ccbba6'
+RECOVERY_AUTHORITY_SHAS = {'target': ['cc1a536c23715162b9c622a91fba1da0a4b36d3ac529d8982cc86b0347210ce1'],
+                           'shared': ['a655935e3ab5cef0fb2aff9e2af770c0457c136cb77d3e0bee0f9de5a579553e',
+                                      '2c945014b8088a0728b4416eb34c29b452bf05f8a9ece8843152a7d632306c7b']}
 BINARY_SHA = 'c8af1b1dd27f4dd0323eee95bd16258441dd0de7d016000f724b6e0a81ff0005'
 RELEASE_LOCKS = ['/home/product/services/gnas-service-gin/release.lock',
                  '/var/lib/gnas-oauth-isolated/release.lock',
@@ -46,7 +49,7 @@ def validate(plan):
                 'release_id', 'source_commit', 'source_tree', 'ci_url', 'candidate_binary_sha256',
                 'candidate_policy_sha256', 'dropin_sha256', 'ci_evidence_sha256', 'smoke_sha256',
                 'release_root', 'release_locks', 'environment_files', 'environment_file_sha256',
-                'fleet_snapshot_sha256', 'recovery_mode', 'authorization_mode'}
+                'fleet_snapshot_sha256', 'recovery_mode', 'authorization_mode', 'previous_pid', 'authority_pids', 'recovery_authority_sha256'}
     if set(plan) != required or plan.get('schema_version') != 1 or plan.get('environment') != 'zhycit-prod-01':
         raise ValueError('bootstrap plan shape mismatch')
     if any(plan.get(key) != value for key, value in profile.items()):
@@ -55,13 +58,18 @@ def validate(plan):
             plan['previous_policy_sha256'] != POLICY_SHA or plan['candidate_policy_sha256'] != POLICY_SHA or
             plan['candidate_binary_sha256'] != BINARY_SHA or plan['ci_evidence_sha256'] != CI_EVIDENCE_SHA or
             plan['recovery_mode'] != 'same-candidate-or-closed' or
-            plan['authorization_mode'] != 'wecom-all-members-policy-disabled'):
+            plan['authorization_mode'] != 'wecom-all-members-policy-disabled' or
+            plan['recovery_authority_sha256'] != RECOVERY_AUTHORITY_SHAS):
         raise ValueError('candidate contract mismatch')
     if plan['release_id'] != RELEASE_ID:
         raise ValueError('invalid candidate release id')
     for key in ('dropin_sha256', 'ci_evidence_sha256', 'smoke_sha256', 'fleet_snapshot_sha256'):
         if not isinstance(plan[key], str) or not re.fullmatch(r'[0-9a-f]{64}', plan[key]):
             raise ValueError('invalid evidence digest')
+    if (type(plan['previous_pid']) is not int or plan['previous_pid'] < 2 or
+            not isinstance(plan['authority_pids'], dict) or set(plan['authority_pids']) != {'target', 'shared'} or
+            any(type(pid) is not int or pid < 2 for pid in plan['authority_pids'].values())):
+        raise ValueError('invalid expected process identities')
     files = plan['environment_file_sha256']
     if (not isinstance(files, dict) or set(files) != set(profile['environment_files']) or
             any(not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value) for value in files.values())):

@@ -27,6 +27,8 @@ class FakeOps:
     def verify_candidate_config(self): self.step('candidate_check')
     def verify_recovery_authority(self): self.step('recovery_authority')
     def verify_prepared(self): self.step('prepared_check')
+    def unprepared_untouched(self): return False
+    def establish_recovery_guard(self): self.step('recovery_guard')
     def terminal_state(self): self.step('terminal'); return self.terminal
     def write_prepare(self): self.step('prepare')
     def disable_stop_and_verify_closed(self): self.step('stop'); self.closed = True
@@ -45,11 +47,11 @@ class SameUnitTransactionTest(unittest.TestCase):
         tx.switch(ops)
         self.assertEqual(ops.terminal, 'committed')
         for before, after in (('prepare', 'stop'), ('stop', 'install'), ('install', 'reload'),
-                              ('reload', 'enable'), ('enable', 'start'), ('start', 'commit')):
+                              ('reload', 'start'), ('start', 'commit'), ('commit', 'enable')):
             self.assertLess(ops.events.index(before), ops.events.index(after))
 
     def test_failure_after_prepare_never_restarts_old_and_closes(self):
-        for step in ('stop', 'install', 'reload', 'enable', 'start', 'commit'):
+        for step in ('stop', 'install', 'reload', 'start', 'commit'):
             with self.subTest(step=step):
                 ops = FakeOps(step)
                 with self.assertRaises(RuntimeError):
@@ -63,6 +65,21 @@ class SameUnitTransactionTest(unittest.TestCase):
             tx.switch(ops)
         self.assertEqual(ops.terminal, 'committed')
         self.assertNotIn('closed', ops.events)
+        self.assertTrue(ops.closed)
+
+    def test_enable_failure_after_commit_closes_and_records_incident(self):
+        ops = FakeOps('enable')
+        with self.assertRaises(tx.CommitPersistenceUncertain): tx.switch(ops)
+        self.assertEqual(ops.terminal, 'committed')
+        self.assertTrue(ops.closed)
+        self.assertIn('incident', ops.events)
+
+    def test_no_boot_enable_before_candidate_commit(self):
+        for failure in ('install', 'reload', 'start', 'commit'):
+            with self.subTest(failure=failure):
+                ops = FakeOps(failure)
+                with self.assertRaises(RuntimeError): tx.switch(ops)
+                self.assertNotIn('enable', ops.events)
 
     def test_closed_terminal_recovery_remains_closed(self):
         ops = FakeOps()
