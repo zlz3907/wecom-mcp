@@ -10,13 +10,16 @@ import stat
 import sys
 
 ROOT=Path('/usr/local/lib/wecom-mcp-open-bootstrap')
-SELF=ROOT/'recover-closed-target.py'
+SELF=ROOT/'recover-closed-target-v2.py'
 ARCHIVE=ROOT/'same-unit-execution.pyz'
 ARCHIVE_SHA='1372378cc8446074bd65a5cf5679a9d9f4dba1688a1c2c2cfa307e085fd01764'
 ORIGINAL_ID='APR-20261109T082343Z-mcpopentarget01'
 ORIGINAL_PLAN_SHA='5bdab7eef0c63b0aed4e6fbbe0b0a23ee40a98f33b8c7af8682ddbf6c76ccc3a'
 RELEASE_ID='20261109T074119Z-eab7c778c79f'
 CANDIDATE_SHA='c8af1b1dd27f4dd0323eee95bd16258441dd0de7d016000f724b6e0a81ff0005'
+ATTEMPT_ID='APR-20261109T084658Z-mcptargetrecover01'
+ATTEMPT_PLAN_SHA='94829b16e2ac92fe345b72ef9c51e4ee999e0b45510b7e80b9124e7216b5aaac'
+DROPIN_SHA='b687243fbbbda2b3fa6091995ba0c974d766de85f04360fe0fa065b966597432'
 
 
 def trusted_file(path, mode):
@@ -48,6 +51,14 @@ def no_listening_socket(port, proc=Path('/proc'), socket_factory=socket.socket):
         try:sock.bind(('127.0.0.1',port))
         except OSError:return False
     return True
+
+
+def validate_systemd_bus_property(value, expected):
+    entries=value.get('data') if isinstance(value,dict) else None
+    if (not isinstance(value,dict) or value.get('type')!='a(sasbttttuii)' or not isinstance(entries,list) or
+            len(entries)!=1 or not isinstance(entries[0],list) or len(entries[0])!=10 or
+            entries[0][0]!=expected[0] or entries[0][1]!=expected or entries[0][2] is not False):
+        raise ValueError('loaded candidate argv mismatch')
 
 
 def validate_recovery_plan(plan, script_sha):
@@ -100,6 +111,30 @@ def main():
     class RecoveryUnit(Unit):
         def no_listener(self):return no_listening_socket(self.port)
 
+        def reload_and_verify_candidate_config(self,data,expected_sha,candidate):
+            path=self.systemd_dir/(self.name+'.d')/'zz-mcp-open-bootstrap.conf'
+            if path.is_symlink() or not path.is_file() or sha(path)!=expected_sha:
+                raise ValueError('candidate drop-in changed')
+            commands=self.candidate_commands(data,expected_sha,candidate)
+            self.run('/usr/bin/systemctl','daemon-reload')
+            props=self.show();self.verify_fragment(props)
+            if (props['DropInPaths']!=str(path) or props['ActiveState'] not in ('inactive','failed') or
+                    props['MainPID']!='0' or props['Job']):
+                raise ValueError('candidate unit not safely stopped')
+            raw=self.run('/usr/bin/busctl','--system','--json=short','call','org.freedesktop.systemd1',
+                         '/org/freedesktop/systemd1','org.freedesktop.systemd1.Manager','GetUnit','s',self.name)
+            obj=json.loads(raw)
+            if obj.get('type')!='o' or not isinstance(obj.get('data'),list) or len(obj['data'])!=1:
+                raise ValueError('invalid systemd unit identity')
+            unit_path=obj['data'][0]
+            if not isinstance(unit_path,str) or not unit_path.startswith('/org/freedesktop/systemd1/unit/'):
+                raise ValueError('invalid systemd object path')
+            for field,expected in commands.items():
+                raw=self.run('/usr/bin/busctl','--system','--json=short','get-property','org.freedesktop.systemd1',
+                             unit_path,'org.freedesktop.systemd1.Service',field)
+                validate_systemd_bus_property(json.loads(raw),expected)
+            if sha(path)!=expected_sha:raise ValueError('candidate drop-in changed after reload')
+
     u=RecoveryUnit(original['unit'],original['fragment_sha256'],CANDIDATE_SHA)
     def check_receipt():
         current,current_sha=receipt.validate(recover_receipt,recover_path,aid,'recover-mcp-open-bootstrap')
@@ -116,9 +151,23 @@ def main():
     def closed_baseline():
         receipt.verify_consumed(original_receipt,original_path,used,ORIGINAL_ID)
         if original_records.terminal_state()!='closed':raise ValueError('original terminal is not closed')
+        import datetime as dt
+        attempted_receipt=approvals/(ATTEMPT_ID+'.json');attempted_plan=plans/(ATTEMPT_ID+'.json')
+        stored=receipt._json(receipt._read_regular(attempted_receipt,Path('/'),0))
+        approved=dt.datetime.fromisoformat(stored['approved_at'].replace('Z','+00:00'))
+        previous,previous_sha=receipt.validate(attempted_receipt,attempted_plan,ATTEMPT_ID,'recover-mcp-open-bootstrap',now=approved)
+        marker=receipt._read_regular(used/ATTEMPT_ID,Path('/'),0)
+        if (previous_sha!=ATTEMPT_PLAN_SHA or marker!=(ATTEMPT_PLAN_SHA+'\n').encode() or
+                previous.get('candidate_sha256')!=CANDIDATE_SHA or
+                journal.Records(Journal(journals/ATTEMPT_ID,0),ATTEMPT_PLAN_SHA).terminal_state()!='closed'):
+            raise ValueError('prior recovery was not safely closed')
         props=u.show();u.verify_fragment(props)
+        dropin=u.systemd_dir/(u.name+'.d')/'zz-mcp-open-bootstrap.conf'
+        info=dropin.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or stat.S_IMODE(info.st_mode)!=0o644 or sha(dropin)!=DROPIN_SHA):
+            raise ValueError('approved candidate drop-in changed')
         if (props['ActiveState'] not in ('inactive','failed') or props['MainPID']!='0' or props['Job'] or
-                props['UnitFileState']!='disabled' or props['DropInPaths'] or not u.no_processes() or not u.no_listener()):
+                props['UnitFileState']!='disabled' or props['DropInPaths']!=str(dropin) or not u.no_processes() or not u.no_listener()):
             raise ValueError('closed target baseline changed')
         link=u.wants/u.name
         if link.exists() or link.is_symlink():raise ValueError('target boot link remains')

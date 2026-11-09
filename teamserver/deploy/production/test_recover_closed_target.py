@@ -41,6 +41,15 @@ class RecoverTest(unittest.TestCase):
         with self.assertRaises(ValueError):recover.consume_after_recheck(expired,lambda:consumed.append(True))
         self.assertEqual(consumed,[])
 
+    def test_systemd_argv_preserves_spaces_and_rejects_changed_arguments(self):
+        expected=['/usr/bin/env','SCOPES=zoop.read zoop.write','/candidate','--check-config']
+        value={'type':'a(sasbttttuii)','data':[[expected[0],expected,False,0,0,0,0,0,0,0]]}
+        recover.validate_systemd_bus_property(value,expected)
+        changed={'type':value['type'],'data':[[expected[0],['/usr/bin/env','SCOPES=zoop.read','zoop.write','/candidate','--check-config'],False,0,0,0,0,0,0,0]]}
+        with self.assertRaises(ValueError):recover.validate_systemd_bus_property(changed,expected)
+        changed={'type':value['type'],'data':[[expected[0],expected,True,0,0,0,0,0,0,0]]}
+        with self.assertRaises(ValueError):recover.validate_systemd_bus_property(changed,expected)
+
     def test_time_wait_does_not_count_as_listener(self):
         (self.proc/'net/tcp').write_text('header\n'+self.row('0100007F:1E1D','06'))
         self.assertTrue(recover.no_listening_socket(7709,self.proc,lambda *_:FakeSocket()))
