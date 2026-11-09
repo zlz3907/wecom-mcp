@@ -74,6 +74,21 @@ class SameUnitTransactionTest(unittest.TestCase):
         self.assertTrue(ops.closed)
         self.assertIn('incident', ops.events)
 
+    def test_crash_at_each_switch_stage_can_resume_the_same_candidate(self):
+        class CrashOps(FakeOps):
+            def step(self,name):
+                self.events.append(name)
+                if self.failure==name and not self.failed:
+                    self.failed=True
+                    raise SystemExit('simulated power loss')
+        for phase in ('stop','install','reload','start','commit','commit_after_publish','enable'):
+            with self.subTest(phase=phase):
+                ops=CrashOps(phase)
+                with self.assertRaises(SystemExit):tx.switch(ops)
+                tx.recover(ops)
+                self.assertEqual(ops.terminal,'committed')
+                self.assertFalse(ops.closed)
+
     def test_no_boot_enable_before_candidate_commit(self):
         for failure in ('install', 'reload', 'start', 'commit'):
             with self.subTest(failure=failure):
