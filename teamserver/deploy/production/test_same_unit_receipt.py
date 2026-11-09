@@ -69,6 +69,14 @@ class ReceiptTest(unittest.TestCase):
             receipt.validate(self.path, link, self.ident, 'deploy-mcp-open-bootstrap',
                              root=self.root, owner=os.getuid(), now=self.now)
 
+    def test_recovery_requires_consumed_original_deployment_receipt(self):
+        _plan, sha = self.validate()
+        with self.assertRaises(FileNotFoundError):
+            receipt.verify_consumed(self.path, self.plan, self.used, self.ident, root=self.root, owner=os.getuid())
+        receipt.consume(self.used, self.ident, sha, root=self.root, owner=os.getuid())
+        saved, actual = receipt.verify_consumed(self.path, self.plan, self.used, self.ident, root=self.root, owner=os.getuid())
+        self.assertEqual((saved['release'], actual), ('candidate', sha))
+
 
 if __name__ == '__main__':
     unittest.main()

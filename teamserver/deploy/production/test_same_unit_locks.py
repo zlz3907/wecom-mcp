@@ -5,6 +5,8 @@ import tempfile
 import unittest
 
 from same_unit_locks import acquire
+import same_unit_locks as locks
+from unittest.mock import patch
 
 
 class LockTest(unittest.TestCase):
@@ -28,6 +30,31 @@ class LockTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             with acquire([str(self.first), str(self.second)], root=self.root, owner=os.getuid()): pass
         with acquire([str(self.first)], root=self.root, owner=os.getuid()): pass
+
+    def test_lock_replacement_is_detected_while_held(self):
+        with self.assertRaisesRegex(ValueError, 'changed'):
+            with acquire([str(self.first)], root=self.root, owner=os.getuid()) as verify:
+                verify()
+                self.first.rename(self.root / 'old')
+                self.first.touch(mode=0o444)
+                verify()
+
+    def test_legacy_exception_is_explicit_and_pins_parent(self):
+        legacy_dir = self.root / 'legacy'
+        legacy_dir.mkdir(mode=0o700)
+        legacy = legacy_dir / 'release.lock'
+        legacy.touch(mode=0o444)
+        info = legacy_dir.stat()
+        allowed = {legacy_dir: (info.st_uid, info.st_gid, 0o700)}
+        with patch.object(locks, 'LEGACY', legacy), patch.object(locks, 'LEGACY_DIRS', allowed):
+            with self.assertRaises(ValueError):
+                with acquire([str(self.first), str(legacy)], root=self.root,
+                             owner=os.getuid(), bootstrap_legacy=True): pass
+            with self.assertRaisesRegex(ValueError, 'changed'):
+                with acquire([str(legacy)], root=self.root, owner=os.getuid(), bootstrap_legacy=True) as verify:
+                    verify()
+                    legacy_dir.chmod(0o750)
+                    verify()
 
     def test_symlink_and_writable_parent_are_refused(self):
         link = self.root / 'link'

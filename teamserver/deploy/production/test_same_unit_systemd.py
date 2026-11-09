@@ -2,6 +2,7 @@ import errno
 import hashlib
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -226,6 +227,29 @@ class UnitTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'candidate or protected environment drift'):
             self.unit.check_candidate_config(data, hashlib.sha256(data).hexdigest(), binary, '1' * 64, {}, owner=os.getuid())
         self.assertEqual(self.events, [])
+
+    def test_preflight_timeout_stops_transient_unit(self):
+        release = self.root / 'release'
+        release.mkdir()
+        self.addCleanup(lambda: release.chmod(0o700) if release.exists() else None)
+        binary, policy = release / 'wecom-mcp-team', release / 'discovery-policy.json'
+        binary.write_bytes(b'binary'); policy.write_bytes(b'policy')
+        binary.chmod(0o500); policy.chmod(0o400); release.chmod(0o500)
+        self.unit.candidate_sha = hashlib.sha256(binary.read_bytes()).hexdigest()
+        cmd = str(binary) + ' --gnas-discovery-policy ' + str(policy) + ' --gnas-state-root /home/product/services/mcp/wecom/state/discovery --listen 127.0.0.1:7709'
+        data = ('[Service]\nExecStartPre=\nExecStart=\nExecStartPre=' + cmd +
+                ' --check-config\nExecStart=' + cmd + '\n').encode()
+        calls = []
+        def runner(*args, **kwargs):
+            calls.append(args)
+            if args[0] == '/usr/bin/systemd-run': raise subprocess.TimeoutExpired(args, 45)
+            if args[1] == 'show': return 'not-found' if any(call[1] == 'stop' for call in calls if len(call) > 1) else 'loaded'
+            return ''
+        self.unit.run = runner
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.unit.check_candidate_config(data, hashlib.sha256(data).hexdigest(), binary,
+                                             hashlib.sha256(policy.read_bytes()).hexdigest(), {}, owner=os.getuid())
+        self.assertTrue(any(call[1] == 'stop' for call in calls if len(call) > 1))
 
 
 if __name__ == '__main__':

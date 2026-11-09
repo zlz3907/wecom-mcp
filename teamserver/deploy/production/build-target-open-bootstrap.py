@@ -14,11 +14,11 @@ import re
 import subprocess
 import tempfile
 
-EXPECTED_COMMIT = 'dbef937502fa2c4f005f97afbe1dea7db7bc9dc6'
+EXPECTED_COMMIT = 'eab7c778c79fff9198b4a52fe8bd6867e7acc5fe'
 EXPECTED_POLICY = '7d45dd145b1c4f604619046e305e031d42e807e5c7ee32450015d04123ccbba6'
 PREVIOUS_MCP = '82fd10c16f5ccf72219818a9efc00e0b79f4e70a8726faf071059b6a6344fa03'
 PREVIOUS_OAUTH = 'cc1a536c23715162b9c622a91fba1da0a4b36d3ac529d8982cc86b0347210ce1'
-CI_URL = 'https://github.com/zlz3907/wecom-mcp/actions/runs/42516298366'
+CI_URL = 'https://github.com/zlz3907/wecom-mcp/actions/runs/42580859163'
 
 
 def digest(path):

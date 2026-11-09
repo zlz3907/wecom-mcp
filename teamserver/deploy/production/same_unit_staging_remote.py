@@ -10,8 +10,8 @@ import subprocess
 import sys
 import tarfile
 
-RID = '20261108T194434Z-dbef937502fa'
-MANIFEST_SHA = '5fe3b370d1e0595031869e0b468820aac422be6fa300219164fd73d3515d2a18'
+RID = '20261109T074119Z-eab7c778c79f'
+MANIFEST_SHA = '736e98c2ccf23c35c54d887d0066e8a1de57af3b0487bd34ebe12f498636f68f'
 NAMES = {'wecom-mcp-team', 'discovery-policy.json', 'target.service.conf',
          'shared.service.conf', 'ci-evidence.json', 'manifest.json', 'SHA256SUMS'}
 ROOT = Path('/var/lib/wecom-mcp-isolated/releases')

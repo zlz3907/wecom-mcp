@@ -17,7 +17,7 @@ def generate(profile_name, fragment, release_id):
     profile = contract.PROFILES[profile_name]
     if hashlib.sha256(fragment).hexdigest() != profile['fragment_sha256']:
         raise ValueError('unit fragment drift')
-    if not isinstance(release_id, str) or not re.fullmatch(r'[0-9]{8}T[0-9]{6}Z-dbef937502fa', release_id):
+    if not isinstance(release_id, str) or not re.fullmatch(r'[0-9]{8}T[0-9]{6}Z-' + contract.SOURCE[:12], release_id):
         raise ValueError('invalid release id')
     old = OLD_RELEASES[profile_name]
     new = profile['release_root'] + '/' + release_id + '/'

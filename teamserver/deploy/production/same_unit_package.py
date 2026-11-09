@@ -38,7 +38,7 @@ def verify(directory, owner):
         raise ValueError('candidate checksum mismatch')
     manifest = json.loads(values['manifest.json'])
     expected = {'schema_version': 1, 'component': 'wecom-mcp-same-unit-bootstrap',
-                'environment': 'zhycit-prod-01', 'release_id': '20261108T194434Z-dbef937502fa',
+                'environment': 'zhycit-prod-01', 'release_id': plan.RELEASE_ID,
                 'source_commit': plan.SOURCE, 'source_tree': plan.SOURCE_TREE,
                 'ci_url': plan.CI_URL, 'recovery_mode': 'same-candidate-or-closed',
                 'files': {name: hashlib.sha256(values[name]).hexdigest()

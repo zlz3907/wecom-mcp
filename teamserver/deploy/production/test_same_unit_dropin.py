@@ -20,15 +20,15 @@ class DropinTest(unittest.TestCase):
                 data = self.fragment(profile)
                 edited = dict(contract.PROFILES[profile], fragment_sha256=hashlib.sha256(data).hexdigest())
                 with patch.dict(contract.PROFILES, {profile: edited}):
-                    result = builder.generate(profile, data, '20261108T194434Z-dbef937502fa')
+                    result = builder.generate(profile, data, contract.RELEASE_ID)
                 self.assertIn(('127.0.0.1:' + str(edited['port'])).encode(), result)
                 self.assertNotIn(builder.OLD_RELEASES[profile].encode(), result)
-                self.assertEqual(result.count(b'20261108T194434Z-dbef937502fa'), 4)
+                self.assertEqual(result.count(contract.RELEASE_ID.encode()), 4)
 
     def test_drift_and_invalid_release_are_rejected(self):
         data = self.fragment('target')
         with self.assertRaises(ValueError):
-            builder.generate('target', data, '20261108T194434Z-dbef937502fa')
+            builder.generate('target', data, contract.RELEASE_ID)
         edited = dict(contract.PROFILES['target'], fragment_sha256=hashlib.sha256(data).hexdigest())
         with patch.dict(contract.PROFILES, {'target': edited}), self.assertRaises(ValueError):
             builder.generate('target', data, '../outside-dbef937502fa')

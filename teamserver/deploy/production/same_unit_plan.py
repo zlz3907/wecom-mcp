@@ -2,13 +2,14 @@
 from pathlib import Path
 import re
 
-SOURCE = 'dbef937502fa2c4f005f97afbe1dea7db7bc9dc6'
-SOURCE_TREE = '8755b036994079ff6ba994a5d4231f5330b47588'
-CI_URL = 'https://github.com/zlz3907/wecom-mcp/actions/runs/42516298366'
-CI_EVIDENCE_SHA = '734636620bbff22845443e4a16be0c6e524e72e7297adaa7476d3227dcad881b'
+SOURCE = 'eab7c778c79fff9198b4a52fe8bd6867e7acc5fe'
+SOURCE_TREE = '1d025444aecb8ecc325ce3476ab9eddb6eefede3'
+RELEASE_ID = '20261109T074119Z-eab7c778c79f'
+CI_URL = 'https://github.com/zlz3907/wecom-mcp/actions/runs/42580859163'
+CI_EVIDENCE_SHA = 'ef08dc70235ea3b713313747ed3b33e964355d88c91e86278f46f07ffc59668d'
 POLICY_SHA = '7d45dd145b1c4f604619046e305e031d42e807e5c7ee32450015d04123ccbba6'
-BINARY_SHA = '709f6f940f3155bf6174e7a978f08cc7a422f7bedfa4744b825aea71e7b76a04'
-RELEASE_LOCKS = ['/var/lib/gnas-release-controller/mcp-policy.lock',
+BINARY_SHA = 'c8af1b1dd27f4dd0323eee95bd16258441dd0de7d016000f724b6e0a81ff0005'
+RELEASE_LOCKS = ['/home/product/services/gnas-service-gin/release.lock',
                  '/var/lib/gnas-oauth-isolated/release.lock',
                  '/var/lib/wecom-mcp-isolated/release.lock',
                  '/var/lib/wecom-mcp-release/release.lock']
@@ -18,7 +19,7 @@ PROFILES = {
         'fragment_sha256': '923e83cd55bd52e02afd7836d9bbcaddcd0088ed8962ff9180c87b32bed0d2bf',
         'previous_binary_sha256': '82fd10c16f5ccf72219818a9efc00e0b79f4e70a8726faf071059b6a6344fa03',
         'oauth_binary_sha256': 'cc1a536c23715162b9c622a91fba1da0a4b36d3ac529d8982cc86b0347210ce1',
-        'dropin_sha256': '897fd309f5cf131d3558186d30b10f12d9e1706cfef47fcc7c2f707033aa5cad',
+        'dropin_sha256': 'b687243fbbbda2b3fa6091995ba0c974d766de85f04360fe0fa065b966597432',
         'release_root': '/var/lib/wecom-mcp-isolated/releases',
         'release_locks': RELEASE_LOCKS,
         'environment_files': ['/etc/wecom-mcp/gmzoop.env', '/etc/wecom-mcp/zoop-schema-admin.env'],
@@ -28,7 +29,7 @@ PROFILES = {
         'fragment_sha256': '4caa2abe6bed4650faee60084b1657d4e350c3724ead3d4815c7b17a6870d098',
         'previous_binary_sha256': '988055b38a6963afe1f6cfe3b2bdb9b691483cb599974a450efae535d356ad22',
         'oauth_binary_sha256': 'a655935e3ab5cef0fb2aff9e2af770c0457c136cb77d3e0bee0f9de5a579553e',
-        'dropin_sha256': '22dc82ab945890b96c21a50c65ebe45d4e61191b9ff1d8a286ef3f38325292ad',
+        'dropin_sha256': '5c83813d40f47842d311a909e857e9b0dd06ed2c217134a5d7bb7f152e7abc90',
         'release_root': '/var/lib/wecom-mcp-isolated/releases',
         'release_locks': RELEASE_LOCKS,
         'environment_files': ['/etc/wecom-mcp/gmzoop.env'],
@@ -45,7 +46,7 @@ def validate(plan):
                 'release_id', 'source_commit', 'source_tree', 'ci_url', 'candidate_binary_sha256',
                 'candidate_policy_sha256', 'dropin_sha256', 'ci_evidence_sha256', 'smoke_sha256',
                 'release_root', 'release_locks', 'environment_files', 'environment_file_sha256',
-                'fleet_snapshot_sha256', 'recovery_mode'}
+                'fleet_snapshot_sha256', 'recovery_mode', 'authorization_mode'}
     if set(plan) != required or plan.get('schema_version') != 1 or plan.get('environment') != 'zhycit-prod-01':
         raise ValueError('bootstrap plan shape mismatch')
     if any(plan.get(key) != value for key, value in profile.items()):
@@ -53,9 +54,10 @@ def validate(plan):
     if (plan['source_commit'] != SOURCE or plan['source_tree'] != SOURCE_TREE or plan['ci_url'] != CI_URL or
             plan['previous_policy_sha256'] != POLICY_SHA or plan['candidate_policy_sha256'] != POLICY_SHA or
             plan['candidate_binary_sha256'] != BINARY_SHA or plan['ci_evidence_sha256'] != CI_EVIDENCE_SHA or
-            plan['recovery_mode'] != 'same-candidate-or-closed'):
+            plan['recovery_mode'] != 'same-candidate-or-closed' or
+            plan['authorization_mode'] != 'wecom-all-members-policy-disabled'):
         raise ValueError('candidate contract mismatch')
-    if plan['release_id'] != '20261108T194434Z-dbef937502fa':
+    if plan['release_id'] != RELEASE_ID:
         raise ValueError('invalid candidate release id')
     for key in ('dropin_sha256', 'ci_evidence_sha256', 'smoke_sha256', 'fleet_snapshot_sha256'):
         if not isinstance(plan[key], str) or not re.fullmatch(r'[0-9a-f]{64}', plan[key]):

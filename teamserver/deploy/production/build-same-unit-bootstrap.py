@@ -52,7 +52,7 @@ def main():
         'shared.service.conf': read_exact(args.shared_dropin, contract.PROFILES['shared']['dropin_sha256'], 65536),
         'ci-evidence.json': read_exact(args.ci_evidence, contract.CI_EVIDENCE_SHA, 65536),
     }
-    release_id = '20261108T194434Z-dbef937502fa'
+    release_id = contract.RELEASE_ID
     for profile in ('target', 'shared'):
         item = contract.PROFILES[profile]
         candidate = Path(item['release_root']) / release_id / 'wecom-mcp-team'

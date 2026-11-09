@@ -101,3 +101,17 @@ def consume(used_directory, approval_id, plan_sha, root=Path('/'), owner=0):
         os.fsync(directory)
     finally:
         os.close(directory)
+
+
+def verify_consumed(receipt_path, plan_path, used_directory, approval_id, root=Path('/'), owner=0):
+    """Permit bounded recovery of an already consumed deployment after expiry."""
+    original = _json(_read_regular(receipt_path, root, owner))
+    try:
+        approved_at = dt.datetime.fromisoformat(original['approved_at'].replace('Z', '+00:00'))
+    except (KeyError, TypeError, AttributeError, ValueError) as error:
+        raise ValueError('invalid original approval time') from error
+    plan, plan_sha = validate(receipt_path, plan_path, approval_id, 'deploy-mcp-open-bootstrap',
+                              root=root, owner=owner, now=approved_at)
+    if _read_regular(used_directory / approval_id, root, owner) != (plan_sha + '\n').encode():
+        raise ValueError('consumed approval binding mismatch')
+    return plan, plan_sha
