@@ -5,6 +5,7 @@ process identity, probes and durable transaction records. These helpers cannot
 authorize a production action by themselves.
 """
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -101,8 +102,19 @@ class Unit:
                 return False
         return True
 
-    def no_listener(self):
+    def no_listener(self, proc_root=Path('/proc')):
+        if (proc_root / 'self/ns/net').stat().st_ino != (proc_root / '1/ns/net').stat().st_ino:
+            raise ValueError('network namespace changed')
+        for table in ('tcp', 'tcp6'):
+            rows = (proc_root / 'net' / table).read_text().splitlines()[1:]
+            for row in rows:
+                columns = row.split()
+                if len(columns) < 10:
+                    raise ValueError('malformed network socket table')
+                if columns[3] == '0A' and columns[1].rsplit(':', 1)[-1] == format(self.port, '04X'):
+                    return False
         with self.socket_factory(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.bind(('127.0.0.1', self.port))
             except OSError:
@@ -299,10 +311,22 @@ class Unit:
         if (props['DropInPaths'] != str(path) or props['ActiveState'] not in ('inactive', 'failed') or
                 props['MainPID'] != '0' or props['Job']):
             raise ValueError('candidate unit is not safely stopped and loaded')
+        raw = self.run('/usr/bin/busctl', '--system', '--json=short', 'call', 'org.freedesktop.systemd1',
+                       '/org/freedesktop/systemd1', 'org.freedesktop.systemd1.Manager', 'GetUnit', 's', self.name)
+        obj = json.loads(raw)
+        if obj.get('type') != 'o' or not isinstance(obj.get('data'), list) or len(obj['data']) != 1:
+            raise ValueError('invalid systemd unit identity')
+        unit_path = obj['data'][0]
+        if not isinstance(unit_path, str) or not unit_path.startswith('/org/freedesktop/systemd1/unit/'):
+            raise ValueError('invalid systemd object path')
         for field, expected in commands.items():
-            shown = self.run('/usr/bin/systemctl', 'show', self.name, '-p', field, '--value')
-            matches = re.findall(r'argv\[\]=(.+?)\s+;', shown)
-            if len(matches) != 1 or shlex.split(matches[0]) != expected:
+            raw = self.run('/usr/bin/busctl', '--system', '--json=short', 'get-property', 'org.freedesktop.systemd1',
+                           unit_path, 'org.freedesktop.systemd1.Service', field)
+            value = json.loads(raw)
+            entries = value.get('data')
+            if (value.get('type') != 'a(sasbttttuii)' or not isinstance(entries, list) or len(entries) != 1 or
+                    not isinstance(entries[0], list) or len(entries[0]) != 10 or entries[0][0] != expected[0] or
+                    entries[0][1] != expected or entries[0][2] is not False):
                 raise ValueError('loaded candidate command mismatch')
         if digest(path) != expected_sha:
             raise ValueError('candidate drop-in changed after reload')

@@ -1,5 +1,7 @@
 import errno
 import hashlib
+import json
+import shlex
 import os
 from pathlib import Path
 import subprocess
@@ -90,9 +92,32 @@ class UnitTest(unittest.TestCase):
         class BusySocket:
             def __enter__(self): return self
             def __exit__(self, *args): pass
+            def setsockopt(self, *_args): pass
             def bind(self, _address): raise OSError(errno.EADDRINUSE, 'busy')
         self.unit.socket_factory = lambda *_: BusySocket()
-        self.assertFalse(self.unit.no_listener())
+        proc = self.root / 'proc'
+        for part in ('self/ns', '1/ns', 'net'): (proc / part).mkdir(parents=True)
+        (proc / 'self/ns/net').touch(); os.link(proc / 'self/ns/net', proc / '1/ns/net')
+        for table in ('tcp', 'tcp6'): (proc / 'net' / table).write_text('header\n')
+        self.assertFalse(self.unit.no_listener(proc))
+
+    def test_no_listener_ignores_time_wait_but_rejects_ipv6_listener(self):
+        class Socket:
+            def __enter__(self): return self
+            def __exit__(self,*args): pass
+            def setsockopt(self,*args): self.reuse=True
+            def bind(self,_):
+                if not getattr(self,'reuse',False): raise OSError(errno.EADDRINUSE,'time wait')
+        self.unit.socket_factory = lambda *_: Socket()
+        proc=self.root/'proc'
+        for part in ('self/ns','1/ns','net'): (proc/part).mkdir(parents=True)
+        (proc/'self/ns/net').touch();os.link(proc/'self/ns/net',proc/'1/ns/net')
+        row='0: 00000000:1E1D 00000000:0000 {} 0 0 0 0 0 0\n'
+        (proc/'net/tcp').write_text('header\n'+row.format('06'))
+        (proc/'net/tcp6').write_text('header\n')
+        self.assertTrue(self.unit.no_listener(proc))
+        (proc/'net/tcp6').write_text('header\n'+row.format('0A'))
+        self.assertFalse(self.unit.no_listener(proc))
 
     def test_properties_must_be_complete_and_unambiguous(self):
         self.unit.run = lambda *_: 'ActiveState=active\nActiveState=inactive'
@@ -120,7 +145,7 @@ class UnitTest(unittest.TestCase):
 
     def test_reload_binds_loaded_commands_before_enable(self):
         candidate = '/safe/release/wecom-mcp-team'
-        start = candidate + ' --gnas-discovery-policy /safe/release/discovery-policy.json --gnas-state-root /home/product/services/mcp/wecom/state/discovery --listen 127.0.0.1:7709'
+        start = "/usr/bin/env 'SCOPES=zoop.read zoop.write' " + candidate + ' --gnas-discovery-policy /safe/release/discovery-policy.json --gnas-state-root /home/product/services/mcp/wecom/state/discovery --listen 127.0.0.1:7709'
         pre = start + ' --check-config'
         data = ('[Service]\nExecStartPre=\nExecStart=\nExecStartPre=' + pre + '\nExecStart=' + start + '\n').encode()
         checksum = hashlib.sha256(data).hexdigest()
@@ -130,9 +155,12 @@ class UnitTest(unittest.TestCase):
         previous = self.unit.run
         def runner(*args, **kwargs):
             if args[1] == 'daemon-reload': return ''
-            if args[1] == 'show' and '--value' in args:
+            if args[0] == '/usr/bin/busctl' and 'GetUnit' in args:
+                return json.dumps({'type':'o','data':['/org/freedesktop/systemd1/unit/mock']})
+            if args[0] == '/usr/bin/busctl' and 'get-property' in args:
                 command = pre if 'ExecStartPre' in args else start
-                return '{ path=/safe/release/wecom-mcp-team ; argv[]=' + command + ' ; }'
+                argv = shlex.split(command)
+                return json.dumps({'type':'a(sasbttttuii)','data':[[argv[0],argv,False,0,0,0,0,0,0,0]]})
             return previous(*args, **kwargs)
         self.unit.run = runner
         with patch.object(self.unit, 'verify_fragment'):

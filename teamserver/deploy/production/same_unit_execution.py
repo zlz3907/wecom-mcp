@@ -11,7 +11,7 @@ from pathlib import Path as _Path
 
 
 def _verify_controller_archive():
-    path = _Path('/usr/local/lib/wecom-mcp-open-bootstrap/same-unit-execution.pyz')
+    path = _Path('/usr/local/lib/wecom-mcp-open-bootstrap/same-unit-execution-v2.pyz')
     if _Path(_sys.argv[0]) != path or path.is_symlink():
         raise ValueError('untrusted controller archive path')
     info = path.lstat()
@@ -101,6 +101,7 @@ def execute(action, approval_id):
             raise ValueError('approval plan changed')
 
     def consume():
+        check_approval()
         receipt.consume(USED, approval_id, plan_sha)
 
     def check_recovery():
