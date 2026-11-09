@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,8 +29,9 @@ func (f tableOAuthTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 // handlers and managed request construction; fake authorization/GNAS upstreams.
 // This does not test QR login, token issuance, a real gateway or WeCom writes.
 func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
-	for _, scenario := range []string{"success", "missing personnel", "forged identity", "gateway 503", "write denied", "managed contract", "missing other scope", "revoked"} {
+	for _, scenario := range []string{"success", "write-only scope", "empty scope", "paused", "missing personnel", "forged identity", "gateway 503", "write denied", "managed contract", "missing other scope", "revoked"} {
 		t.Run(scenario, func(t *testing.T) {
+			success := scenario == "success" || scenario == "write-only scope" || scenario == "empty scope"
 			cfg := testServiceConfig(t)
 			dir := filepath.Dir(cfg.InstanceConfigPath)
 			schema := ""
@@ -68,6 +70,7 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 				cfg.RequiredScopes = append(cfg.RequiredScopes, "other.permission")
 			}
 			writes, readbacks, introspections := 0, 0, 0
+			var paused atomic.Bool
 			var stored []any
 			var resourceHost string
 			previous := http.DefaultTransport
@@ -97,7 +100,14 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 					if scenario == "write denied" {
 						granted = []string{"wecom_record_query"}
 					}
-					out = map[string]any{"active": scenario != "revoked", "iss": cfg.OIDCIssuer, "sub": "wecom:fixture:employee-one", "aud": cfg.MCPURL, "exp": time.Now().Add(time.Minute).Unix(), "scope": "zoop.read", "token_use": "access", "tenant": cfg.AuthorizationTenant, "wecom_userid": "employee-one", "mcp_role": "member", "effective_tools": granted, "tool_policy_contract_v1": scenario == "managed contract"}
+					scope := "zoop.read"
+					if scenario == "write-only scope" {
+						scope = "zoop.write"
+					}
+					if scenario == "empty scope" {
+						scope = ""
+					}
+					out = map[string]any{"active": scenario != "revoked", "iss": cfg.OIDCIssuer, "sub": "wecom:fixture:employee-one", "aud": cfg.MCPURL, "exp": time.Now().Add(time.Minute).Unix(), "scope": scope, "token_use": "access", "tenant": cfg.AuthorizationTenant, "wecom_userid": "employee-one", "mcp_role": "member", "effective_tools": granted, "tool_policy_contract_v1": scenario == "managed contract"}
 				case "/gnas/service/getJwtToken":
 					out = map[string]any{"code": 200, "data": map[string]any{"token": "fake-jwt", "expires_at": time.Now().Add(time.Hour).Unix()}}
 				case "/gnas/service/wecomExecute":
@@ -144,7 +154,11 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 					case op == "get_records" && p["docid"] == "instance-doc" && p["sheet_id"] == "personnel":
 						rows := []any{}
 						if scenario != "missing personnel" {
-							rows = append(rows, map[string]any{"record_id": "human-subject", "values": map[string]any{"member": []any{map[string]any{"user_id": "employee-one"}}, "type": []any{map[string]any{"text": "人员主体"}}, "status": []any{map[string]any{"text": "启用"}}}})
+							state := "启用"
+							if scenario == "paused" || paused.Load() {
+								state = "暂停"
+							}
+							rows = append(rows, map[string]any{"record_id": "human-subject", "values": map[string]any{"member": []any{map[string]any{"user_id": "employee-one"}}, "type": []any{map[string]any{"text": "人员主体"}}, "status": []any{map[string]any{"text": state}}}})
 						}
 						out = map[string]any{"errcode": float64(0), "records": rows, "has_more": false}
 					case op == "add_records" && p["docid"] == "instance-doc" && p["sheet_id"] == "sessions":
@@ -221,7 +235,7 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 				args["userid"] = "employee-two"
 			}
 			result, err := session.CallTool(ctx, &sdkmcp.CallToolParams{Name: "wecom_record_apply", Arguments: args})
-			if scenario != "success" {
+			if !success {
 				if err == nil && !result.IsError {
 					t.Fatal("failed write reported successful")
 				}
@@ -260,6 +274,23 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 			}
 			if !reflect.DeepEqual(output["records"], stored) || output["returned_count"] != float64(1) || writes != 1 || readbacks != 2 || introspections < 3 {
 				t.Fatalf("query=%s writes=%d readbacks=%d introspections=%d", body, writes, readbacks, introspections)
+			}
+			if scenario == "success" {
+				// The same connected client must lose both read and write access
+				// immediately after its personnel subject is paused.
+				paused.Store(true)
+				query, err = session.CallTool(ctx, &sdkmcp.CallToolParams{Name: "wecom_record_query", Arguments: map[string]any{"target_role": "Z-S06", "record_ids": []string{"fixture-row"}}})
+				if err == nil && (query == nil || !query.IsError) {
+					t.Fatal("existing session read after personnel pause")
+				}
+				args["idempotency_key"] = "fixture-paused-new-key"
+				result, err = session.CallTool(ctx, &sdkmcp.CallToolParams{Name: "wecom_record_apply", Arguments: args})
+				if err == nil && (result == nil || !result.IsError) {
+					t.Fatal("existing session wrote after personnel pause")
+				}
+				if writes != 1 || readbacks != 2 {
+					t.Fatalf("paused session reached table operations: writes=%d readbacks=%d", writes, readbacks)
+				}
 			}
 		})
 	}

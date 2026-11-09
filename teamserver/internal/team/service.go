@@ -349,7 +349,7 @@ func (s *Service) authorizationMiddleware(next http.Handler) http.Handler {
 				http.Error(w, "user authorization denied", http.StatusForbidden)
 				return
 			}
-			tools, err := authorizedToolSet(decision, s.definitions, s.config.RequiredScopes)
+			tools, err := authorizedToolSet(decision, s.definitions, oauth21NonZoopScopes(s.config.RequiredScopes))
 			s.auditor.Authorization(r.Context(), decision, err)
 			if err != nil {
 				http.Error(w, "user authorization denied", http.StatusForbidden)

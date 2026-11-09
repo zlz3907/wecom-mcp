@@ -152,7 +152,7 @@ func validOAuth21IntrospectionResponse(result oauth21IntrospectionResponse, cfg 
 		return false
 	}
 	scopes := splitList(result.Scope)
-	if len(scopes) == 0 || !containsPolicyScopes(scopes, cfg.RequiredScopes, result.PolicyContractV1) {
+	if !containsPolicyScopes(scopes, oauth21NonZoopScopes(cfg.RequiredScopes), false) {
 		return false
 	}
 	if len(result.EffectiveTools) == 0 || len(result.EffectiveTools) > 128 {
@@ -169,6 +169,18 @@ func validOAuth21IntrospectionResponse(result oauth21IntrospectionResponse, cfg 
 		seen[tool] = struct{}{}
 	}
 	return true
+}
+
+// Historical Zoop OAuth scope labels are not employee tool permissions.
+// Keep any unrelated configured scope requirements in force.
+func oauth21NonZoopScopes(required []string) []string {
+	filtered := make([]string, 0, len(required))
+	for _, scope := range required {
+		if scope != "zoop.read" && scope != "zoop.write" {
+			filtered = append(filtered, scope)
+		}
+	}
+	return filtered
 }
 
 func oauth21AudienceContains(raw json.RawMessage, expected string) bool {
