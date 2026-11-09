@@ -34,6 +34,7 @@ LOOPBACK = '127.0.0.1:7703'
 READINESS_FILE = Path('/etc/wecom-mcp/gnas-discovery-readiness.json')
 CURRENT_RELEASE_ID = '20261105T001200-21462d2dfb22'
 CURRENT_BINARY_SHA256 = '988055b38a6963afe1f6cfe3b2bdb9b691483cb599974a450efae535d356ad22'
+CURRENT_POLICY_SHA256 = '7d45dd145b1c4f604619046e305e031d42e807e5c7ee32450015d04123ccbba6'
 PREVIOUS_RELEASE_ID = '20261105T000000-396f2500540e'
 PREVIOUS_BINARY_SHA256 = 'e37bd4ec2103dd33bd2d923c2d827748c8f6b95a63db26c4a1835f4a4bac7d69'
 TARGET_HOST = 'zhycit.com'
@@ -192,6 +193,7 @@ def _deploy_fields(manifest, directory):
         'readiness_file': str(READINESS_FILE),
         'expected_current_release_id': manifest['expected_current_release_id'],
         'expected_current_binary_sha256': manifest['expected_current_binary_sha256'],
+        'expected_current_policy_sha256': manifest['expected_current_policy_sha256'],
         'expected_previous_release_id': manifest['expected_previous_release_id'],
         'expected_previous_binary_sha256': manifest['expected_previous_binary_sha256'],
         'expected_current_unit_fragment_sha256': manifest['expected_current_unit_fragment_sha256'],
@@ -218,6 +220,7 @@ def _verify(directory, release_id):
         require(SHA.fullmatch(manifest.get(key, '')), key + ' missing')
     require(manifest.get('expected_current_release_id') == CURRENT_RELEASE_ID, 'current release baseline mismatch')
     require(manifest.get('expected_current_binary_sha256') == CURRENT_BINARY_SHA256, 'current binary baseline mismatch')
+    require(manifest.get('expected_current_policy_sha256') == CURRENT_POLICY_SHA256, 'current policy baseline mismatch')
     require(manifest.get('expected_previous_release_id') == PREVIOUS_RELEASE_ID, 'previous release baseline mismatch')
     require(manifest.get('expected_previous_binary_sha256') == PREVIOUS_BINARY_SHA256, 'previous binary baseline mismatch')
     require(manifest.get('fleet_state_vector') == [dict(row) for row in FLEET_STATE_VECTOR], 'discovery fleet vector mismatch')
