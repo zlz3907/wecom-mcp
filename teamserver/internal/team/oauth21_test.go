@@ -60,7 +60,6 @@ func TestOAuth21IntrospectionAuthenticatorFailsClosed(t *testing.T) {
 		{name: "wrong tenant", mutate: func(v map[string]any) { v["tenant"] = "other" }},
 		{name: "wrong audience", mutate: func(v map[string]any) { v["aud"] = "https://other.example/mcp" }},
 		{name: "expired", mutate: func(v map[string]any) { v["exp"] = time.Now().Add(-time.Minute).Unix() }},
-		{name: "missing scope", mutate: func(v map[string]any) { v["scope"] = "zoop.write" }},
 		{name: "unknown shaped tool", mutate: func(v map[string]any) { v["effective_tools"] = []string{"bad/tool"} }},
 	}
 	for _, tc := range cases {
@@ -115,7 +114,7 @@ func TestOAuth21BootstrapAcceptsOldServerAndRejectsManagedContract(t *testing.T)
 	}
 }
 
-func TestOAuth21BootstrapRejectsPolicyServerAndRetainsScopes(t *testing.T) {
+func TestOAuth21BootstrapRejectsPolicyServerAndKeepsOtherScopes(t *testing.T) {
 	cfg := testOAuth21Config("https://example.invalid/introspect")
 	cfg.RequiredScopes = []string{"zoop.write", "other.permission"}
 	response := oauth21IntrospectionResponse{Active: true, Issuer: cfg.OIDCIssuer, Subject: "employee:member", Audience: json.RawMessage(`"https://mcp.jyiai.com/gmzoop/mcp"`), ExpiresAt: time.Now().Add(time.Minute).Unix(), Scope: "zoop.read", TokenUse: "access", Tenant: cfg.AuthorizationTenant, WeComUserID: "member", MCPRole: "member", EffectiveTools: []string{"wecom_record_apply"}, PolicyContractV1: true}
@@ -127,8 +126,60 @@ func TestOAuth21BootstrapRejectsPolicyServerAndRetainsScopes(t *testing.T) {
 		t.Fatal("bootstrap accepted managed policy contract")
 	}
 	response.PolicyContractV1 = false
+	if !validOAuth21IntrospectionResponse(response, cfg, time.Now()) {
+		t.Fatal("legacy Zoop scope label must not restrict a verified employee")
+	}
+	response.Scope = ""
+	if !validOAuth21IntrospectionResponse(response, cfg, time.Now()) {
+		t.Fatal("legacy empty Zoop scope must not restrict a verified employee")
+	}
+	cfg.RequiredScopes = []string{"zoop.read", "other.permission"}
+	response.Scope = "zoop.write"
 	if validOAuth21IntrospectionResponse(response, cfg, time.Now()) {
-		t.Fatal("legacy server bypassed required write scope")
+		t.Fatal("unrelated required scope was bypassed")
+	}
+	response.Scope = "other.permission"
+	if !validOAuth21IntrospectionResponse(response, cfg, time.Now()) {
+		t.Fatal("unrelated required scope was not recognized")
+	}
+}
+
+func TestOAuth21LegacyZoopScopeLabelsDoNotLimitToolList(t *testing.T) {
+	for _, scope := range []string{"zoop.read", "zoop.write", "", "zoop.read zoop.write"} {
+		t.Run("scope="+scope, func(t *testing.T) {
+			authority := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"active": true, "iss": "https://jyiai.com/gnas/oauth", "sub": "wecom:gm:member-001",
+					"aud": "https://mcp.jyiai.com/gmzoop/mcp", "exp": time.Now().Add(time.Minute).Unix(),
+					"scope": scope, "token_use": "access", "tenant": "gm", "wecom_userid": "member-001",
+					"mcp_role": "member", "effective_tools": []string{"*"},
+				})
+			}))
+			defer authority.Close()
+			cfg := testServiceConfig(t)
+			cfg.AuthenticationMode, cfg.UserAuthorizationEnabled = AuthenticationModeOAuth21, true
+			cfg.OIDCIssuer, cfg.OIDCAudience = "https://jyiai.com/gnas/oauth", "https://mcp.jyiai.com/gmzoop/mcp"
+			cfg.OAuth21IntrospectionURL = authority.URL
+			cfg.OAuth21ClientID, cfg.OAuth21ClientSecret = "gmzoop-resource", "0123456789abcdef0123456789abcdef"
+			cfg.AuthorizationTenant, cfg.AuthorizationResource = "gm", "gmzoop"
+			cfg.RequiredScopes = []string{"zoop.read", "zoop.write"}
+			cfg.OIDCHTTPTimeout = time.Second
+			authenticator, err := NewOAuth21IntrospectionAuthenticator(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			service, err := NewService(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resource := httptest.NewServer(service.Handler(authenticator.Verify))
+			defer resource.Close()
+			tools := listTools(t, resource.URL, "opaque-token")
+			if !tools["wecom_record_query"] || !tools["wecom_record_apply"] {
+				t.Fatalf("Zoop tool availability changed for scope %q: %v", scope, tools)
+			}
+		})
 	}
 }
 
