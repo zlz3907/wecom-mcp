@@ -87,7 +87,7 @@ func TestOAuth21IntrospectionAuthenticatorFailsClosed(t *testing.T) {
 	}
 }
 
-func TestOAuth21BootstrapAcceptsOldServerAndRejectsManagedContract(t *testing.T) {
+func TestOAuth21AcceptsOldAndPolicyAwareServer(t *testing.T) {
 	payload := map[string]any{
 		"active": true, "iss": "https://jyiai.com/gnas/oauth", "sub": "wecom:gm:member-001",
 		"aud": "https://mcp.jyiai.com/gmzoop/mcp", "exp": time.Now().Add(time.Minute).Unix(),
@@ -109,21 +109,35 @@ func TestOAuth21BootstrapAcceptsOldServerAndRejectsManagedContract(t *testing.T)
 		t.Fatal("bootstrap rejected legacy server")
 	}
 	payload["tool_policy_contract_v1"] = true
+	payload["tool_policy_managed"] = false
+	if _, err := authenticator.Verify(context.Background(), "opaque-token", nil); err != nil {
+		t.Fatal("policy-aware server was rejected")
+	}
+	delete(payload, "tool_policy_managed")
 	if _, err := authenticator.Verify(context.Background(), "opaque-token", nil); err == nil {
-		t.Fatal("bootstrap accepted policy-aware server")
+		t.Fatal("policy contract with missing managed flag was accepted")
+	}
+	payload["tool_policy_managed"] = nil
+	if _, err := authenticator.Verify(context.Background(), "opaque-token", nil); err == nil {
+		t.Fatal("policy contract with null managed flag was accepted")
+	}
+	payload["tool_policy_managed"] = true
+	payload["tool_policy_contract_v1"] = false
+	if _, err := authenticator.Verify(context.Background(), "opaque-token", nil); err == nil {
+		t.Fatal("managed policy without contract was accepted")
 	}
 }
 
-func TestOAuth21BootstrapRejectsPolicyServerAndKeepsOtherScopes(t *testing.T) {
+func TestOAuth21ManagedPoliciesKeepOtherScopes(t *testing.T) {
 	cfg := testOAuth21Config("https://example.invalid/introspect")
 	cfg.RequiredScopes = []string{"zoop.write", "other.permission"}
-	response := oauth21IntrospectionResponse{Active: true, Issuer: cfg.OIDCIssuer, Subject: "employee:member", Audience: json.RawMessage(`"https://mcp.jyiai.com/gmzoop/mcp"`), ExpiresAt: time.Now().Add(time.Minute).Unix(), Scope: "zoop.read", TokenUse: "access", Tenant: cfg.AuthorizationTenant, WeComUserID: "member", MCPRole: "member", EffectiveTools: []string{"wecom_record_apply"}, PolicyContractV1: true}
+	response := oauth21IntrospectionResponse{Active: true, Issuer: cfg.OIDCIssuer, Subject: "employee:member", Audience: json.RawMessage(`"https://mcp.jyiai.com/gmzoop/mcp"`), ExpiresAt: time.Now().Add(time.Minute).Unix(), Scope: "zoop.read", TokenUse: "access", Tenant: cfg.AuthorizationTenant, WeComUserID: "member", MCPRole: "member", EffectiveTools: []string{"wecom_record_apply"}, PolicyContractV1: true, ManagedToolPolicy: boolPointer(false)}
 	if validOAuth21IntrospectionResponse(response, cfg, time.Now()) {
 		t.Fatal("managed contract bypassed a non-Zoop scope")
 	}
 	cfg.RequiredScopes = []string{"zoop.write"}
-	if validOAuth21IntrospectionResponse(response, cfg, time.Now()) {
-		t.Fatal("bootstrap accepted managed policy contract")
+	if !validOAuth21IntrospectionResponse(response, cfg, time.Now()) {
+		t.Fatal("valid policy contract rejected")
 	}
 	response.PolicyContractV1 = false
 	if !validOAuth21IntrospectionResponse(response, cfg, time.Now()) {
@@ -216,3 +230,27 @@ func testOAuth21Config(introspectionURL string) Config {
 		AuthorizationTenant: "gm", RequiredScopes: []string{"zoop.read"}, OIDCHTTPTimeout: time.Second,
 	}
 }
+
+func TestOAuth21ManagedToolPolicyRejectsAmbiguousClaims(t *testing.T) {
+	cfg := testOAuth21Config("https://example.invalid/introspect")
+	cfg.RequiredScopes = []string{"zoop.read"}
+	base := oauth21IntrospectionResponse{Active: true, Issuer: cfg.OIDCIssuer, Subject: "employee:member", Audience: json.RawMessage(`"https://mcp.jyiai.com/gmzoop/mcp"`), ExpiresAt: time.Now().Add(time.Minute).Unix(), TokenUse: "access", Tenant: cfg.AuthorizationTenant, WeComUserID: "member", MCPRole: "member", ManagedToolPolicy: boolPointer(true), PolicyContractV1: true}
+	if !validOAuth21IntrospectionResponse(base, cfg, time.Now()) {
+		t.Fatal("an explicit managed policy granting zero tools must remain a valid identity")
+	}
+	base.PolicyContractV1 = false
+	if validOAuth21IntrospectionResponse(base, cfg, time.Now()) {
+		t.Fatal("managed policy without contract must be rejected")
+	}
+	base.PolicyContractV1 = true
+	base.EffectiveTools = []string{"*"}
+	if validOAuth21IntrospectionResponse(base, cfg, time.Now()) {
+		t.Fatal("managed policy may not grant an unbounded wildcard")
+	}
+	base.EffectiveTools = []string{"wecom_record_query", "wecom_record_query"}
+	if validOAuth21IntrospectionResponse(base, cfg, time.Now()) {
+		t.Fatal("duplicate tool claims must be rejected")
+	}
+}
+
+func boolPointer(value bool) *bool { return &value }

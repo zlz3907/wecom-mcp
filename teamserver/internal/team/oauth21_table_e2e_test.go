@@ -29,9 +29,9 @@ func (f tableOAuthTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 // handlers and managed request construction; fake authorization/GNAS upstreams.
 // This does not test QR login, token issuance, a real gateway or WeCom writes.
 func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
-	for _, scenario := range []string{"success", "write-only scope", "empty scope", "paused", "missing personnel", "forged identity", "gateway 503", "write denied", "managed contract", "missing other scope", "revoked"} {
+	for _, scenario := range []string{"success", "write-only scope", "empty scope", "paused", "missing personnel", "forged identity", "gateway 503", "write denied", "managed write", "managed denied", "missing other scope", "revoked"} {
 		t.Run(scenario, func(t *testing.T) {
-			success := scenario == "success" || scenario == "write-only scope" || scenario == "empty scope"
+			success := scenario == "success" || scenario == "write-only scope" || scenario == "empty scope" || scenario == "managed write"
 			cfg := testServiceConfig(t)
 			dir := filepath.Dir(cfg.InstanceConfigPath)
 			schema := ""
@@ -97,7 +97,7 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 					}
 					introspections++
 					granted := []string{"wecom_record_apply", "wecom_record_query"}
-					if scenario == "write denied" {
+					if scenario == "write denied" || scenario == "managed denied" {
 						granted = []string{"wecom_record_query"}
 					}
 					scope := "zoop.read"
@@ -107,7 +107,7 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 					if scenario == "empty scope" {
 						scope = ""
 					}
-					out = map[string]any{"active": scenario != "revoked", "iss": cfg.OIDCIssuer, "sub": "wecom:fixture:employee-one", "aud": cfg.MCPURL, "exp": time.Now().Add(time.Minute).Unix(), "scope": scope, "token_use": "access", "tenant": cfg.AuthorizationTenant, "wecom_userid": "employee-one", "mcp_role": "member", "effective_tools": granted, "tool_policy_contract_v1": scenario == "managed contract"}
+					out = map[string]any{"active": scenario != "revoked", "iss": cfg.OIDCIssuer, "sub": "wecom:fixture:employee-one", "aud": cfg.MCPURL, "exp": time.Now().Add(time.Minute).Unix(), "scope": scope, "token_use": "access", "tenant": cfg.AuthorizationTenant, "wecom_userid": "employee-one", "mcp_role": "member", "effective_tools": granted, "tool_policy_contract_v1": scenario == "managed write" || scenario == "managed denied", "tool_policy_managed": scenario == "managed write" || scenario == "managed denied"}
 				case "/gnas/service/getJwtToken":
 					out = map[string]any{"code": 200, "data": map[string]any{"token": "fake-jwt", "expires_at": time.Now().Add(time.Hour).Unix()}}
 				case "/gnas/service/wecomExecute":
@@ -220,7 +220,7 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 			defer cancel()
 			client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "fixture-table-client", Version: "1"}, nil)
 			session, err := client.Connect(ctx, &sdkmcp.StreamableClientTransport{Endpoint: server.URL + "/mcp", HTTPClient: &http.Client{Transport: bearerRoundTripper{token: "fake-access", base: http.DefaultTransport}}, DisableStandaloneSSE: true, MaxRetries: -1}, nil)
-			if scenario == "managed contract" || scenario == "missing other scope" || scenario == "revoked" {
+			if scenario == "missing other scope" || scenario == "revoked" {
 				if err == nil || writes != 0 {
 					t.Fatalf("unqualified token connected: scenario=%s writes=%d err=%v", scenario, writes, err)
 				}

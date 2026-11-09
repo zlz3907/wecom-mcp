@@ -49,6 +49,7 @@ func TestGNASIntrospectionUsesServiceIdentityAndChecksTenant(t *testing.T) {
 				switch scenario {
 				case "managed_auth_server":
 					result["tool_policy_contract_v1"] = true
+					result["tool_policy_managed"] = true
 				case "wrong_tenant":
 					result["tenant"] = "other"
 				case "wrong_issuer":
@@ -75,7 +76,7 @@ func TestGNASIntrospectionUsesServiceIdentityAndChecksTenant(t *testing.T) {
 			}
 			for range 2 {
 				_, err = a.Verify(t.Context(), "test-access-token", nil)
-				if (err == nil) != (scenario == "valid") {
+				if (err == nil) != (scenario == "valid" || scenario == "managed_auth_server") {
 					t.Fatalf("scenario=%s err=%v", scenario, err)
 				}
 			}
