@@ -65,10 +65,30 @@ def execute(action, approval_id):
     plan_sha = hashlib.sha256(plan_bytes).hexdigest()
     candidate = contract.validate(plan)
     def evidence_check():
+        payloads = {}
         for field in ('fleet_snapshot_sha256', 'smoke_sha256'):
             value = plan[field]
-            if hashlib.sha256(receipt._read_regular(EVIDENCE / (value + '.json'), Path('/'), 0)).hexdigest() != value:
+            content = receipt._read_regular(EVIDENCE / (value + '.json'), Path('/'), 0)
+            if hashlib.sha256(content).hexdigest() != value:
                 raise ValueError('release evidence changed')
+            payloads[field] = receipt._json(content)
+        fleet = payloads['fleet_snapshot_sha256']
+        expected = {'mode': 'read-only-gnas-discovery', 'bindings': [
+            {'host': 'mcp.jianpinke.com', 'personnel_schema': 'unavailable', 'state': 'tenant_unavailable'},
+            {'host': 'mcp.rtyouth.com', 'personnel_schema': 'compatible', 'state': 'ready'},
+            {'host': 'mcp.wesiyu.com', 'personnel_schema': 'compatible', 'state': 'ready'},
+            {'host': 'zhycit.com', 'personnel_schema': 'compatible', 'state': 'ready'}]}
+        if (fleet.get('schema_version') != 1 or fleet.get('authority') != 'gnas-service-discovery' or
+                fleet.get('probe_sha256') != '0f427eef348b5e34fdb62fe476213cf9770ccda8a37443d1f82a7e93fc8279d4' or
+                fleet.get('result') != expected):
+            raise ValueError('fleet evidence does not establish required bindings')
+        smoke = payloads['smoke_sha256']
+        if (smoke.get('schema_version') != 1 or smoke.get('release_id') != contract.RELEASE_ID or
+                smoke.get('candidate_binary_sha256') != contract.BINARY_SHA or
+                smoke.get('config_preflight') != {'target': 'passed', 'shared': 'passed'} or
+                smoke.get('public_resource_issuer') != 'passed'):
+            raise ValueError('candidate preflight evidence mismatch')
+        return expected
     receipt._trusted_directory(USED, Path('/'), 0)
     receipt._trusted_directory(JOURNALS, Path('/'), 0)
     journal = Journal(JOURNALS / approval_id, 0)
@@ -97,8 +117,10 @@ def execute(action, approval_id):
             raise ValueError('old MCP process changed')
 
     def config_check():
-        evidence_check()
-        gates.public_probe()
+        expected_fleet = evidence_check()
+        hosts = ('zhycit.com',) if plan['profile'] == 'target' else ('mcp.wesiyu.com', 'mcp.rtyouth.com')
+        gates.public_probe(hosts)
+        gates.fleet_probe(expected_fleet, hosts)
         data = gates.candidate(plan)
         unit.check_candidate_config(data, plan['dropin_sha256'], candidate,
                                     plan['candidate_policy_sha256'], plan['environment_file_sha256'])
@@ -110,8 +132,11 @@ def execute(action, approval_id):
         unit.check_candidate_config(data, plan['dropin_sha256'], candidate,
                                     plan['candidate_policy_sha256'], plan['environment_file_sha256'])
 
+    def runtime_probe():
+        gates.health_probe(plan)
+
     ops = guarded.GuardedOps(plan, unit, ledger, check_approval, consume, check_recovery,
-                             old_baseline, config_check, None, lambda: gates.health_probe(plan),
+                             old_baseline, config_check, None, runtime_probe,
                              recovery_check=recovery_check, read_candidate=lambda: gates.candidate(plan),
                              verify_untouched=untouched_baseline)
     (transaction.switch if action == 'switch' else transaction.recover)(ops)

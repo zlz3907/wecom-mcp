@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 
 import same_unit_plan as contract
 from same_unit_systemd import digest
@@ -76,9 +77,13 @@ def baseline(plan, unit):
     return {'pid': int(props['MainPID']), 'binary_sha256': plan['previous_binary_sha256']}
 
 
-def public_probe():
+def public_probe(hosts=None):
     results = {}
-    for host, expected in PUBLIC.items():
+    hosts = tuple(PUBLIC) if hosts is None else tuple(hosts)
+    if not hosts or len(set(hosts)) != len(hosts) or any(host not in PUBLIC for host in hosts):
+        raise ValueError('invalid public probe hosts')
+    for host in hosts:
+        expected = PUBLIC[host]
         observed = []
         for path in ('/mcp', '/.well-known/oauth-protected-resource/mcp',
                      '/.well-known/oauth-authorization-server/gnas/oauth'):
@@ -119,4 +124,74 @@ def health_probe(plan):
             raise ValueError('candidate health check failed')
     finally:
         connection.close()
-    public_probe()
+    # The isolated target is independently routed. A shared unit serves more
+    # than one tenant, so an individual tenant outage must not close it for all.
+    if plan['profile'] == 'target':
+        public_probe(('zhycit.com',))
+
+
+def compare_fleet_result(raw, expected, required_hosts=None):
+    if not isinstance(raw, bytes) or len(raw) > 65536:
+        raise ValueError('live tenant fleet changed')
+    actual = json.loads(raw)
+    if required_hosts is None:
+        if actual != expected:
+            raise ValueError('live tenant fleet changed')
+        return
+    def select(value):
+        rows = value.get('bindings') if isinstance(value, dict) else None
+        if not isinstance(rows, list) or value.get('mode') != 'read-only-gnas-discovery':
+            raise ValueError('live tenant fleet changed')
+        selected = [row for row in rows if isinstance(row, dict) and row.get('host') in required_hosts]
+        if len(selected) != len(required_hosts) or {r.get('host') for r in selected} != set(required_hosts):
+            raise ValueError('live tenant fleet changed')
+        return sorted(selected, key=lambda row: row['host'])
+    if not required_hosts or select(actual) != select(expected):
+        raise ValueError('live tenant fleet changed')
+
+
+def fleet_probe(expected_result, required_hosts=None, probe=Path('/usr/local/lib/wecom-mcp-open-bootstrap/fleet-readonly-probe'),
+                expected_sha='0f427eef348b5e34fdb62fe476213cf9770ccda8a37443d1f82a7e93fc8279d4',
+                owner=0, trusted_root=Path('/'), runner=subprocess.run):
+    """Repeat the pinned, read-only GNAS discovery probe under the MCP UID."""
+    import secrets
+    probe = Path(probe)
+    info = probe.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner or stat.S_IMODE(info.st_mode) != 0o555 or
+            digest(probe) != expected_sha):
+        raise ValueError('fleet discovery probe changed')
+    directory = probe.parent
+    while True:
+        info = directory.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & 0o022:
+            raise ValueError('untrusted fleet probe directory')
+        if directory == trusted_root:
+            break
+        if directory == directory.parent:
+            raise ValueError('fleet probe outside trusted root')
+        directory = directory.parent
+    unit = 'mcp-fleet-guard-' + secrets.token_hex(12) + '.service'
+    args = ['/usr/bin/systemd-run', '--quiet', '--wait', '--pipe', '--collect', '--unit=' + unit,
+            '--property=Type=oneshot', '--property=RuntimeMaxSec=65', '--property=TimeoutStartSec=65',
+            '--property=Restart=no', '--property=KillMode=control-group',
+            '--property=User=wecom-mcp-gmzoop', '--property=Group=wecom-mcp-gmzoop',
+            '--property=ProtectSystem=strict', '--property=ProtectHome=read-only',
+            '--property=NoNewPrivileges=yes', '--property=PrivateTmp=yes',
+            '--property=EnvironmentFile=/etc/wecom-mcp/gmzoop.env', str(probe)]
+    try:
+        result = runner(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True, timeout=75)
+        compare_fleet_result(result.stdout, expected_result, required_hosts)
+    finally:
+        # A systemd-run client timeout does not stop the oneshot by itself.
+        runner(['/usr/bin/systemctl', 'stop', unit], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=45)
+        import time
+        deadline = time.monotonic() + 15
+        while True:
+            state = runner(['/usr/bin/systemctl', 'show', unit, '-p', 'LoadState', '--value'],
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+            if state.stdout.decode().strip() == 'not-found':
+                break
+            if time.monotonic() >= deadline:
+                raise ValueError('fleet probe unit did not disappear')
+            time.sleep(0.25)
