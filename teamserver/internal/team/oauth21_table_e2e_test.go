@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,6 +70,7 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 				cfg.RequiredScopes = append(cfg.RequiredScopes, "other.permission")
 			}
 			writes, readbacks, introspections := 0, 0, 0
+			var paused atomic.Bool
 			var stored []any
 			var resourceHost string
 			previous := http.DefaultTransport
@@ -153,7 +155,7 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 						rows := []any{}
 						if scenario != "missing personnel" {
 							state := "启用"
-							if scenario == "paused" {
+							if scenario == "paused" || paused.Load() {
 								state = "暂停"
 							}
 							rows = append(rows, map[string]any{"record_id": "human-subject", "values": map[string]any{"member": []any{map[string]any{"user_id": "employee-one"}}, "type": []any{map[string]any{"text": "人员主体"}}, "status": []any{map[string]any{"text": state}}}})
@@ -272,6 +274,23 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 			}
 			if !reflect.DeepEqual(output["records"], stored) || output["returned_count"] != float64(1) || writes != 1 || readbacks != 2 || introspections < 3 {
 				t.Fatalf("query=%s writes=%d readbacks=%d introspections=%d", body, writes, readbacks, introspections)
+			}
+			if scenario == "success" {
+				// The same connected client must lose both read and write access
+				// immediately after its personnel subject is paused.
+				paused.Store(true)
+				query, err = session.CallTool(ctx, &sdkmcp.CallToolParams{Name: "wecom_record_query", Arguments: map[string]any{"target_role": "Z-S06", "record_ids": []string{"fixture-row"}}})
+				if err == nil && (query == nil || !query.IsError) {
+					t.Fatal("existing session read after personnel pause")
+				}
+				args["idempotency_key"] = "fixture-paused-new-key"
+				result, err = session.CallTool(ctx, &sdkmcp.CallToolParams{Name: "wecom_record_apply", Arguments: args})
+				if err == nil && (result == nil || !result.IsError) {
+					t.Fatal("existing session wrote after personnel pause")
+				}
+				if writes != 1 || readbacks != 2 {
+					t.Fatalf("paused session reached table operations: writes=%d readbacks=%d", writes, readbacks)
+				}
 			}
 		})
 	}
