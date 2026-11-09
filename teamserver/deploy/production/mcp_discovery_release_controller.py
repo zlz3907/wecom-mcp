@@ -171,6 +171,15 @@ def _preflight_recovery(release_id):
     return {'state': 'recovery_preflight_passed', 'release_id': release_id, 'service_restarted': False}
 
 
+def _mutation_disabled(release_id, approval_id):
+    # The live 7703 service uses worker isolation even in schema-v2 artifacts.
+    # The base deploy gate checks only the schema-v3 declaration, and it cannot
+    # guarantee fail-closed recovery or fence an old systemd restart on crash.
+    # Do not make a directly restarting release path executable until those
+    # contracts are implemented and independently verified.
+    raise ValueError('discovery mutation requires a reviewed fail-closed executor')
+
+
 def _deploy_fields(manifest, directory):
     expected = _base_deploy_fields(manifest, directory)
     expected.update({
@@ -242,6 +251,8 @@ c.unready = _unready
 c.healthy = _healthy
 c.check_gnas = _check_gnas
 c.preflight_recovery = _preflight_recovery
+c.deploy = _mutation_disabled
+c.rollback = _mutation_disabled
 c.deploy_fields = _deploy_fields
 c.verify = _verify
 
