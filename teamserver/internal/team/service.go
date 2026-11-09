@@ -394,6 +394,7 @@ func authorizationFromOAuth21TokenInfo(info *sdkauth.TokenInfo, cfg Config, eval
 	rawTools, toolsOK := info.Extra["effective_tools"].([]string)
 	managedPolicy, _ := info.Extra["tool_policy_managed"].(bool)
 	policyContract, _ := info.Extra["tool_policy_contract_v1"].(bool)
+	policyRevision, _ := info.Extra["tool_policy_revision"].(string)
 	if !useridOK || !roleOK || !toolsOK || userid == "" || userid != strings.TrimSpace(userid) || mcpRole == "" || mcpRole != strings.TrimSpace(mcpRole) {
 		return AuthorizationDecision{}, fmt.Errorf("OAuth 2.1 employee policy claims are invalid")
 	}
@@ -401,6 +402,12 @@ func authorizationFromOAuth21TokenInfo(info *sdkauth.TokenInfo, cfg Config, eval
 		SchemaVersion: resolveAuthorizationSchemaV1, Tenant: cfg.AuthorizationTenant, UserID: userid,
 		Resource: cfg.AuthorizationResource, Active: true, EffectiveScopes: append([]string(nil), info.Scopes...),
 		EffectiveTools: append([]string(nil), rawTools...), ManagedToolPolicy: managedPolicy, PolicyContractV1: policyContract, PolicyVersion: "oauth21-introspection", EvaluatedAt: evaluatedAt,
+	}
+	if managedPolicy {
+		if !policyContract || !managedPolicyRevisionPattern.MatchString(policyRevision) {
+			return AuthorizationDecision{}, fmt.Errorf("managed MCP policy revision is invalid")
+		}
+		decision.PolicyVersion = policyRevision
 	}
 	if decision.Tenant == "" || decision.Tenant != strings.TrimSpace(decision.Tenant) || decision.UserID == "" || decision.UserID != strings.TrimSpace(decision.UserID) || decision.Resource == "" || decision.Resource != strings.TrimSpace(decision.Resource) {
 		return AuthorizationDecision{}, fmt.Errorf("OAuth 2.1 authorization identity is invalid")

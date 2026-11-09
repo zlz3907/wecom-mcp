@@ -49,7 +49,7 @@ func TestOAuth21EndToEndMCPClientAndImmediateRevocation(t *testing.T) {
 			"active": active.Load(), "iss": issuer, "sub": "wecom:gm:member-001",
 			"aud": resource, "exp": time.Now().Add(time.Minute).Unix(), "scope": "zoop.read",
 			"token_use": "access", "tenant": "gm", "wecom_userid": "member-001",
-			"mcp_role": "member", "effective_tools": effectiveTools, "tool_policy_managed": managed.Load(), "tool_policy_contract_v1": managed.Load(),
+			"mcp_role": "member", "effective_tools": effectiveTools, "tool_policy_managed": managed.Load(), "tool_policy_revision": "revision-test", "tool_policy_contract_v1": managed.Load(),
 		})
 	}))
 	defer authorizationServer.Close()

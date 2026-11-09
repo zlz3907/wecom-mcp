@@ -107,7 +107,7 @@ func TestOAuth21ManagedTableWriteAndQueryEndToEnd(t *testing.T) {
 					if scenario == "empty scope" {
 						scope = ""
 					}
-					out = map[string]any{"active": scenario != "revoked", "iss": cfg.OIDCIssuer, "sub": "wecom:fixture:employee-one", "aud": cfg.MCPURL, "exp": time.Now().Add(time.Minute).Unix(), "scope": scope, "token_use": "access", "tenant": cfg.AuthorizationTenant, "wecom_userid": "employee-one", "mcp_role": "member", "effective_tools": granted, "tool_policy_contract_v1": scenario == "managed write" || scenario == "managed denied", "tool_policy_managed": scenario == "managed write" || scenario == "managed denied"}
+					out = map[string]any{"active": scenario != "revoked", "iss": cfg.OIDCIssuer, "sub": "wecom:fixture:employee-one", "aud": cfg.MCPURL, "exp": time.Now().Add(time.Minute).Unix(), "scope": scope, "token_use": "access", "tenant": cfg.AuthorizationTenant, "wecom_userid": "employee-one", "mcp_role": "member", "effective_tools": granted, "tool_policy_contract_v1": scenario == "managed write" || scenario == "managed denied", "tool_policy_managed": scenario == "managed write" || scenario == "managed denied", "tool_policy_revision": "revision-test"}
 				case "/gnas/service/getJwtToken":
 					out = map[string]any{"code": 200, "data": map[string]any{"token": "fake-jwt", "expires_at": time.Now().Add(time.Hour).Unix()}}
 				case "/gnas/service/wecomExecute":

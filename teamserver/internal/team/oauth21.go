@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -17,6 +18,8 @@ import (
 )
 
 const oauth21IntrospectionResponseMax = 64 << 10
+
+var managedPolicyRevisionPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 type OAuth21IntrospectionAuthenticator struct {
 	config   Config
@@ -38,6 +41,7 @@ type oauth21IntrospectionResponse struct {
 	EffectiveTools    []string        `json:"effective_tools"`
 	ManagedToolPolicy *bool           `json:"tool_policy_managed"`
 	PolicyContractV1  bool            `json:"tool_policy_contract_v1"`
+	PolicyRevision    string          `json:"tool_policy_revision"`
 }
 
 func NewOAuth21IntrospectionAuthenticator(cfg Config) (*OAuth21IntrospectionAuthenticator, error) {
@@ -136,7 +140,7 @@ func (a *OAuth21IntrospectionAuthenticator) Verify(ctx context.Context, rawToken
 		Scopes: splitList(result.Scope), Expiration: time.Unix(result.ExpiresAt, 0), UserID: result.Subject,
 		Extra: map[string]any{
 			"issuer": result.Issuer, "role": string(RolePolicy), "wecom_userid": result.WeComUserID,
-			"mcp_role": result.MCPRole, "effective_tools": append([]string(nil), result.EffectiveTools...), "tool_policy_managed": result.managedToolPolicy(), "tool_policy_contract_v1": result.PolicyContractV1,
+			"mcp_role": result.MCPRole, "effective_tools": append([]string(nil), result.EffectiveTools...), "tool_policy_managed": result.managedToolPolicy(), "tool_policy_contract_v1": result.PolicyContractV1, "tool_policy_revision": result.PolicyRevision,
 		},
 	}, nil
 }
@@ -148,7 +152,7 @@ func (result oauth21IntrospectionResponse) managedToolPolicy() bool {
 func validOAuth21IntrospectionResponse(result oauth21IntrospectionResponse, cfg Config, now time.Time) bool {
 	// A managed decision is meaningful only under the explicit tool-policy
 	// contract; never interpret a partial response as an open employee grant.
-	if (result.PolicyContractV1 && result.ManagedToolPolicy == nil) || (result.managedToolPolicy() && !result.PolicyContractV1) {
+	if (result.PolicyContractV1 && result.ManagedToolPolicy == nil) || (result.managedToolPolicy() && (!result.PolicyContractV1 || !managedPolicyRevisionPattern.MatchString(result.PolicyRevision))) {
 		return false
 	}
 	if !result.Active || result.Issuer != cfg.OIDCIssuer || result.Subject == "" || result.Subject != strings.TrimSpace(result.Subject) || result.ExpiresAt <= now.Unix() || result.TokenUse != "access" || result.Tenant != cfg.AuthorizationTenant || result.WeComUserID == "" || result.WeComUserID != strings.TrimSpace(result.WeComUserID) || result.MCPRole == "" || result.MCPRole != strings.TrimSpace(result.MCPRole) || !oauth21AudienceContains(result.Audience, cfg.OIDCAudience) {

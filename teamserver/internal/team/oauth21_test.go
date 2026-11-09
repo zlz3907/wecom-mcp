@@ -122,6 +122,20 @@ func TestOAuth21AcceptsOldAndPolicyAwareServer(t *testing.T) {
 		t.Fatal("policy contract with null managed flag was accepted")
 	}
 	payload["tool_policy_managed"] = true
+	for _, value := range []any{nil, "", " revision", "bad/revision"} {
+		payload["tool_policy_revision"] = value
+		if _, err := authenticator.Verify(context.Background(), "opaque-token", nil); err == nil {
+			t.Fatalf("managed policy with invalid revision %#v was accepted", value)
+		}
+	}
+	delete(payload, "tool_policy_revision")
+	if _, err := authenticator.Verify(context.Background(), "opaque-token", nil); err == nil {
+		t.Fatal("managed policy with missing revision was accepted")
+	}
+	payload["tool_policy_revision"] = "revision-test"
+	if _, err := authenticator.Verify(context.Background(), "opaque-token", nil); err != nil {
+		t.Fatalf("managed policy with valid revision rejected: %v", err)
+	}
 	payload["tool_policy_contract_v1"] = false
 	if _, err := authenticator.Verify(context.Background(), "opaque-token", nil); err == nil {
 		t.Fatal("managed policy without contract was accepted")
@@ -234,10 +248,15 @@ func testOAuth21Config(introspectionURL string) Config {
 func TestOAuth21ManagedToolPolicyRejectsAmbiguousClaims(t *testing.T) {
 	cfg := testOAuth21Config("https://example.invalid/introspect")
 	cfg.RequiredScopes = []string{"zoop.read"}
-	base := oauth21IntrospectionResponse{Active: true, Issuer: cfg.OIDCIssuer, Subject: "employee:member", Audience: json.RawMessage(`"https://mcp.jyiai.com/gmzoop/mcp"`), ExpiresAt: time.Now().Add(time.Minute).Unix(), TokenUse: "access", Tenant: cfg.AuthorizationTenant, WeComUserID: "member", MCPRole: "member", ManagedToolPolicy: boolPointer(true), PolicyContractV1: true}
+	base := oauth21IntrospectionResponse{Active: true, Issuer: cfg.OIDCIssuer, Subject: "employee:member", Audience: json.RawMessage(`"https://mcp.jyiai.com/gmzoop/mcp"`), ExpiresAt: time.Now().Add(time.Minute).Unix(), TokenUse: "access", Tenant: cfg.AuthorizationTenant, WeComUserID: "member", MCPRole: "member", ManagedToolPolicy: boolPointer(true), PolicyContractV1: true, PolicyRevision: "revision-test"}
 	if !validOAuth21IntrospectionResponse(base, cfg, time.Now()) {
 		t.Fatal("an explicit managed policy granting zero tools must remain a valid identity")
 	}
+	base.PolicyRevision = ""
+	if validOAuth21IntrospectionResponse(base, cfg, time.Now()) {
+		t.Fatal("managed policy without revision must be rejected")
+	}
+	base.PolicyRevision = "revision-test"
 	base.PolicyContractV1 = false
 	if validOAuth21IntrospectionResponse(base, cfg, time.Now()) {
 		t.Fatal("managed policy without contract must be rejected")

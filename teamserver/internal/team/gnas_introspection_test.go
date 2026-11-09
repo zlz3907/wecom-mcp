@@ -50,6 +50,7 @@ func TestGNASIntrospectionUsesServiceIdentityAndChecksTenant(t *testing.T) {
 				case "managed_auth_server":
 					result["tool_policy_contract_v1"] = true
 					result["tool_policy_managed"] = true
+					result["tool_policy_revision"] = "revision-test"
 				case "wrong_tenant":
 					result["tenant"] = "other"
 				case "wrong_issuer":
