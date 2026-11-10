@@ -27,6 +27,10 @@ def main():
     for key in ('expected-runtime-path','expected-binary-sha256','expected-unit-fingerprint','expected-runtime-config-fingerprint','expected-unmanaged-unit-fingerprint','expected-gnas-release-id','expected-gnas-binary-sha256'):
         p.add_argument('--'+key, required=True)
     p.add_argument('--ci-url', default='', help='same-commit successful hosted CI; omission creates a local-only candidate')
+    # This produces a review/staging-only schema v3 plan.  The installed shared
+    # controller refuses to deploy it until the separate blue/green executor is
+    # provisioned; omitting the flag preserves schema v2 production behavior.
+    p.add_argument('--ready-worker-isolation', action='store_true', help='emit a blue/green isolation plan; never restarts the shared green service')
     a = p.parse_args()
     out = Path(a.output)
     c.require(out.is_absolute() and not out.exists() and out.parent.is_dir() and out.parent.resolve() == out.parent, 'new absolute output with existing canonical parent required')
@@ -43,7 +47,9 @@ def main():
     (out/'discovery-policy.json').write_bytes((HERE.parent/'wecom-mcp-gnas-discovery-policy.json.example').read_bytes())
     (out/'service.conf').write_bytes(c.dropin(rid))
     (out/'recovery.conf').write_bytes(c.recovery_dropin(rid))
-    manifest={'schema_version':2, 'recovery_mode':'database-only', 'recovery_hosts':list(c.HOSTS), 'expected_unmanaged_unit_fingerprint':a.expected_unmanaged_unit_fingerprint, 'environment':c.ENVIRONMENT, 'release_id':rid, 'git_commit':commit, 'git_tree':tree, 'source_clean':True, 'target':'linux/amd64', 'files':{name:c.sha(out/name) for name in c.FILES[:-1]}, 'expected_runtime_path':a.expected_runtime_path, 'expected_binary_sha256':a.expected_binary_sha256, 'expected_unit_fingerprint':a.expected_unit_fingerprint, 'expected_runtime_config_fingerprint':a.expected_runtime_config_fingerprint, 'expected_gnas_release_id':a.expected_gnas_release_id, 'expected_gnas_binary_sha256':a.expected_gnas_binary_sha256, 'ci_url':a.ci_url, 'created_at':dt.datetime.now(dt.timezone.utc).isoformat()}
+    manifest={'schema_version':3 if a.ready_worker_isolation else 2, 'recovery_mode':'database-only', 'recovery_hosts':list(c.HOSTS), 'expected_unmanaged_unit_fingerprint':a.expected_unmanaged_unit_fingerprint, 'environment':c.ENVIRONMENT, 'release_id':rid, 'git_commit':commit, 'git_tree':tree, 'source_clean':True, 'target':'linux/amd64', 'files':{name:c.sha(out/name) for name in c.FILES[:-1]}, 'expected_runtime_path':a.expected_runtime_path, 'expected_binary_sha256':a.expected_binary_sha256, 'expected_unit_fingerprint':a.expected_unit_fingerprint, 'expected_runtime_config_fingerprint':a.expected_runtime_config_fingerprint, 'expected_gnas_release_id':a.expected_gnas_release_id, 'expected_gnas_binary_sha256':a.expected_gnas_binary_sha256, 'ci_url':a.ci_url, 'created_at':dt.datetime.now(dt.timezone.utc).isoformat()}
+    if a.ready_worker_isolation:
+        manifest.update(c.isolation_manifest_fields())
     (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     (out/'SHA256SUMS').write_text(''.join(c.sha(out/name)+'  '+name+'\n' for name in sorted(c.FILES)))
     for file in out.iterdir():file.chmod(0o500 if file.name=='wecom-mcp-team' else 0o400)

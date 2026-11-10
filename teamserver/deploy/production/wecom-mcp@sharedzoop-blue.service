@@ -1,0 +1,41 @@
+[Unit]
+Description=Isolated blue WeCom MCP service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wecom-mcp-gmzoop
+Group=wecom-mcp-gmzoop
+EnvironmentFile=/etc/wecom-mcp/gmzoop.env
+Environment=GOMEMLIMIT=80MiB
+Environment=GOGC=75
+# This template must not start a service until the separately reviewed executor
+# installs its immutable release-specific drop-in.
+ExecStart=/usr/bin/false
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillMode=control-group
+OOMPolicy=stop
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/home/product/services/mcp/wecom/state/discovery
+
+MemoryHigh=96M
+MemoryMax=128M
+TasksMax=96
+LimitNOFILE=4096
+CPUQuota=20%
+
+[Install]
+WantedBy=multi-user.target

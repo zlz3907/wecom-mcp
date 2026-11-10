@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex/mcp-open-bootstrap-20261109, codex/mcp-oauth-scope-compat-20261109]
   pull_request:
 
 permissions:

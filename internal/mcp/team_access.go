@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -222,27 +223,83 @@ func (s *Server) CallToolWithOAuthEmployee(ctx context.Context, name string, arg
 			return nil, fmt.Errorf("OAuth identity cannot be supplied in tool arguments")
 		}
 	}
-	if access == ToolAccessReader {
-		return s.call(ctx, name, arguments)
+	// The initializer uses a configured remote document administrator. Keep
+	// the authenticated transport identity through its status and locked apply.
+	ctx = context.WithValue(ctx, oauthInitializerActorKey{}, userid)
+	if strings.HasPrefix(name, "wecom_instance_initialize") {
+		candidate, err := s.store.BootstrapCandidate()
+		if err != nil {
+			return nil, err
+		}
+		if err := verifyOAuthInitializerActor(ctx, candidate); err != nil {
+			return nil, err
+		}
+		if candidate.RegistryDocumentID == "" {
+			// There is no personnel table to query until initialization. The
+			// transport has verified the member, and the initializer additionally
+			// requires the configured operator, local Owner and preview gates.
+			return s.call(ctx, name, arguments)
+		}
 	}
 	runtime, client, err := s.runtimeClient()
 	if err != nil {
 		return nil, err
 	}
-	if isPersonnelSubjectAddRecords(arguments) {
-		// Z-S09 registration is governed by the Enterprise WeCom API and the
-		// normal schema/write validation. It must not depend on an existing
-		// Z-S09 identity row, including during initialization.
+	bootstrap := access != ToolAccessReader && isPersonnelSubjectAddRecords(arguments)
+	if bootstrap {
 		s.personnelBootstrapMu.Lock()
 		defer s.personnelBootstrapMu.Unlock()
-		return s.callWithBootstrapIdentity(ctx, runtime, name, arguments, userid)
 	}
 	identity, err := resolvePersonnelIdentity(ctx, runtime, client, verifiedIdentity{UserID: userid})
+	if access == ToolAccessReader {
+		// An unregistered employee remains able to read; an explicitly paused,
+		// disabled, ambiguous or unreadable personnel record fails closed.
+		if err != nil && !errors.Is(err, errPersonnelSubjectNotFound) {
+			return nil, err
+		}
+		ctx = context.WithValue(ctx, oauthInstanceDigestKey{}, runtime.Digest())
+		return s.call(ctx, name, arguments)
+	}
+	if bootstrap {
+		// Z-S09 registration is governed by the Enterprise WeCom API and the
+		// normal schema/write validation. A missing row may be registered, but
+		// an explicitly disabled or ambiguous existing row cannot bypass policy.
+		if err != nil && !errors.Is(err, errPersonnelSubjectNotFound) {
+			return nil, err
+		}
+		return s.callWithBootstrapIdentity(ctx, runtime, name, arguments, userid)
+	}
+	if errors.Is(err, errPersonnelSubjectNotFound) {
+		// OAuth already verified the WeCom employee. Preserve that real actor
+		// without inventing a Zoop subject; tools that require a subject continue
+		// to enforce that dependency themselves.
+		return s.callWithAuthenticatedEmployee(ctx, runtime, name, arguments, userid)
+	}
 	if err != nil {
 		return nil, err
 	}
 	ctx = context.WithValue(ctx, oauthInstanceDigestKey{}, runtime.Digest())
 	return s.callWithVerifiedIdentity(ctx, runtime, name, arguments, identity)
+}
+
+func (s *Server) callWithAuthenticatedEmployee(ctx context.Context, runtime config.Config, name string, arguments json.RawMessage, userid string) (any, error) {
+	ctx = context.WithValue(ctx, oauthInstanceDigestKey{}, runtime.Digest())
+	ctx = context.WithValue(ctx, bootstrapActorContextKey{}, userid)
+	ctx = context.WithValue(ctx, oauthUnregisteredActorContextKey{}, true)
+	if executionSubject, ok := configuredAIExecutionSubject(runtime); ok {
+		ctx = context.WithValue(ctx, verifiedExecutionSubjectContextKey{}, executionSubject)
+	}
+	value, err := s.call(ctx, name, arguments)
+	if err != nil {
+		return nil, err
+	}
+	if output, ok := value.(map[string]any); ok {
+		output["verified_actor_userid"] = userid
+		output["verified_initiator_userid"] = userid
+		output["identity_binding_verified"] = false
+		output["personnel_subject_missing"] = true
+	}
+	return value, nil
 }
 
 type bootstrapActorContextKey struct{}

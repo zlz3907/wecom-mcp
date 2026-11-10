@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ import (
 
 const oauth21IntrospectionResponseMax = 64 << 10
 
+var managedPolicyRevisionPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
 type OAuth21IntrospectionAuthenticator struct {
 	config   Config
 	client   *http.Client
@@ -25,17 +28,21 @@ type OAuth21IntrospectionAuthenticator struct {
 }
 
 type oauth21IntrospectionResponse struct {
-	Active         bool            `json:"active"`
-	Issuer         string          `json:"iss"`
-	Subject        string          `json:"sub"`
-	Audience       json.RawMessage `json:"aud"`
-	ExpiresAt      int64           `json:"exp"`
-	Scope          string          `json:"scope"`
-	TokenUse       string          `json:"token_use"`
-	Tenant         string          `json:"tenant"`
-	WeComUserID    string          `json:"wecom_userid"`
-	MCPRole        string          `json:"mcp_role"`
-	EffectiveTools []string        `json:"effective_tools"`
+	Active                  bool            `json:"active"`
+	Issuer                  string          `json:"iss"`
+	Subject                 string          `json:"sub"`
+	Audience                json.RawMessage `json:"aud"`
+	ExpiresAt               int64           `json:"exp"`
+	Scope                   string          `json:"scope"`
+	TokenUse                string          `json:"token_use"`
+	Tenant                  string          `json:"tenant"`
+	WeComUserID             string          `json:"wecom_userid"`
+	MCPRole                 string          `json:"mcp_role"`
+	EffectiveTools          []string        `json:"effective_tools"`
+	ManagedToolPolicy       *bool           `json:"tool_policy_managed"`
+	PolicyContractV1        bool            `json:"tool_policy_contract_v1"`
+	PolicyRevision          string          `json:"tool_policy_revision"`
+	PolicyCapabilityVersion int             `json:"tool_policy_capability_version"`
 }
 
 func NewOAuth21IntrospectionAuthenticator(cfg Config) (*OAuth21IntrospectionAuthenticator, error) {
@@ -130,28 +137,52 @@ func (a *OAuth21IntrospectionAuthenticator) Verify(ctx context.Context, rawToken
 	if decoder.Decode(&struct{}{}) != io.EOF || !validOAuth21IntrospectionResponse(result, a.config, time.Now()) {
 		return nil, fmt.Errorf("%w: bearer token rejected", sdkauth.ErrInvalidToken)
 	}
+	if floor, ok := ctx.Value(policyFloorContextKey{}).(policyFloorDecision); ok {
+		if floor.Required != result.managedToolPolicy() || (floor.Required && (!result.PolicyContractV1 || floor.Revision != result.PolicyRevision)) {
+			return nil, fmt.Errorf("%w: policy floor mismatch", sdkauth.ErrInvalidToken)
+		}
+	}
 	return &sdkauth.TokenInfo{
 		Scopes: splitList(result.Scope), Expiration: time.Unix(result.ExpiresAt, 0), UserID: result.Subject,
 		Extra: map[string]any{
 			"issuer": result.Issuer, "role": string(RolePolicy), "wecom_userid": result.WeComUserID,
-			"mcp_role": result.MCPRole, "effective_tools": append([]string(nil), result.EffectiveTools...),
+			"mcp_role": result.MCPRole, "effective_tools": append([]string(nil), result.EffectiveTools...), "tool_policy_managed": result.managedToolPolicy(), "tool_policy_contract_v1": result.PolicyContractV1, "tool_policy_revision": result.PolicyRevision,
 		},
 	}, nil
 }
 
+func (result oauth21IntrospectionResponse) managedToolPolicy() bool {
+	return result.ManagedToolPolicy != nil && *result.ManagedToolPolicy
+}
+
 func validOAuth21IntrospectionResponse(result oauth21IntrospectionResponse, cfg Config, now time.Time) bool {
+	// Service-JWT bindings use GNAS as their live policy authority. An older
+	// authority can return a successful but unfiltered tool set; refuse that
+	// response instead of silently widening permissions after a rollback.
+	// Basic OAuth clients retain their existing contract.
+	if cfg.OAuth21ServiceJWT && result.PolicyCapabilityVersion != 1 {
+		return false
+	}
+	// A managed decision is meaningful only under the explicit tool-policy
+	// contract; never interpret a partial response as an open employee grant.
+	if (result.PolicyContractV1 && result.ManagedToolPolicy == nil) || (result.managedToolPolicy() && (!result.PolicyContractV1 || !managedPolicyRevisionPattern.MatchString(result.PolicyRevision))) {
+		return false
+	}
 	if !result.Active || result.Issuer != cfg.OIDCIssuer || result.Subject == "" || result.Subject != strings.TrimSpace(result.Subject) || result.ExpiresAt <= now.Unix() || result.TokenUse != "access" || result.Tenant != cfg.AuthorizationTenant || result.WeComUserID == "" || result.WeComUserID != strings.TrimSpace(result.WeComUserID) || result.MCPRole == "" || result.MCPRole != strings.TrimSpace(result.MCPRole) || !oauth21AudienceContains(result.Audience, cfg.OIDCAudience) {
 		return false
 	}
 	scopes := splitList(result.Scope)
-	if len(scopes) == 0 || !containsAll(scopes, cfg.RequiredScopes) {
+	if !containsPolicyScopes(scopes, oauth21NonZoopScopes(cfg.RequiredScopes), false) {
 		return false
 	}
-	if len(result.EffectiveTools) == 0 || len(result.EffectiveTools) > 128 {
+	if len(result.EffectiveTools) > 128 || (len(result.EffectiveTools) == 0 && !result.managedToolPolicy()) {
 		return false
 	}
 	seen := make(map[string]struct{}, len(result.EffectiveTools))
 	for _, tool := range result.EffectiveTools {
+		if result.managedToolPolicy() && tool == "*" {
+			return false
+		}
 		if !validOAuth21ToolName(tool) {
 			return false
 		}
@@ -161,6 +192,18 @@ func validOAuth21IntrospectionResponse(result oauth21IntrospectionResponse, cfg 
 		seen[tool] = struct{}{}
 	}
 	return true
+}
+
+// Historical Zoop OAuth scope labels are not employee tool permissions.
+// Keep any unrelated configured scope requirements in force.
+func oauth21NonZoopScopes(required []string) []string {
+	filtered := make([]string, 0, len(required))
+	for _, scope := range required {
+		if scope != "zoop.read" && scope != "zoop.write" {
+			filtered = append(filtered, scope)
+		}
+	}
+	return filtered
 }
 
 func oauth21AudienceContains(raw json.RawMessage, expected string) bool {

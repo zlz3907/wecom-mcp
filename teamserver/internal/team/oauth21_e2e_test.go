@@ -25,6 +25,9 @@ func TestOAuth21EndToEndMCPClientAndImmediateRevocation(t *testing.T) {
 
 	var active atomic.Bool
 	active.Store(true)
+	var managed atomic.Bool
+	var noTools atomic.Bool
+	var alternateTools atomic.Bool
 	var introspectionCalls atomic.Int32
 	authorizationServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		introspectionCalls.Add(1)
@@ -36,11 +39,17 @@ func TestOAuth21EndToEndMCPClientAndImmediateRevocation(t *testing.T) {
 			t.Fatalf("unexpected introspection request: method=%s form=%v", r.Method, r.Form)
 		}
 		w.Header().Set("Content-Type", "application/json")
+		effectiveTools := []string{"wecom_schema_status"}
+		if noTools.Load() {
+			effectiveTools = []string{}
+		} else if alternateTools.Load() {
+			effectiveTools = []string{"wecom_employee_list"}
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"active": active.Load(), "iss": issuer, "sub": "wecom:gm:member-001",
 			"aud": resource, "exp": time.Now().Add(time.Minute).Unix(), "scope": "zoop.read",
 			"token_use": "access", "tenant": "gm", "wecom_userid": "member-001",
-			"mcp_role": "member", "effective_tools": []string{"wecom_schema_status"},
+			"mcp_role": "member", "effective_tools": effectiveTools, "tool_policy_managed": managed.Load(), "tool_policy_revision": "revision-test", "tool_policy_contract_v1": managed.Load(),
 		})
 	}))
 	defer authorizationServer.Close()
@@ -68,6 +77,7 @@ func TestOAuth21EndToEndMCPClientAndImmediateRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	installTestPolicyFloor(t, service, "")
 	resourceServer := httptest.NewServer(service.Handler(authenticator.Verify))
 	defer resourceServer.Close()
 
@@ -97,13 +107,57 @@ func TestOAuth21EndToEndMCPClientAndImmediateRevocation(t *testing.T) {
 	if len(tools.Tools) != 2 || !toolNames["wecom_schema_status"] || !toolNames["wecom_employee_list"] {
 		t.Fatalf("tools=%#v", tools.Tools)
 	}
+	setTestPolicyFloor(t, service, "revision-test", "generation-2")
+	managed.Store(true)
+	managedTools, err := session.ListTools(ctx, nil)
+	if err != nil || len(managedTools.Tools) != 1 || managedTools.Tools[0].Name != "wecom_schema_status" {
+		t.Fatalf("managed tools=%#v err=%v", managedTools, err)
+	}
+	noTools.Store(true)
+	emptyTools, err := session.ListTools(ctx, nil)
+	if err != nil || len(emptyTools.Tools) != 0 {
+		t.Fatalf("empty policy tools=%#v err=%v", emptyTools, err)
+	}
+	if result, callErr := session.CallTool(ctx, &sdkmcp.CallToolParams{Name: "wecom_schema_status", Arguments: map[string]any{}}); callErr == nil && (result == nil || !result.IsError) {
+		t.Fatal("previously permitted tool remained callable after policy was emptied")
+	}
+	noTools.Store(false)
+	deniedSession, err := client.Connect(ctx, &sdkmcp.StreamableClientTransport{Endpoint: resourceServer.URL + "/mcp", HTTPClient: httpClient, DisableStandaloneSSE: true, MaxRetries: -1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deniedSession.Close()
+	if result, callErr := deniedSession.CallTool(ctx, &sdkmcp.CallToolParams{Name: "wecom_employee_list", Arguments: map[string]any{}}); callErr == nil && (result == nil || !result.IsError) {
+		t.Fatal("tool outside the assigned policy was callable")
+	}
+	changedSession, err := client.Connect(ctx, &sdkmcp.StreamableClientTransport{Endpoint: resourceServer.URL + "/mcp", HTTPClient: httpClient, DisableStandaloneSSE: true, MaxRetries: -1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer changedSession.Close()
+	alternateTools.Store(true)
+	changedTools, err := changedSession.ListTools(ctx, nil)
+	if err != nil || len(changedTools.Tools) != 1 || changedTools.Tools[0].Name != "wecom_employee_list" {
+		t.Fatalf("changed policy tools=%#v err=%v", changedTools, err)
+	}
+	if result, callErr := changedSession.CallTool(ctx, &sdkmcp.CallToolParams{Name: "wecom_schema_status", Arguments: map[string]any{}}); callErr == nil && (result == nil || !result.IsError) {
+		t.Fatal("tool removed by a nonempty policy change remained callable")
+	}
+	alternateTools.Store(false)
+	managed.Store(false)
+	setTestPolicyFloor(t, service, "", "generation-3")
+	secondSession, err := client.Connect(ctx, &sdkmcp.StreamableClientTransport{Endpoint: resourceServer.URL + "/mcp", HTTPClient: httpClient, DisableStandaloneSSE: true, MaxRetries: -1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondSession.Close()
 	beforeRevocation := introspectionCalls.Load()
 	if beforeRevocation < 2 {
 		t.Fatalf("introspection calls=%d, want initialize and tools/list to be independently checked", beforeRevocation)
 	}
 
 	active.Store(false)
-	if _, err := session.ListTools(ctx, nil); err == nil {
+	if _, err := secondSession.ListTools(ctx, nil); err == nil {
 		t.Fatal("tools/list succeeded after authorization was revoked")
 	}
 	if got := introspectionCalls.Load(); got != beforeRevocation+1 {

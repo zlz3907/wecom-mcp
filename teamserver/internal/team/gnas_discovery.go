@@ -21,6 +21,7 @@ import (
 )
 
 var bindingDigestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+var schemaAdminUserPattern = regexp.MustCompile(`^[A-Za-z0-9_.@-]{1,64}$`)
 
 func gnasBindingDigest(b gnasFleetBinding) string {
 	canonical, _ := json.Marshal(b)
@@ -41,14 +42,16 @@ type discoveredInstance struct {
 }
 
 type GNASDiscovery struct {
-	runtimeManifestPath string
-	staticRecoveryURL   string
-	policyPath          string
-	stateRoot           string
-	listen              string
-	mu                  sync.Mutex
-	instances           map[string]discoveredInstance
-	resolveName         func(context.Context, instanceconfig.Config) (string, error)
+	runtimeManifestPath      string
+	staticRecoveryURL        string
+	policyPath               string
+	stateRoot                string
+	listen                   string
+	schemaAdminBindingDigest string
+	schemaAdminUserID        string
+	mu                       sync.Mutex
+	instances                map[string]discoveredInstance
+	resolveName              func(context.Context, instanceconfig.Config) (string, error)
 }
 
 func NewGNASDiscovery(policyPath, stateRoot, listen string) (*GNASDiscovery, error) {
@@ -69,7 +72,11 @@ func NewGNASDiscovery(policyPath, stateRoot, listen string) (*GNASDiscovery, err
 	if err != nil || statErr != nil || !info.IsDir() || resolved != stateRoot {
 		return nil, fmt.Errorf("discovery state root must be an existing directory without symlink aliases")
 	}
-	return &GNASDiscovery{policyPath: policyPath, stateRoot: stateRoot, listen: listen, instances: map[string]discoveredInstance{}, resolveName: legacymcp.ResolveDiscoveredInstanceName}, nil
+	adminBinding, adminUser, err := configuredSchemaAdmin()
+	if err != nil {
+		return nil, err
+	}
+	return &GNASDiscovery{policyPath: policyPath, stateRoot: stateRoot, listen: listen, schemaAdminBindingDigest: adminBinding, schemaAdminUserID: adminUser, instances: map[string]discoveredInstance{}, resolveName: legacymcp.ResolveDiscoveredInstanceName}, nil
 }
 
 // NewGNASHybridDiscovery keeps explicitly mapped local instances and
@@ -100,6 +107,15 @@ func NewGNASStaticRecovery(policyPath, stateRoot, runtimeManifestPath, listen, p
 	}
 	d.staticRecoveryURL = publicURL
 	return d, nil
+}
+
+// A protected process environment is the only source of this optional grant.
+func configuredSchemaAdmin() (string, string, error) {
+	binding, user := os.Getenv("GNAS_SCHEMA_ADMIN_BINDING_DIGEST"), os.Getenv("GNAS_SCHEMA_ADMIN_USERID")
+	if (binding == "") != (user == "") || (binding != "" && (!bindingDigestPattern.MatchString(binding) || !schemaAdminUserPattern.MatchString(user))) {
+		return "", "", fmt.Errorf("schema admin binding configuration invalid")
+	}
+	return binding, user, nil
 }
 
 func (d *GNASDiscovery) ListenAddress() string { return d.listen }
@@ -139,11 +155,11 @@ func (d *GNASDiscovery) assembleWithLocals(ctx context.Context, payload gnasFlee
 	if strings.TrimSpace(os.Getenv("TEAM_MCP_AUTH_MODE")) != string(AuthenticationModeOAuth21) {
 		return nil, fmt.Errorf("GNAS discovery requires oauth21 authentication")
 	}
-	seenIDs, seenHosts, seenSources := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	seenIDs, seenHosts, seenSources, seenCapabilityInstances := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	// Validate the entire authority snapshot before reading any tenant data.
 	for _, b := range payload.Bindings {
 		u, err := url.Parse(b.PublicResource)
-		if err != nil || u.Scheme != "https" || u.Port() != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || !fleetHost.MatchString(u.Hostname()) || !fleetIdentifier.MatchString(b.BindingID) || !fleetIdentifier.MatchString(b.AuthorizationResource) || seenIDs[b.BindingID] || seenHosts[u.Hostname()] || seenSources[b.Source] || b.Plugins.Zoop == nil {
+		if err != nil || u.Scheme != "https" || u.Port() != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || !fleetHost.MatchString(u.Hostname()) || !fleetIdentifier.MatchString(b.BindingID) || b.MCPInstanceID != "" && (!fleetIdentifier.MatchString(b.MCPInstanceID) || seenCapabilityInstances[b.MCPInstanceID]) || !fleetIdentifier.MatchString(b.AuthorizationResource) || seenIDs[b.BindingID] || seenHosts[u.Hostname()] || seenSources[b.Source] || b.Plugins.Zoop == nil {
 			return nil, fmt.Errorf("GNAS discovery binding contract is invalid")
 		}
 		if _, err := normalizeTeamPublicURL(b.PublicResource); err != nil {
@@ -155,6 +171,9 @@ func (d *GNASDiscovery) assembleWithLocals(ctx context.Context, payload gnasFlee
 			return nil, fmt.Errorf("GNAS discovery instance contract is invalid")
 		}
 		seenIDs[b.BindingID], seenHosts[u.Hostname()], seenSources[b.Source] = true, true, true
+		if b.MCPInstanceID != "" {
+			seenCapabilityInstances[b.MCPInstanceID] = true
+		}
 	}
 	instances := make(map[string]discoveredInstance, len(payload.Bindings))
 	resolved := d.resolveRegistryNames(ctx, payload.Bindings, policy, locals)
@@ -185,6 +204,9 @@ func (d *GNASDiscovery) assembleWithLocals(ctx context.Context, payload gnasFlee
 			GNASBindingDigest: gnasBindingDigest(b),
 			PublicURL:         b.PublicResource, OIDCIssuer: "https://" + u.Host + "/gnas/oauth",
 			AuthorizationTenant: b.BindingID, AuthorizationResource: b.AuthorizationResource, Plugins: []string{"zoop"},
+			CapabilityCatalogBindingID: b.BindingID, CapabilityCatalogSource: b.Source,
+			CapabilityCatalogInstanceID: b.MCPInstanceID, CapabilityCatalogPublicResource: b.PublicResource,
+			CapabilityCatalogAuthorizationResource: b.AuthorizationResource,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("GNAS discovery runtime configuration is invalid")
@@ -197,7 +219,7 @@ func (d *GNASDiscovery) assembleWithLocals(ctx context.Context, payload gnasFlee
 			instances[b.BindingID] = cached
 		}
 		loaded = append(loaded, LoadedFleetBinding{Binding: FleetBinding{
-			BindingID: b.BindingID, Hosts: []string{u.Hostname()}, PublicURL: b.PublicResource,
+			BindingID: b.BindingID, MCPInstanceID: b.MCPInstanceID, Hosts: []string{u.Hostname()}, PublicURL: b.PublicResource,
 			AuthorizationTenant: b.BindingID, AuthorizationResource: b.AuthorizationResource,
 			Source: b.Source, Plugins: []string{"zoop"},
 		}, Config: cfg, RegistryUnavailable: !ready})
@@ -267,9 +289,13 @@ func (d *GNASDiscovery) runtimeFor(b gnasFleetBinding, policy DiscoveryPolicy) i
 	for name, operations := range policy.APIWhitelist {
 		groups[name] = append([]string(nil), operations...)
 	}
-	return instanceconfig.Config{Version: 1, InstanceName: b.BindingID, TenantRoute: b.Source,
+	runtime := instanceconfig.Config{Version: 1, InstanceName: b.BindingID, TenantRoute: b.Source,
 		RegistryDocumentID: b.Plugins.Zoop.RegistryDocumentID, RegistryKey: b.Plugins.Zoop.RegistryKey,
 		SchemaSource: "z-s00", StatePath: filepath.Join(d.stateRoot, hex.EncodeToString(digest[:])+".json"), APIWhitelist: groups}
+	if d.schemaAdminBindingDigest != "" && gnasBindingDigest(b) == d.schemaAdminBindingDigest {
+		runtime.OAuthSchemaAdminUserID = d.schemaAdminUserID
+	}
+	return runtime
 }
 
 func loadDiscoveryPolicy(path string) (DiscoveryPolicy, error) {
@@ -306,6 +332,9 @@ func (d *GNASDiscovery) localBinding(b gnasFleetBinding, local GNASFleetRuntimeB
 	cfg, err := LoadConfigForBinding(local.InstanceConfigPath, d.listen, BindingOverrides{
 		BoundRuntime: &runtime, OAuth21ServiceJWT: true, GNASBindingDigest: gnasBindingDigest(b),
 		PublicURL: b.PublicResource, OIDCIssuer: "https://" + u.Host + "/gnas/oauth", AuthorizationTenant: b.BindingID, AuthorizationResource: b.AuthorizationResource, Plugins: []string{"zoop"},
+		CapabilityCatalogBindingID: b.BindingID, CapabilityCatalogSource: b.Source,
+		CapabilityCatalogInstanceID: b.MCPInstanceID, CapabilityCatalogPublicResource: b.PublicResource,
+		CapabilityCatalogAuthorizationResource: b.AuthorizationResource,
 	})
 	if err != nil {
 		return LoadedFleetBinding{}, fmt.Errorf("hybrid local runtime configuration invalid")
@@ -314,7 +343,7 @@ func (d *GNASDiscovery) localBinding(b gnasFleetBinding, local GNASFleetRuntimeB
 		return LoadedFleetBinding{}, fmt.Errorf("hybrid local Source configuration invalid")
 	}
 	cfg.TrustedLoopbackProxy = true
-	return LoadedFleetBinding{Binding: FleetBinding{BindingID: b.BindingID, Hosts: []string{u.Hostname()}, PublicURL: b.PublicResource, AuthorizationTenant: b.BindingID, AuthorizationResource: b.AuthorizationResource, Source: b.Source, InstanceConfigPath: local.InstanceConfigPath, Plugins: []string{"zoop"}}, Config: cfg}, nil
+	return LoadedFleetBinding{Binding: FleetBinding{BindingID: b.BindingID, MCPInstanceID: b.MCPInstanceID, Hosts: []string{u.Hostname()}, PublicURL: b.PublicResource, AuthorizationTenant: b.BindingID, AuthorizationResource: b.AuthorizationResource, Source: b.Source, InstanceConfigPath: local.InstanceConfigPath, Plugins: []string{"zoop"}}, Config: cfg}, nil
 }
 
 // Config, state and schema paths cannot alias any other tenant's artifacts.

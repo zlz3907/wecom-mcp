@@ -61,7 +61,18 @@ func schemaMigrationTools() []tool {
 	}
 }
 
+// migrationPreviewRuntime binds OAuth previews to the same verified actor
+// that apply records in its runtime digest. Legacy local previews retain their
+// configured operator when no verified OAuth identity is present.
+func migrationPreviewRuntime(ctx context.Context, runtime config.Config) config.Config {
+	if identity, ok := verifiedIdentityFromContext(ctx); ok {
+		runtime.WecomOperatorUserID = identity.UserID
+	}
+	return runtime
+}
+
 func (s *Server) previewSchemaMigration(ctx context.Context, runtime config.Config, client *wecom.Client, raw json.RawMessage) (any, error) {
+	runtime = migrationPreviewRuntime(ctx, runtime)
 	var input struct {
 		MigrationID string `json:"migration_id"`
 	}
@@ -105,8 +116,17 @@ func (s *Server) applySchemaMigration(ctx context.Context, runtime config.Config
 	if err != nil {
 		return nil, err
 	}
-	if err := verifySchemaAdmin(runtime); err != nil {
-		return nil, err
+	if !s.discovered {
+		if err := verifySchemaAdmin(runtime); err != nil {
+			return nil, err
+		}
+	}
+	if s.discovered {
+		release, lockErr := acquireProgressFileLock(ctx, runtime.StatePath+".schema-admin")
+		if lockErr != nil {
+			return nil, fmt.Errorf("另一个 Schema 管理操作正在执行")
+		}
+		defer release()
 	}
 	if input.MigrationID == subjectLinksMigrationID {
 		return s.applySubjectLinksMigration(ctx, runtime, client, input.PreviewID)
@@ -116,6 +136,9 @@ func (s *Server) applySchemaMigration(ctx context.Context, runtime config.Config
 	}
 	plan, err := buildSchemaMigrationPlan(ctx, runtime, client, input.MigrationID)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.verifyDocumentSchemaAdmin(ctx, runtime, client, plan.DocumentID); err != nil {
 		return nil, err
 	}
 	if input.PreviewID != plan.PreviewID {
@@ -202,6 +225,36 @@ func (s *Server) applySchemaMigration(ctx context.Context, runtime config.Config
 		"local_mirror_updated":    false,
 		"next_required_operation": "Owner 授权后执行线上到本地 Schema 字典同步",
 	}, runtime.WecomOperatorUserID), nil
+}
+
+// verifyDocumentSchemaAdmin requires an explicit exact-binding, exact-member
+// grant AND live ownership and admin evidence for the actual business document.
+func (s *Server) verifyDocumentSchemaAdmin(ctx context.Context, runtime config.Config, client wecom.Requester, documentID string) error {
+	// The legacy OS gate was checked before planning.
+	if !s.discovered {
+		return nil
+	}
+	identity, verified := verifiedIdentityFromContext(ctx)
+	_, oauth := ctx.Value(oauthInstanceDigestKey{}).(string)
+	if !verified || !oauth || runtime.OAuthSchemaAdminUserID == "" || identity.UserID != runtime.OAuthSchemaAdminUserID || runtime.WecomOperatorUserID != identity.UserID || documentID == "" {
+		return fmt.Errorf("当前 OAuth 用户未获目标企业 Schema 管理授权")
+	}
+	for _, operation := range []string{"list_employees", "get_doc_base_info", "get_doc_auth"} {
+		if !runtime.Allows(operation) {
+			return fmt.Errorf("实例白名单未允许 Schema 管理身份核验")
+		}
+	}
+	if _, err := verifyInitializeOperatorEmployee(ctx, client, identity.UserID); err != nil {
+		return fmt.Errorf("目标企业员工身份未通过核验")
+	}
+	_, proof, err := readInitializeDocumentIdentity(ctx, client, documentID, "", identity.UserID)
+	if err != nil {
+		return fmt.Errorf("目标业务文档管理权限无法核验")
+	}
+	if admin, _ := proof["configured_operator_is_admin"].(bool); !admin {
+		return fmt.Errorf("当前成员不是目标业务文档管理员")
+	}
+	return nil
 }
 
 func verifySchemaAdmin(runtime config.Config) error {

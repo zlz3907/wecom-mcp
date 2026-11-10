@@ -230,6 +230,16 @@ func (s *Server) boundOperatorWrite(ctx context.Context, runtime config.Config, 
 	return result, nil
 }
 
+type oauthInitializerActorKey struct{}
+
+func verifyOAuthInitializerActor(ctx context.Context, runtime config.Config) error {
+	actor, isOAuth := ctx.Value(oauthInitializerActorKey{}).(string)
+	if isOAuth && (actor == "" || runtime.WecomOperatorUserID != actor) {
+		return fmt.Errorf("实例初始化的企业微信操作人与当前登录用户不一致，拒绝执行")
+	}
+	return nil
+}
+
 func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (any, error) {
 	if name == "wecom_instance_initialize" || name == "wecom_instance_initialize_status" || name == "wecom_instance_initialize_apply" {
 		runtime, err := s.store.BootstrapCandidate()
@@ -237,6 +247,9 @@ func (s *Server) call(ctx context.Context, name string, raw json.RawMessage) (an
 			return nil, err
 		}
 		if err := verifyOAuthInstanceSnapshot(ctx, runtime); err != nil {
+			return nil, err
+		}
+		if err := verifyOAuthInitializerActor(ctx, runtime); err != nil {
 			return nil, err
 		}
 		client, clientErr := wecom.NewFromEnvironment(runtime.TenantRoute)

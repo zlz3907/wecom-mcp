@@ -26,16 +26,20 @@ const serverInstructions = "Fixed-tenant Enterprise WeCom Smart Sheet service. W
 const oauth21ServerInstructions = "Fixed-tenant Enterprise WeCom MCP authenticated by GNAS OAuth 2.1. The browser login already resolves the current Enterprise WeCom employee and the server exposes only that employee's current authorized tools. Never ask the user for an API key, userid, identity_binding_id, verification code, tenant key, resource-server credential, or GNAS secret. Do not call identity-binding tools merely to authenticate this session. The configured Z-S09 AI execution subject remains separate from the verified human initiator; never substitute one for the other. If a tool is absent, treat it as not currently authorized and do not attempt to bypass the policy."
 
 type Service struct {
-	config                Config
-	legacy                *legacymcp.Server
-	definitions           []legacymcp.ToolDefinition
-	auditor               *Auditor
-	logger                *slog.Logger
-	serversMu             sync.Mutex
-	servers               map[string]*sdkmcp.Server
-	toolSlots             chan struct{}
-	authorizationResolver AuthorizationResolver
-	instructions          string
+	config                 Config
+	policyFloorRoot        string
+	policyFloorOwner       uint32
+	legacy                 *legacymcp.Server
+	definitions            []legacymcp.ToolDefinition
+	auditor                *Auditor
+	logger                 *slog.Logger
+	serversMu              sync.Mutex
+	servers                map[string]*sdkmcp.Server
+	toolSlots              chan struct{}
+	authorizationResolver  AuthorizationResolver
+	instructions           string
+	capabilityReporterMu   sync.Mutex
+	capabilityReporterStop context.CancelFunc
 }
 
 func NewService(cfg Config, logger *slog.Logger) (*Service, error) {
@@ -47,6 +51,11 @@ func NewServiceWithAuthorizationResolver(cfg Config, logger *slog.Logger, resolv
 }
 
 func newService(cfg Config, logger *slog.Logger, resolver AuthorizationResolver) (*Service, error) {
+	if cfg.AuthenticationMode == AuthenticationModeOAuth21 {
+		if cfg.PolicyFloorPath != "" && cfg.PolicyFloorPath != productionPolicyFloorPath {
+			return nil, fmt.Errorf("invalid managed policy floor configuration")
+		}
+	}
 	if cfg.Runtime != nil && cfg.BoundRuntime != nil || cfg.OAuth21ServiceJWT && (cfg.Runtime == nil && cfg.BoundRuntime == nil || !bindingDigestPattern.MatchString(cfg.GNASBindingDigest)) {
 		return nil, fmt.Errorf("Service JWT requires a single bound runtime and Binding digest")
 	}
@@ -95,6 +104,8 @@ func newService(cfg Config, logger *slog.Logger, resolver AuthorizationResolver)
 	}
 	return &Service{
 		config:                cfg,
+		policyFloorRoot:       "/",
+		policyFloorOwner:      0,
 		legacy:                legacy,
 		definitions:           definitions,
 		auditor:               NewAuditor(logger, cfg.AuditHMACKey),
@@ -127,10 +138,33 @@ func (s *Service) Handler(verifier sdkauth.TokenVerifier) http.Handler {
 		Scopes:    s.config.RequiredScopes,
 		ClockSkew: 30 * time.Second,
 	}
+	// OAuth scopes are checked against the verified introspection contract in
+	// the verifier and authorization middleware, not by this static SDK gate.
+	if s.config.AuthenticationMode == AuthenticationModeOAuth21 {
+		requireOptions.Scopes = nil
+	}
 	if s.config.AuthenticationMode != AuthenticationModeConnectorAPIKey {
 		requireOptions.ResourceMetadataURL = s.config.MetadataURL
 	}
-	protected := sdkauth.RequireBearerToken(verifier, requireOptions)(requireRole(s.authorizationMiddleware(streamable)))
+	protectedHandler := requireRole(s.authorizationMiddleware(streamable))
+	if s.config.AuthenticationMode == AuthenticationModeOAuth21 {
+		protectedHandler = s.withPolicyToolRevalidation(protectedHandler, verifier)
+	}
+	protected := sdkauth.RequireBearerToken(verifier, requireOptions)(protectedHandler)
+	if s.config.PolicyFloorPath != "" {
+		bearerGate := protected
+		guarded := policyFloorMiddlewareAt(bearerGate, s.config.PolicyFloorPath, s.policyFloorRoot, s.policyFloorOwner, policyFloorBindingKey(policyFloorAppID(s.config), s.config.AuthorizationTenant, s.config.AuthorizationResource, s.config.MCPURL, s.config.OIDCIssuer))
+		protected = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Preserve the OAuth discovery challenge without requiring a floor
+			// for a request that cannot pass the bearer gate. For any supplied
+			// credential, snapshot the floor before token introspection.
+			if r.Header.Get("Authorization") == "" {
+				bearerGate.ServeHTTP(w, r)
+				return
+			}
+			guarded.ServeHTTP(w, r)
+		})
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", protected)
@@ -140,7 +174,7 @@ func (s *Service) Handler(verifier sdkauth.TokenVerifier) http.Handler {
 			AuthorizationServers:   []string{s.config.OIDCIssuer},
 			ScopesSupported:        s.config.AdvertisedScopes,
 			BearerMethodsSupported: []string{"header"},
-			ResourceName:           "Guomai Aite WeCom Team MCP",
+			ResourceName:           "企业微信 MCP",
 		}
 		mux.Handle("/.well-known/oauth-protected-resource", sdkauth.ProtectedResourceMetadataHandler(metadata))
 		// Resource-specific discovery must match the URL in the challenge.
@@ -148,13 +182,60 @@ func (s *Service) Handler(verifier sdkauth.TokenVerifier) http.Handler {
 	}
 	mux.HandleFunc("/healthz", s.health)
 	mux.HandleFunc("/readyz", s.ready)
-	return requestIDMiddleware(securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	baseHandler := requestIDMiddleware(securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := s.legacy.CheckBoundRuntime(); err != nil {
 			writeStatus(w, http.StatusServiceUnavailable, "not_ready")
 			return
 		}
 		mux.ServeHTTP(w, r)
 	})))
+	if !s.config.CapabilityCatalogPushEnabled {
+		return baseHandler
+	}
+	s.startCapabilityCatalogReporter()
+	return &managedServiceHandler{Handler: baseHandler, stop: s.stopCapabilityCatalogReporter}
+}
+
+// managedServiceHandler lets a fleet close a replaced tenant generation. The
+// capability reporter is best-effort directory plumbing; closing it never
+// changes existing MCP request behavior.
+type managedServiceHandler struct {
+	http.Handler
+	stop func()
+	once sync.Once
+}
+
+func (h *managedServiceHandler) Close() {
+	if h == nil || h.stop == nil {
+		return
+	}
+	h.once.Do(h.stop)
+}
+
+func (s *Service) startCapabilityCatalogReporter() {
+	s.capabilityReporterMu.Lock()
+	defer s.capabilityReporterMu.Unlock()
+	if s.capabilityReporterStop != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.capabilityReporterStop = cancel
+	go runCapabilityCatalogReporter(ctx, func(ctx context.Context) error {
+		requestID, err := s.pollCapabilityRefresh(ctx)
+		if err != nil || requestID == "" {
+			return err
+		}
+		return s.pushCapabilityCatalog(ctx, requestID)
+	}, s.logger, capabilityCatalogPollInterval, capabilityCatalogPollInterval, capabilityCatalogRetryMax)
+}
+
+func (s *Service) stopCapabilityCatalogReporter() {
+	s.capabilityReporterMu.Lock()
+	defer s.capabilityReporterMu.Unlock()
+	if s.capabilityReporterStop != nil {
+		s.capabilityReporterStop()
+		s.capabilityReporterStop = nil
+	}
 }
 
 func (s *Service) serverForRole(role Role) *sdkmcp.Server {
@@ -194,6 +275,32 @@ func (s *Service) serverForTools(role Role, authorized map[string]bool) *sdkmcp.
 		Instructions: s.instructions,
 		Logger:       s.logger,
 	})
+	// A stale client may call a tool after its grant is removed. Returning a
+	// normal tool error keeps its MCP session usable while the per-request
+	// server continues to hide tools outside the current authorization.
+	if authorized != nil {
+		permitted := make(map[string]bool, len(authorized))
+		for _, definition := range s.definitions {
+			if allows(role, definition.Access) && authorized[definition.Name] {
+				permitted[definition.Name] = true
+			}
+		}
+		server.AddReceivingMiddleware(func(next sdkmcp.MethodHandler) sdkmcp.MethodHandler {
+			return func(ctx context.Context, method string, request sdkmcp.Request) (sdkmcp.Result, error) {
+				if method == "tools/call" {
+					call, ok := request.(*sdkmcp.CallToolRequest)
+					authorization, current := requestAuthorizationFromContext(ctx)
+					if ok && call.Params != nil && current && authorization.decision.ManagedToolPolicy &&
+						call.Params.Name != "*" && validOAuth21ToolName(call.Params.Name) && !permitted[call.Params.Name] {
+						err := fmt.Errorf("tool unavailable or not authorized")
+						s.auditor.ToolCall(ctx, "unavailable", role, time.Now(), err)
+						return &sdkmcp.CallToolResult{IsError: true, Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: err.Error()}}}, nil
+					}
+				}
+				return next(ctx, method, request)
+			}
+		})
+	}
 	for _, definition := range s.definitions {
 		if !allows(role, definition.Access) {
 			continue
@@ -242,6 +349,19 @@ func (s *Service) callTool(ctx context.Context, request *sdkmcp.CallToolRequest,
 			IsError: true,
 			Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: err.Error()}},
 		}, nil
+	}
+	if s.config.AuthenticationMode == AuthenticationModeOAuth21 {
+		prior, ok := requestAuthorizationFromContext(ctx)
+		check, found := ctx.Value(policyToolRevalidatorKey{}).(policyToolRevalidator)
+		if !ok || !found || check == nil {
+			return &sdkmcp.CallToolResult{IsError: true, Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "employee authorization unavailable"}}}, nil
+		}
+		current, err := check(ctx, definition.Name, prior)
+		if err != nil {
+			s.auditor.ToolCall(ctx, definition.Name, role, started, err)
+			return &sdkmcp.CallToolResult{IsError: true, Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "employee authorization unavailable"}}}, nil
+		}
+		ctx = context.WithValue(ctx, requestAuthorizationKey{}, current)
 	}
 	arguments := json.RawMessage(`{}`)
 	if request != nil && request.Params != nil && len(request.Params.Arguments) > 0 {
@@ -296,12 +416,17 @@ func (s *Service) authorizationMiddleware(next http.Handler) http.Handler {
 		info := sdkauth.TokenInfoFromContext(r.Context())
 		if s.config.AuthenticationMode == AuthenticationModeOAuth21 {
 			decision, err := authorizationFromOAuth21TokenInfo(info, s.config, time.Now().UTC())
+			if floor, ok := r.Context().Value(policyFloorContextKey{}).(policyFloorDecision); ok && err == nil {
+				if floor.Required != decision.ManagedToolPolicy || (floor.Required && (!decision.PolicyContractV1 || floor.Revision != decision.PolicyVersion)) {
+					err = fmt.Errorf("policy floor mismatch")
+				}
+			}
 			if err != nil {
 				s.auditor.Authorization(r.Context(), AuthorizationDecision{}, err)
 				http.Error(w, "user authorization denied", http.StatusForbidden)
 				return
 			}
-			tools, err := authorizedToolSet(decision, s.definitions, s.config.RequiredScopes)
+			tools, err := authorizedToolSet(decision, s.definitions, oauth21NonZoopScopes(s.config.RequiredScopes))
 			s.auditor.Authorization(r.Context(), decision, err)
 			if err != nil {
 				http.Error(w, "user authorization denied", http.StatusForbidden)
@@ -344,13 +469,22 @@ func authorizationFromOAuth21TokenInfo(info *sdkauth.TokenInfo, cfg Config, eval
 	userid, useridOK := info.Extra["wecom_userid"].(string)
 	mcpRole, roleOK := info.Extra["mcp_role"].(string)
 	rawTools, toolsOK := info.Extra["effective_tools"].([]string)
+	managedPolicy, _ := info.Extra["tool_policy_managed"].(bool)
+	policyContract, _ := info.Extra["tool_policy_contract_v1"].(bool)
+	policyRevision, _ := info.Extra["tool_policy_revision"].(string)
 	if !useridOK || !roleOK || !toolsOK || userid == "" || userid != strings.TrimSpace(userid) || mcpRole == "" || mcpRole != strings.TrimSpace(mcpRole) {
 		return AuthorizationDecision{}, fmt.Errorf("OAuth 2.1 employee policy claims are invalid")
 	}
 	decision := AuthorizationDecision{
 		SchemaVersion: resolveAuthorizationSchemaV1, Tenant: cfg.AuthorizationTenant, UserID: userid,
 		Resource: cfg.AuthorizationResource, Active: true, EffectiveScopes: append([]string(nil), info.Scopes...),
-		EffectiveTools: append([]string(nil), rawTools...), PolicyVersion: "oauth21-introspection", EvaluatedAt: evaluatedAt,
+		EffectiveTools: append([]string(nil), rawTools...), ManagedToolPolicy: managedPolicy, PolicyContractV1: policyContract, PolicyVersion: "oauth21-introspection", EvaluatedAt: evaluatedAt,
+	}
+	if managedPolicy {
+		if !policyContract || !managedPolicyRevisionPattern.MatchString(policyRevision) {
+			return AuthorizationDecision{}, fmt.Errorf("managed MCP policy revision is invalid")
+		}
+		decision.PolicyVersion = policyRevision
 	}
 	if decision.Tenant == "" || decision.Tenant != strings.TrimSpace(decision.Tenant) || decision.UserID == "" || decision.UserID != strings.TrimSpace(decision.UserID) || decision.Resource == "" || decision.Resource != strings.TrimSpace(decision.Resource) {
 		return AuthorizationDecision{}, fmt.Errorf("OAuth 2.1 authorization identity is invalid")
@@ -397,7 +531,18 @@ func (s *Service) health(w http.ResponseWriter, _ *http.Request) {
 	writeStatus(w, http.StatusOK, "ok")
 }
 
-func (s *Service) ready(w http.ResponseWriter, _ *http.Request) {
+func (s *Service) ready(w http.ResponseWriter, r *http.Request) {
+	if s.config.PolicyFloorPath != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		key := policyFloorBindingKey(policyFloorAppID(s.config), s.config.AuthorizationTenant, s.config.AuthorizationResource, s.config.MCPURL, s.config.OIDCIssuer)
+		_, release, err := acquirePolicyFloor(ctx, s.config.PolicyFloorPath, s.policyFloorRoot, s.policyFloorOwner, key)
+		if err != nil || release == nil {
+			writeStatus(w, http.StatusServiceUnavailable, "not_ready")
+			return
+		}
+		release()
+	}
 	// Bound local instances were checked through the same Store in Handler;
 	// its controlled lifecycle writes may legitimately update the snapshot.
 	if s.config.BoundRuntime != nil {

@@ -55,22 +55,38 @@ type Config struct {
 	OAuth21IntrospectionURL       string
 	OAuth21ClientID               string
 	OAuth21ClientSecret           string
+	PolicyFloorPath               string
 	TrustedLoopbackProxy          bool
+	// Catalog reporting is binding-scoped directory metadata, never tool-call
+	// authorization or a replacement for ResolveAuthorizationV1.
+	CapabilityCatalogPushEnabled           bool
+	CapabilityCatalogEndpoint              string
+	CapabilityCatalogPollEndpoint          string
+	CapabilityCatalogBindingID             string
+	CapabilityCatalogSource                string
+	CapabilityCatalogInstanceID            string
+	CapabilityCatalogPublicResource        string
+	CapabilityCatalogAuthorizationResource string
 }
 
 // BindingOverrides supplies per-enterprise values. OAuth credentials, when
 // present, are resolved from the protected process environment by the caller.
 type BindingOverrides struct {
-	BoundRuntime          *instanceconfig.Config
-	Runtime               *instanceconfig.Config
-	OAuth21ServiceJWT     bool
-	GNASBindingDigest     string
-	PublicURL             string
-	OIDCIssuer            string
-	AuthorizationTenant   string
-	AuthorizationResource string
-	Plugins               []string
-	OAuth21Credentials    *OAuth21ClientCredentials
+	BoundRuntime                           *instanceconfig.Config
+	Runtime                                *instanceconfig.Config
+	OAuth21ServiceJWT                      bool
+	GNASBindingDigest                      string
+	PublicURL                              string
+	OIDCIssuer                             string
+	AuthorizationTenant                    string
+	AuthorizationResource                  string
+	Plugins                                []string
+	OAuth21Credentials                     *OAuth21ClientCredentials
+	CapabilityCatalogBindingID             string
+	CapabilityCatalogSource                string
+	CapabilityCatalogInstanceID            string
+	CapabilityCatalogPublicResource        string
+	CapabilityCatalogAuthorizationResource string
 }
 
 type OAuth21ClientCredentials struct {
@@ -97,43 +113,55 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 		authorizationServiceSecret = os.Getenv("GNAS_APP_SECRET")
 	}
 	cfg := Config{
-		Runtime:                       overrides.Runtime,
-		BoundRuntime:                  overrides.BoundRuntime,
-		OAuth21ServiceJWT:             overrides.OAuth21ServiceJWT,
-		GNASBindingDigest:             overrides.GNASBindingDigest,
-		InstanceConfigPath:            instanceConfigPath,
-		Plugins:                       append([]string(nil), overrides.Plugins...),
-		AuthenticationMode:            AuthenticationMode(firstNonEmpty(os.Getenv("TEAM_MCP_AUTH_MODE"), string(AuthenticationModeOIDC))),
-		ConnectorAPIKey:               os.Getenv("TEAM_MCP_CONNECTOR_API_KEY"),
-		ConnectorRole:                 Role(firstNonEmpty(os.Getenv("TEAM_MCP_CONNECTOR_ROLE"), string(RoleReader))),
-		ListenAddress:                 firstNonEmpty(listenAddress, os.Getenv("TEAM_MCP_LISTEN_ADDR"), "127.0.0.1:17801"),
-		PublicURL:                     firstNonEmpty(overrides.PublicURL, os.Getenv("TEAM_MCP_PUBLIC_URL")),
-		OIDCIssuer:                    firstNonEmpty(overrides.OIDCIssuer, os.Getenv("TEAM_MCP_OIDC_ISSUER")),
-		OIDCAudience:                  strings.TrimSpace(os.Getenv("TEAM_MCP_OIDC_AUDIENCE")),
-		AccessTokenClaim:              strings.TrimSpace(os.Getenv("TEAM_MCP_ACCESS_TOKEN_CLAIM")),
-		AccessTokenValue:              strings.TrimSpace(os.Getenv("TEAM_MCP_ACCESS_TOKEN_VALUE")),
-		RolesClaim:                    firstNonEmpty(os.Getenv("TEAM_MCP_ROLES_CLAIM"), "roles"),
-		ReaderRole:                    firstNonEmpty(os.Getenv("TEAM_MCP_READER_ROLE"), "wecom-mcp-reader"),
-		OperatorRole:                  firstNonEmpty(os.Getenv("TEAM_MCP_OPERATOR_ROLE"), "wecom-mcp-operator"),
-		AdminRole:                     firstNonEmpty(os.Getenv("TEAM_MCP_ADMIN_ROLE"), "wecom-mcp-admin"),
-		RequiredScopes:                splitList(os.Getenv("TEAM_MCP_REQUIRED_SCOPES")),
-		AuditHMACKey:                  []byte(os.Getenv("TEAM_MCP_AUDIT_HMAC_KEY")),
-		MaxConcurrentTools:            16,
-		OIDCHTTPTimeout:               10 * time.Second,
-		ShutdownTimeout:               20 * time.Second,
-		UserAuthorizationEnabled:      strings.TrimSpace(os.Getenv("TEAM_MCP_USER_AUTHZ_ENABLED")) == "true",
-		AuthorizationEndpoint:         firstNonEmpty(os.Getenv("TEAM_MCP_AUTHZ_RESOLVE_URL"), gnasServiceURL(gnasBaseURL, "/gnas/service/resolveAuthorizationV1")),
-		AuthorizationTokenEndpoint:    firstNonEmpty(os.Getenv("TEAM_MCP_GNAS_SERVICE_TOKEN_URL"), gnasServiceURL(gnasBaseURL, "/gnas/service/getJwtToken")),
-		AuthorizationServiceAppID:     firstNonEmpty(os.Getenv("TEAM_MCP_GNAS_SERVICE_APP_ID"), os.Getenv("GNAS_APP_ID")),
-		AuthorizationServiceAppSecret: authorizationServiceSecret,
-		AuthorizationTenant:           firstNonEmpty(overrides.AuthorizationTenant, os.Getenv("TEAM_MCP_AUTHZ_TENANT")),
-		AuthorizationResource:         firstNonEmpty(overrides.AuthorizationResource, os.Getenv("TEAM_MCP_AUTHZ_RESOURCE")),
-		AuthorizationTimeout:          2 * time.Second,
-		WeComUserIDClaim:              strings.TrimSpace(os.Getenv("TEAM_MCP_WECOM_USERID_CLAIM")),
-		PrincipalAssertionClaim:       strings.TrimSpace(os.Getenv("TEAM_MCP_GNAS_PRINCIPAL_ASSERTION_CLAIM")),
-		OAuth21IntrospectionURL:       strings.TrimSpace(os.Getenv("TEAM_MCP_OAUTH21_INTROSPECTION_URL")),
-		OAuth21ClientID:               strings.TrimSpace(os.Getenv("TEAM_MCP_OAUTH21_CLIENT_ID")),
-		OAuth21ClientSecret:           os.Getenv("TEAM_MCP_OAUTH21_CLIENT_SECRET"),
+		Runtime:                                overrides.Runtime,
+		BoundRuntime:                           overrides.BoundRuntime,
+		OAuth21ServiceJWT:                      overrides.OAuth21ServiceJWT,
+		GNASBindingDigest:                      overrides.GNASBindingDigest,
+		InstanceConfigPath:                     instanceConfigPath,
+		Plugins:                                append([]string(nil), overrides.Plugins...),
+		AuthenticationMode:                     AuthenticationMode(firstNonEmpty(os.Getenv("TEAM_MCP_AUTH_MODE"), string(AuthenticationModeOIDC))),
+		ConnectorAPIKey:                        os.Getenv("TEAM_MCP_CONNECTOR_API_KEY"),
+		ConnectorRole:                          Role(firstNonEmpty(os.Getenv("TEAM_MCP_CONNECTOR_ROLE"), string(RoleReader))),
+		ListenAddress:                          firstNonEmpty(listenAddress, os.Getenv("TEAM_MCP_LISTEN_ADDR"), "127.0.0.1:17801"),
+		PublicURL:                              firstNonEmpty(overrides.PublicURL, os.Getenv("TEAM_MCP_PUBLIC_URL")),
+		OIDCIssuer:                             firstNonEmpty(overrides.OIDCIssuer, os.Getenv("TEAM_MCP_OIDC_ISSUER")),
+		OIDCAudience:                           strings.TrimSpace(os.Getenv("TEAM_MCP_OIDC_AUDIENCE")),
+		AccessTokenClaim:                       strings.TrimSpace(os.Getenv("TEAM_MCP_ACCESS_TOKEN_CLAIM")),
+		AccessTokenValue:                       strings.TrimSpace(os.Getenv("TEAM_MCP_ACCESS_TOKEN_VALUE")),
+		RolesClaim:                             firstNonEmpty(os.Getenv("TEAM_MCP_ROLES_CLAIM"), "roles"),
+		ReaderRole:                             firstNonEmpty(os.Getenv("TEAM_MCP_READER_ROLE"), "wecom-mcp-reader"),
+		OperatorRole:                           firstNonEmpty(os.Getenv("TEAM_MCP_OPERATOR_ROLE"), "wecom-mcp-operator"),
+		AdminRole:                              firstNonEmpty(os.Getenv("TEAM_MCP_ADMIN_ROLE"), "wecom-mcp-admin"),
+		RequiredScopes:                         splitList(os.Getenv("TEAM_MCP_REQUIRED_SCOPES")),
+		AuditHMACKey:                           []byte(os.Getenv("TEAM_MCP_AUDIT_HMAC_KEY")),
+		MaxConcurrentTools:                     16,
+		OIDCHTTPTimeout:                        10 * time.Second,
+		ShutdownTimeout:                        20 * time.Second,
+		UserAuthorizationEnabled:               strings.TrimSpace(os.Getenv("TEAM_MCP_USER_AUTHZ_ENABLED")) == "true",
+		AuthorizationEndpoint:                  firstNonEmpty(os.Getenv("TEAM_MCP_AUTHZ_RESOLVE_URL"), gnasServiceURL(gnasBaseURL, "/gnas/service/resolveAuthorizationV1")),
+		AuthorizationTokenEndpoint:             firstNonEmpty(os.Getenv("TEAM_MCP_GNAS_SERVICE_TOKEN_URL"), gnasServiceURL(gnasBaseURL, "/gnas/service/getJwtToken")),
+		AuthorizationServiceAppID:              firstNonEmpty(os.Getenv("TEAM_MCP_GNAS_SERVICE_APP_ID"), os.Getenv("GNAS_APP_ID")),
+		AuthorizationServiceAppSecret:          authorizationServiceSecret,
+		AuthorizationTenant:                    firstNonEmpty(overrides.AuthorizationTenant, os.Getenv("TEAM_MCP_AUTHZ_TENANT")),
+		AuthorizationResource:                  firstNonEmpty(overrides.AuthorizationResource, os.Getenv("TEAM_MCP_AUTHZ_RESOURCE")),
+		AuthorizationTimeout:                   2 * time.Second,
+		WeComUserIDClaim:                       strings.TrimSpace(os.Getenv("TEAM_MCP_WECOM_USERID_CLAIM")),
+		PrincipalAssertionClaim:                strings.TrimSpace(os.Getenv("TEAM_MCP_GNAS_PRINCIPAL_ASSERTION_CLAIM")),
+		OAuth21IntrospectionURL:                strings.TrimSpace(os.Getenv("TEAM_MCP_OAUTH21_INTROSPECTION_URL")),
+		OAuth21ClientID:                        strings.TrimSpace(os.Getenv("TEAM_MCP_OAUTH21_CLIENT_ID")),
+		OAuth21ClientSecret:                    os.Getenv("TEAM_MCP_OAUTH21_CLIENT_SECRET"),
+		PolicyFloorPath:                        os.Getenv("TEAM_MCP_POLICY_FLOOR_PATH"),
+		CapabilityCatalogPushEnabled:           strings.EqualFold(strings.TrimSpace(os.Getenv("TEAM_MCP_CAPABILITY_CATALOG_PUSH_ENABLED")), "true"),
+		CapabilityCatalogEndpoint:              firstNonEmpty(os.Getenv("GNAS_CAPABILITY_CATALOG_ENDPOINT"), gnasServiceURL(gnasBaseURL, "/gnas/service/reportMCPCapabilityCatalogV1")),
+		CapabilityCatalogPollEndpoint:          gnasServiceURL(gnasBaseURL, "/gnas/service/pollMCPCapabilityRefreshV1"),
+		CapabilityCatalogBindingID:             firstNonEmpty(overrides.CapabilityCatalogBindingID, os.Getenv("TEAM_MCP_CAPABILITY_BINDING_ID")),
+		CapabilityCatalogSource:                firstNonEmpty(overrides.CapabilityCatalogSource, os.Getenv("TEAM_MCP_CAPABILITY_SOURCE")),
+		CapabilityCatalogInstanceID:            firstNonEmpty(overrides.CapabilityCatalogInstanceID, os.Getenv("TEAM_MCP_CAPABILITY_INSTANCE_ID")),
+		CapabilityCatalogPublicResource:        firstNonEmpty(overrides.CapabilityCatalogPublicResource, os.Getenv("TEAM_MCP_CAPABILITY_PUBLIC_RESOURCE")),
+		CapabilityCatalogAuthorizationResource: firstNonEmpty(overrides.CapabilityCatalogAuthorizationResource, os.Getenv("TEAM_MCP_CAPABILITY_AUTHORIZATION_RESOURCE")),
+	}
+	if cfg.PolicyFloorPath != "" && (cfg.PolicyFloorPath != productionPolicyFloorPath || cfg.AuthenticationMode != AuthenticationModeOAuth21) {
+		return Config{}, fmt.Errorf("invalid managed policy floor configuration")
 	}
 	if overrides.OAuth21Credentials != nil {
 		// Explicit binding credentials never fall back to another tenant's
@@ -288,7 +316,37 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 	}
 	cfg.MCPURL = cfg.PublicURL + "/mcp"
 	cfg.MetadataURL = protectedResourceMetadataURL(cfg.MCPURL)
+	if cfg.OAuth21ServiceJWT && cfg.CapabilityCatalogBindingID != "" && cfg.CapabilityCatalogSource != "" {
+		cfg.CapabilityCatalogPushEnabled = true
+	}
+	if cfg.CapabilityCatalogPublicResource == "" {
+		cfg.CapabilityCatalogPublicResource = cfg.PublicURL
+	}
+	if cfg.CapabilityCatalogAuthorizationResource == "" {
+		cfg.CapabilityCatalogAuthorizationResource = cfg.AuthorizationResource
+	}
+	if cfg.CapabilityCatalogPushEnabled {
+		if !cfg.OAuth21ServiceJWT || cfg.CapabilityCatalogEndpoint == "" || cfg.CapabilityCatalogBindingID == "" || cfg.CapabilityCatalogSource == "" || cfg.CapabilityCatalogAuthorizationResource == "" {
+			return Config{}, fmt.Errorf("MCP capability catalog reporting configuration is incomplete")
+		}
+		if err := validateHTTPSURL(cfg.CapabilityCatalogEndpoint, "GNAS_CAPABILITY_CATALOG_ENDPOINT"); err != nil {
+			return Config{}, err
+		}
+		if err := validateHTTPSURL(cfg.CapabilityCatalogPollEndpoint, "GNAS_CAPABILITY_CATALOG_POLL_ENDPOINT"); err != nil {
+			return Config{}, err
+		}
+	}
 	cfg.AdvertisedScopes = append([]string(nil), cfg.RequiredScopes...)
+	// Optional OAuth scopes can be offered to clients without requiring them
+	// from existing read-only sessions. Authorization of individual tools is
+	// still decided by the resource server and its live GNAS policy.
+	advertisedResource := strings.TrimSpace(os.Getenv("TEAM_MCP_ADVERTISED_SCOPES_RESOURCE"))
+	if advertised := splitList(os.Getenv("TEAM_MCP_ADVERTISED_SCOPES")); len(advertised) > 0 && advertisedResource == cfg.MCPURL {
+		if cfg.AuthenticationMode != AuthenticationModeOAuth21 || !containsAll(advertised, cfg.RequiredScopes) {
+			return Config{}, fmt.Errorf("TEAM_MCP_ADVERTISED_SCOPES must include required OAuth scopes")
+		}
+		cfg.AdvertisedScopes = advertised
+	}
 	if cfg.AuthenticationMode == AuthenticationModeOIDC {
 		cfg.AdvertisedScopes = append(cfg.AdvertisedScopes, "openid", "profile")
 	}

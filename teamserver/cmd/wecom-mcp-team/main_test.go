@@ -84,6 +84,8 @@ func TestRefreshingResourceServerRoutesAndChallenges(t *testing.T) {
 	}
 	for _, id := range []string{"a", "b"} {
 		check(id, "/healthz", 200)
+		// Readiness does not depend on an additional local policy file; actual
+		// tool requests still require the current GNAS authorization decision.
 		check(id, "/readyz", 200)
 		check(id, "/mcp", 401)
 		body := check(id, "/.well-known/oauth-protected-resource/mcp", 200)

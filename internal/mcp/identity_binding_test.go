@@ -204,6 +204,32 @@ func TestConfiguredAIExecutionSubjectIsOptional(t *testing.T) {
 	}
 }
 
+func TestUnregisteredOAuthEmployeeCannotForgeActorReferences(t *testing.T) {
+	ctx := context.WithValue(context.Background(), oauthUnregisteredActorContextKey{}, true)
+	ctx = context.WithValue(ctx, verifiedExecutionSubjectContextKey{}, verifiedExecutionSubject{RecordID: "subject-ai"})
+	for _, values := range []map[string]any{
+		{"需求标题": "测试"},
+		{"需求标题": "测试", "需求提出主体": []any{map[string]any{"record_id": "someone-else"}}},
+	} {
+		input := applyInput{TargetRole: "Z-S01", Operation: "add_records", Records: []recordInput{{Values: values}}}
+		if _, err := withVerifiedActorReferences(ctx, input); err == nil {
+			t.Fatal("unregistered actor created a requirement without a verified subject")
+		}
+	}
+	forgedUpdate := applyInput{TargetRole: "Z-S06", Operation: "update_records", Records: []recordInput{{Values: map[string]any{"发起主体": []any{map[string]any{"record_id": "someone-else"}}}}}}
+	if _, err := withVerifiedActorReferences(ctx, forgedUpdate); err == nil {
+		t.Fatal("unregistered actor spoofed an initiator")
+	}
+	ordinaryUpdate := applyInput{TargetRole: "Z-S06", Operation: "update_records", Records: []recordInput{{Values: map[string]any{"状态": "进行中"}}}}
+	if _, err := withVerifiedActorReferences(ctx, ordinaryUpdate); err != nil {
+		t.Fatalf("ordinary update failed: %v", err)
+	}
+	ordinaryWrite := applyInput{TargetRole: "Z-S03", Operation: "add_records", Records: []recordInput{{Values: map[string]any{"标题": "测试"}}}}
+	if _, err := withVerifiedActorReferences(ctx, ordinaryWrite); err != nil {
+		t.Fatalf("ordinary write failed: %v", err)
+	}
+}
+
 func TestIdentityCellContainsOnlyExplicitUserID(t *testing.T) {
 	cell := []any{map[string]any{"type": "user", "user_id": "user-one", "name": "第一人"}}
 	if !identityCellContainsUserID(cell, "user-one") || identityCellContainsUserID(cell, "第一人") || identityCellContainsUserID(map[string]any{"id": "user-one"}, "user-one") {
@@ -229,6 +255,11 @@ func TestResolveUniquePersonnelSubjectRequiresOneEnabledHuman(t *testing.T) {
 		records []any
 	}{
 		{name: "paused human", records: []any{identitySubjectRecord("human", "user-one", "人员主体", "暂停")}},
+		{name: "disabled human", records: []any{identitySubjectRecord("human", "user-one", "人员主体", "停用")}},
+		{name: "enabled and paused duplicates", records: []any{
+			identitySubjectRecord("human-one", "user-one", "人员主体", "启用"),
+			identitySubjectRecord("human-two", "user-one", "人员主体", "暂停"),
+		}},
 		{name: "AI only", records: []any{identitySubjectRecord("ai", "user-one", "AI 执行主体", "启用")}},
 		{name: "duplicate enabled humans", records: []any{
 			identitySubjectRecord("human-one", "user-one", "人员主体", "启用"),

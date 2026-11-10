@@ -2,6 +2,7 @@ package team
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -10,31 +11,64 @@ import (
 	"time"
 )
 
+// ErrFleetClosed prevents a shutdown fleet from accepting a refresh that
+// could otherwise start a child after its parent has fenced worker traffic.
+var ErrFleetClosed = errors.New("refreshing fleet is closed")
+
 type FleetLoader func(context.Context) ([]LoadedFleetBinding, error)
 type FleetHandlerFactory func(Config) (http.Handler, error)
+
+// ReadyWorker is an independently supervised tenant handler. Its factory must
+// honour the supplied context by terminating any child it started before
+// returning. A worker is used only for an additive/recovery transition after
+// a complete authoritative discovery snapshot has been accepted.
+type ReadyWorker interface {
+	http.Handler
+	Alive() bool
+	// BeginDrain makes the worker reject every request that has not already
+	// entered its proxy.  Refresh calls this before it publishes a revoked or
+	// replaced route, so a request holding an older router snapshot cannot
+	// bypass an authoritative removal.
+	BeginDrain()
+	Close(context.Context) error
+}
+
+type ReadyWorkerFactory func(context.Context, LoadedFleetBinding) (ReadyWorker, error)
 
 type fleetSnapshot struct {
 	router      *HostRouter
 	unavailable bool
 }
 
+type closableFleetHandler interface {
+	Close()
+}
+
 // RefreshingFleet publishes a complete validated generation at once. An
 // unsuccessful refresh disables serving until a complete refresh succeeds:
 // stale database authority must not keep a removed tenant available.
 type RefreshingFleet struct {
-	load       FleetLoader
-	build      FleetHandlerFactory
-	mu         sync.Mutex
-	execution  sync.RWMutex
-	bindings   map[string]LoadedFleetBinding
-	handlers   map[string]http.Handler
-	listen     string
-	allowEmpty bool
-	current    atomic.Pointer[fleetSnapshot]
+	load      FleetLoader
+	build     FleetHandlerFactory
+	mu        sync.Mutex
+	execution sync.RWMutex
+	bindings  map[string]LoadedFleetBinding
+	handlers  map[string]http.Handler
+	workers   map[string]ReadyWorker
+	// workerFailures is deliberately not an authorization cache. It records
+	// only that a ready Host needs another local process-start attempt; every
+	// request still reaches the live service and its introspection path.
+	workerFailures map[string]bool
+	workerFactory  ReadyWorkerFactory
+	workerTimeout  time.Duration
+	listen         string
+	allowEmpty     bool
+	closed         bool
+	current        atomic.Pointer[fleetSnapshot]
 }
 
 func NewRefreshingFleet(ctx context.Context, load FleetLoader, build FleetHandlerFactory) (*RefreshingFleet, error) {
-	return newRefreshingFleet(ctx, "", load, build)
+	return newRefreshingFleet(ctx, "", load, build, nil, 0)
 }
 
 // NewDiscoveryFleet accepts an authoritative empty snapshot. The listener is
@@ -43,14 +77,28 @@ func NewDiscoveryFleet(ctx context.Context, listen string, load FleetLoader, bui
 	if err := validateListenAddress(listen); err != nil || !listenIsLoopback(listen) {
 		return nil, fmt.Errorf("discovery listener must be loopback")
 	}
-	return newRefreshingFleet(ctx, listen, load, build)
+	return newRefreshingFleet(ctx, listen, load, build, nil, 0)
 }
 
-func newRefreshingFleet(ctx context.Context, listen string, load FleetLoader, build FleetHandlerFactory) (*RefreshingFleet, error) {
+// NewDiscoveryFleetWithReadyWorkers is an opt-in additive-host isolation
+// mode. Existing constructors intentionally do not enable it: an operator
+// must opt in explicitly, and authoritative discovery/source failures remain
+// fleet-wide fail-closed exactly as before.
+func NewDiscoveryFleetWithReadyWorkers(ctx context.Context, listen string, load FleetLoader, build FleetHandlerFactory, workers ReadyWorkerFactory, workerTimeout time.Duration) (*RefreshingFleet, error) {
+	if err := validateListenAddress(listen); err != nil || !listenIsLoopback(listen) {
+		return nil, fmt.Errorf("discovery listener must be loopback")
+	}
+	if workers == nil || workerTimeout <= 0 || workerTimeout > 30*time.Second {
+		return nil, fmt.Errorf("ready worker factory and timeout from 1ms to 30s are required")
+	}
+	return newRefreshingFleet(ctx, listen, load, build, workers, workerTimeout)
+}
+
+func newRefreshingFleet(ctx context.Context, listen string, load FleetLoader, build FleetHandlerFactory, workers ReadyWorkerFactory, workerTimeout time.Duration) (*RefreshingFleet, error) {
 	if load == nil || build == nil {
 		return nil, fmt.Errorf("fleet loader and handler factory are required")
 	}
-	fleet := &RefreshingFleet{load: load, build: build, listen: listen, allowEmpty: listen != ""}
+	fleet := &RefreshingFleet{load: load, build: build, workers: map[string]ReadyWorker{}, workerFailures: map[string]bool{}, workerFactory: workers, workerTimeout: workerTimeout, listen: listen, allowEmpty: listen != ""}
 	if err := fleet.Refresh(ctx); err != nil {
 		return nil, err
 	}
@@ -63,6 +111,9 @@ func (f *RefreshingFleet) ListenAddress() string { return f.listen }
 func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.closed {
+		return ErrFleetClosed
+	}
 	defer func() {
 		if err != nil {
 			if previous := f.current.Load(); previous != nil {
@@ -86,6 +137,22 @@ func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 	}
 	bindings := make(map[string]LoadedFleetBinding, len(loaded))
 	handlers := make(map[string]http.Handler, len(loaded))
+	workers := make(map[string]ReadyWorker, len(loaded))
+	workerFailures := make(map[string]bool, len(loaded))
+	previousHandlersToClose := make([]closableFleetHandler, 0)
+	newHandlersToCloseOnFailure := make([]closableFleetHandler, 0)
+	isolate := f.localWorkerTransition(loaded)
+	started := make([]ReadyWorker, 0)
+	defer func() {
+		if err != nil {
+			for _, handler := range newHandlersToCloseOnFailure {
+				handler.Close()
+			}
+			for _, worker := range started {
+				f.closeWorker(worker)
+			}
+		}
+	}()
 	for _, binding := range loaded {
 		id := binding.Binding.BindingID
 		if id == "" || handlers[id] != nil || binding.Config.ListenAddress != listen {
@@ -94,18 +161,51 @@ func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 		// Reuse unchanged services, including their concurrency limits and
 		// identity state. Polling must not create a new service every interval.
 		handler := f.handlers[id]
+		old, existed := f.bindings[id]
+		oldWorker := f.workers[id]
 		if binding.RegistryUnavailable {
 			// An authoritative but unready Host has no MCP/authentication handler,
 			// including metadata and health paths. Never reuse its prior service.
+			if previousHandler, ok := handler.(closableFleetHandler); ok {
+				previousHandlersToClose = append(previousHandlersToClose, previousHandler)
+			}
 			handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Cache-Control", "no-store")
 				http.Error(w, "MCP instance unavailable", http.StatusServiceUnavailable)
 			})
-		} else if handler == nil || !reflect.DeepEqual(f.bindings[id], binding) {
+			delete(workerFailures, id)
+		} else if isolate && f.needsLocalWorker(id, old, existed, binding, oldWorker) {
+			workerContext, cancel := context.WithTimeout(ctx, f.workerTimeout)
+			worker, workerErr := f.workerFactory(workerContext, binding)
+			workerContextErr := workerContext.Err()
+			cancel()
+			if workerErr != nil || workerContextErr != nil || worker == nil || !worker.Alive() {
+				if worker != nil {
+					f.closeWorker(worker)
+				}
+				workerFailures[id] = true
+				handler = unavailableTenantHandler()
+			} else {
+				started = append(started, worker)
+				workers[id] = worker
+				handler = readyWorkerHandler(worker)
+			}
+		} else if oldWorker != nil && oldWorker.Alive() && reflect.DeepEqual(old, binding) {
+			workers[id] = oldWorker
+		} else if handler == nil || !reflect.DeepEqual(old, binding) || oldWorker != nil && !oldWorker.Alive() {
+			if previousHandler, ok := handler.(closableFleetHandler); ok {
+				previousHandlersToClose = append(previousHandlersToClose, previousHandler)
+			}
 			handler, err = f.build(binding.Config)
+			if closable, ok := handler.(closableFleetHandler); ok {
+				newHandlersToCloseOnFailure = append(newHandlersToCloseOnFailure, closable)
+			}
 			if err != nil {
 				return fmt.Errorf("fleet binding handler initialization failed")
 			}
+		}
+		if f.workerFailures[id] && !binding.RegistryUnavailable && workers[id] == nil {
+			workerFailures[id] = true
 		}
 		if handler == nil {
 			return fmt.Errorf("fleet binding handler is missing")
@@ -122,7 +222,7 @@ func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if previous := f.current.Load(); previous != nil && !reflect.DeepEqual(f.bindings, bindings) {
+	if previous := f.current.Load(); previous != nil && !reflect.DeepEqual(f.bindings, bindings) && !isolate {
 		// Legacy state locks belong to each Service. Do not allow two
 		// generations to execute against the same state file concurrently,
 		// including remove-then-readd. Stop admissions before draining.
@@ -135,9 +235,187 @@ func (f *RefreshingFleet) Refresh(ctx context.Context) (err error) {
 	if f.listen == "" {
 		f.listen = listen
 	}
+	for id, previousHandler := range f.handlers {
+		if _, stillPresent := handlers[id]; stillPresent {
+			continue
+		}
+		if closable, ok := previousHandler.(closableFleetHandler); ok {
+			previousHandlersToClose = append(previousHandlersToClose, closable)
+		}
+	}
+	retired := f.retiredWorkers(workers)
+	// First fence the old worker's own admission path.  A request may have
+	// loaded the previous HostRouter immediately before the atomic publication
+	// below; this per-worker fence makes that request fail closed unless it was
+	// already in flight.  Do this before publishing the new router and before
+	// waiting for its bounded drain.
+	for _, worker := range retired {
+		worker.BeginDrain()
+	}
 	f.bindings, f.handlers = bindings, handlers
+	f.workers, f.workerFailures = workers, workerFailures
 	f.current.Store(&fleetSnapshot{router: router})
+	for _, worker := range retired {
+		f.closeWorker(worker)
+	}
+	for _, previousHandler := range previousHandlersToClose {
+		previousHandler.Close()
+	}
 	return nil
+}
+
+func unavailableTenantHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "MCP instance unavailable", http.StatusServiceUnavailable)
+	})
+}
+
+func readyWorkerHandler(worker ReadyWorker) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if worker == nil || !worker.Alive() {
+			unavailableTenantHandler().ServeHTTP(w, r)
+			return
+		}
+		worker.ServeHTTP(w, r)
+	})
+}
+
+// localWorkerTransition permits only host-local changes after a healthy
+// complete generation. Any source failure, ordinary binding mutation, or
+// listener drift stays on the established fleet-wide fail-closed path.
+func (f *RefreshingFleet) localWorkerTransition(loaded []LoadedFleetBinding) bool {
+	previous := f.current.Load()
+	if f.workerFactory == nil || previous == nil || previous.unavailable || len(f.bindings) == 0 {
+		return false
+	}
+	next := make(map[string]LoadedFleetBinding, len(loaded))
+	changed := false
+	for _, binding := range loaded {
+		id := binding.Binding.BindingID
+		if _, duplicate := next[id]; duplicate {
+			return false
+		}
+		next[id] = binding
+		old, exists := f.bindings[id]
+		if !exists {
+			changed = true
+			continue
+		}
+		if reflect.DeepEqual(old, binding) {
+			if worker := f.workers[id]; worker != nil && !worker.Alive() {
+				changed = true
+			}
+			if f.workerFailures[id] {
+				changed = true
+			}
+			continue
+		}
+		if !sameBindingExceptRegistryReadiness(old, binding) {
+			return false
+		}
+		changed = true
+	}
+	for id := range f.bindings {
+		if _, found := next[id]; !found {
+			changed = true
+		}
+	}
+	return changed
+}
+
+func sameBindingExceptRegistryReadiness(left, right LoadedFleetBinding) bool {
+	// Database discovery uses BindingID as a placeholder until it reads the
+	// active Registry instance name. Normalize only that one derived field,
+	// and only across an actual readiness transition; every authority, source,
+	// storage, policy and authentication field remains part of the comparison.
+	if left.RegistryUnavailable != right.RegistryUnavailable &&
+		left.Config.Runtime != nil && right.Config.Runtime != nil &&
+		left.Config.BoundRuntime == nil && right.Config.BoundRuntime == nil &&
+		left.Config.InstanceConfigPath == "" && right.Config.InstanceConfigPath == "" &&
+		left.Config.OAuth21ServiceJWT && right.Config.OAuth21ServiceJWT {
+		unready := left
+		if !left.RegistryUnavailable {
+			unready = right
+		}
+		if unready.Config.Runtime.InstanceName == unready.Binding.BindingID {
+			leftRuntime, rightRuntime := *left.Config.Runtime, *right.Config.Runtime
+			leftRuntime.InstanceName, rightRuntime.InstanceName = "", ""
+			left.Config.Runtime, right.Config.Runtime = &leftRuntime, &rightRuntime
+		}
+	}
+	left.RegistryUnavailable = false
+	right.RegistryUnavailable = false
+	return reflect.DeepEqual(left, right)
+}
+
+func (f *RefreshingFleet) needsLocalWorker(id string, old LoadedFleetBinding, existed bool, binding LoadedFleetBinding, oldWorker ReadyWorker) bool {
+	if !existed || old.RegistryUnavailable || f.workerFailures[id] {
+		return true
+	}
+	return oldWorker != nil && (!oldWorker.Alive() || !reflect.DeepEqual(old, binding))
+}
+
+func (f *RefreshingFleet) retiredWorkers(next map[string]ReadyWorker) []ReadyWorker {
+	retired := make([]ReadyWorker, 0)
+	for id, old := range f.workers {
+		if old != nil && next[id] != old {
+			retired = append(retired, old)
+		}
+	}
+	return retired
+}
+
+func (f *RefreshingFleet) closeWorker(worker ReadyWorker) {
+	if worker == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), f.workerTimeout)
+	defer cancel()
+	_ = worker.Close(ctx)
+}
+
+// Close is the parent-service shutdown sequence for isolated workers.  It
+// fences every child before publishing fleet unavailability, then gives every
+// already proxied request the caller's bounded drain context.  A closed fleet
+// cannot refresh or start a replacement child while the parent is exiting.
+func (f *RefreshingFleet) Close(ctx context.Context) error {
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		return nil
+	}
+	f.closed = true
+	workers := make([]ReadyWorker, 0, len(f.workers))
+	handlers := make([]closableFleetHandler, 0, len(f.handlers))
+	for _, handler := range f.handlers {
+		if closable, ok := handler.(closableFleetHandler); ok {
+			handlers = append(handlers, closable)
+		}
+	}
+	for _, worker := range f.workers {
+		if worker != nil {
+			workers = append(workers, worker)
+		}
+	}
+	for _, worker := range workers {
+		worker.BeginDrain()
+	}
+	if previous := f.current.Load(); previous != nil {
+		f.current.Store(&fleetSnapshot{router: previous.router, unavailable: true})
+	}
+	f.mu.Unlock()
+	for _, handler := range handlers {
+		handler.Close()
+	}
+
+	var closeErr error
+	for _, worker := range workers {
+		if err := worker.Close(ctx); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
 }
 
 // drain returns with the execution write lock held. Waiting is bounded even
@@ -162,6 +440,15 @@ func (f *RefreshingFleet) drain(parent context.Context) error {
 	}
 }
 
+// refreshOnce gives discovery the same bounded budget used at initial startup.
+// Registry probes still run concurrently and are individually capped at 10s;
+// healthy published handlers remain usable while this read-only work runs.
+func (f *RefreshingFleet) refreshOnce(ctx context.Context) error {
+	refreshContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return f.Refresh(refreshContext)
+}
+
 // Run is synchronous and stops on cancellation. The caller owns its goroutine.
 // Reports contain no configuration or upstream response body.
 func (f *RefreshingFleet) Run(ctx context.Context, interval time.Duration, report func(error)) {
@@ -175,9 +462,7 @@ func (f *RefreshingFleet) Run(ctx context.Context, interval time.Duration, repor
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			refreshContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-			err := f.Refresh(refreshContext)
-			cancel()
+			err := f.refreshOnce(ctx)
 			if report != nil && ctx.Err() == nil {
 				report(err)
 			}

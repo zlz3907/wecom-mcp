@@ -189,6 +189,19 @@ func TestAuthorizedToolSetAddsMCPAuthenticatedEmployeeBaseline(t *testing.T) {
 	}
 }
 
+func TestManagedPolicyDoesNotAddUnassignedBaselineTool(t *testing.T) {
+	definitions, err := testToolDefinitions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := testAuthorizationDecision("wecom_schema_status")
+	decision.ManagedToolPolicy = true
+	tools, err := authorizedToolSet(decision, definitions, []string{"wecom.mcp"})
+	if err != nil || !tools["wecom_schema_status"] || tools["wecom_employee_list"] || len(tools) != 1 {
+		t.Fatalf("managed policy leaked unassigned tools: %#v err=%v", tools, err)
+	}
+}
+
 func TestUserAuthorizationFiltersToolsAndPreservesRoleBoundary(t *testing.T) {
 	resolver := &staticAuthorizationResolver{decision: testAuthorizationDecision("wecom_record_query", "wecom_record_apply")}
 	server := newUserAuthorizationHTTPServer(t, RoleReader, resolver, io.Discard)

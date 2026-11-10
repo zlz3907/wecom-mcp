@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	instanceconfig "github.com/zhonglizhi/wecom-mcp-v2/internal/config"
@@ -37,6 +38,15 @@ func TestGNASDiscoveryDerivesInstancesWithoutTenantFiles(t *testing.T) {
 		return gnasFleetBinding{BindingID: id, PublicResource: "https://" + id + ".example", AuthorizationResource: "zoop", Source: "source-" + id, Plugins: gnasFleetPlugins{Zoop: &gnasFleetZoopPlugin{RegistryDocumentID: "registry-" + id, RegistryKey: "key-" + id}}}
 	}
 	a, b := binding("a"), binding("b")
+	// Independent green and blue discovery instances must derive the exact
+	// same journal path for an unchanged binding, irrespective of peers.
+	other := &GNASDiscovery{stateRoot: root}
+	if d.runtimeFor(a, policy).StatePath != other.runtimeFor(a, policy).StatePath {
+		t.Fatal("same binding and state root produced different journals")
+	}
+	if d.runtimeFor(a, policy).SchemaAdminUser != "" {
+		t.Fatal("database discovery unexpectedly enabled schema administration")
+	}
 	load := func(bindings ...gnasFleetBinding) ([]LoadedFleetBinding, error) {
 		if bindings == nil {
 			bindings = []gnasFleetBinding{}
@@ -102,5 +112,59 @@ func TestGNASBindingDigestContractVector(t *testing.T) {
 	b := gnasFleetBinding{BindingID: "company_a", PublicResource: "https://a.example", AuthorizationResource: "zoop", Source: "source-a", Plugins: gnasFleetPlugins{Zoop: &gnasFleetZoopPlugin{RegistryDocumentID: "registry-a", RegistryKey: "key-a"}}}
 	if got := gnasBindingDigest(b); got != "f7ad6cdd8bc55e76b14aff6a6cb2b1e3040b9b50c54f01205f508d534cd1a142" {
 		t.Fatalf("binding digest contract changed: %s", got)
+	}
+}
+
+func TestSchemaAdminGrantIsBoundToExactDiscoveredBinding(t *testing.T) {
+	binding := gnasFleetBinding{BindingID: "a", PublicResource: "https://a.example", AuthorizationResource: "zoop", Source: "source-a", Plugins: gnasFleetPlugins{Zoop: &gnasFleetZoopPlugin{RegistryDocumentID: "registry-a", RegistryKey: "key-a"}}}
+	other := binding
+	other.BindingID = "b"
+	d := &GNASDiscovery{stateRoot: t.TempDir(), schemaAdminBindingDigest: gnasBindingDigest(binding), schemaAdminUserID: "member-a"}
+	policy := DiscoveryPolicy{Version: 1, APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}}}
+	a := d.runtimeFor(binding, policy)
+	b := d.runtimeFor(other, policy)
+	if a.OAuthSchemaAdminUserID != "member-a" || b.OAuthSchemaAdminUserID != "" {
+		t.Fatal("admin grant was not bound to exact binding")
+	}
+	changed := binding
+	changed.Source = "other-source"
+	if d.runtimeFor(changed, policy).OAuthSchemaAdminUserID != "" {
+		t.Fatal("changed source retained admin grant")
+	}
+	before := a.Digest()
+	a.OAuthSchemaAdminUserID = "other-member"
+	if a.Digest() == before {
+		t.Fatal("runtime digest did not bind admin user")
+	}
+}
+
+func TestSchemaAdminEnvironmentRequiresValidExactPair(t *testing.T) {
+	setupFleetOAuthEnvironment(t)
+	t.Setenv("GNAS_WECOM_TRANSPORT", "managed_executor")
+	t.Setenv("GNAS_SCHEMA_ADMIN_BINDING_DIGEST", "")
+	t.Setenv("GNAS_SCHEMA_ADMIN_USERID", "")
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, digest, user string
+		ok                 bool
+	}{
+		{"disabled", "", "", true},
+		{"missing user", strings.Repeat("a", 64), "", false},
+		{"missing binding", "", "member", false},
+		{"bad digest", "nope", "member", false},
+		{"bad user", strings.Repeat("a", 64), "member/other", false},
+		{"exact pair", strings.Repeat("a", 64), "member", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GNAS_SCHEMA_ADMIN_BINDING_DIGEST", tc.digest)
+			t.Setenv("GNAS_SCHEMA_ADMIN_USERID", tc.user)
+			_, err := NewGNASDiscovery(filepath.Join(root, "policy.json"), root, "127.0.0.1:17801")
+			if (err == nil) != tc.ok {
+				t.Fatalf("err=%v want valid=%v", err, tc.ok)
+			}
+		})
 	}
 }

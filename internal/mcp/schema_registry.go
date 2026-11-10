@@ -29,6 +29,7 @@ var schemaRegistryDigestFields = []string{
 }
 
 type schemaRegistrySnapshot struct {
+	DocumentID string
 	Generation string
 	CapturedAt string
 	FieldCount int
@@ -507,8 +508,17 @@ func (s *Server) updateSchemaRegistry(ctx context.Context, runtime config.Config
 	if err != nil {
 		return nil, err
 	}
-	if err := verifySchemaAdmin(runtime); err != nil {
-		return nil, err
+	if !s.discovered {
+		if err := verifySchemaAdmin(runtime); err != nil {
+			return nil, err
+		}
+	}
+	if s.discovered {
+		releaseAdmin, lockErr := acquireProgressFileLock(ctx, runtime.StatePath+".schema-admin")
+		if lockErr != nil {
+			return nil, fmt.Errorf("另一个 Schema 管理操作正在执行")
+		}
+		defer releaseAdmin()
 	}
 	for _, operation := range []string{"get_sheet", "get_fields", "get_records", "add_records", "update_records"} {
 		if !runtime.Allows(operation) {
@@ -527,6 +537,10 @@ func (s *Server) updateSchemaRegistry(ctx context.Context, runtime config.Config
 	if err != nil {
 		return nil, err
 	}
+	if err := s.verifyDocumentSchemaAdmin(ctx, runtime, client, table.Target.DocumentID); err != nil {
+		return nil, err
+	}
+	adminDocumentID := table.Target.DocumentID
 	current := emptyGeneration(table.ActiveGeneration)
 	if current != input.ExpectedActiveGeneration {
 		return nil, fmt.Errorf("active generation 已变化：期望 %s，实际 %s；请重新读取状态", input.ExpectedActiveGeneration, current)
@@ -534,6 +548,9 @@ func (s *Server) updateSchemaRegistry(ctx context.Context, runtime config.Config
 	snapshot, err := collectSchemaRegistrySnapshot(ctx, runtime, client)
 	if err != nil {
 		return nil, err
+	}
+	if snapshot.DocumentID != adminDocumentID {
+		return nil, fmt.Errorf("Schema 采集目标文档已变化")
 	}
 	if err := adoptSchemaRegistryGenerationMetadata(&snapshot, table, input.SourceRevision); err != nil {
 		return nil, err
@@ -570,13 +587,16 @@ func (s *Server) updateSchemaRegistry(ctx context.Context, runtime config.Config
 		if end > len(missing) {
 			end = len(missing)
 		}
+		if err := s.verifyDocumentSchemaAdmin(ctx, runtime, client, table.Target.DocumentID); err != nil {
+			return nil, err
+		}
 		response, requestErr := client.Request(ctx, "add_records", map[string]any{
 			"docid": table.Target.DocumentID, "sheet_id": table.Target.SheetID,
 			"key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID", "records": missing[start:end],
 		})
 		if requestErr != nil || apiError(response) != nil {
 			refreshed, readErr := loadSchemaRegistryTable(ctx, runtime, client)
-			if readErr == nil {
+			if readErr == nil && refreshed.Target.DocumentID == adminDocumentID {
 				remaining, compareErr := schemaRegistryMissingRecords(refreshed.ByKey, expected, refreshed.FieldIDs)
 				if compareErr == nil && len(remaining) == 0 {
 					table = refreshed
@@ -594,6 +614,9 @@ func (s *Server) updateSchemaRegistry(ctx context.Context, runtime config.Config
 	table, err = loadSchemaRegistryTable(ctx, runtime, client)
 	if err != nil {
 		return nil, err
+	}
+	if table.Target.DocumentID != adminDocumentID {
+		return nil, fmt.Errorf("Schema 管理目标文档已变化")
 	}
 	remaining, err := schemaRegistryMissingRecords(table.ByKey, expected, table.FieldIDs)
 	if err != nil {
@@ -613,13 +636,16 @@ func (s *Server) updateSchemaRegistry(ctx context.Context, runtime config.Config
 		operation = "update_records"
 		pointerRecord["record_id"] = table.ActiveRecordID
 	}
+	if err := s.verifyDocumentSchemaAdmin(ctx, runtime, client, table.Target.DocumentID); err != nil {
+		return nil, err
+	}
 	response, requestErr := client.Request(ctx, operation, map[string]any{
 		"docid": table.Target.DocumentID, "sheet_id": table.Target.SheetID,
 		"key_type": "CELL_VALUE_KEY_TYPE_FIELD_ID", "records": []any{pointerRecord},
 	})
 	if requestErr != nil || apiError(response) != nil {
 		refreshed, readErr := loadSchemaRegistryTable(ctx, runtime, client)
-		if readErr != nil || refreshed.ActiveGeneration != snapshot.Generation || !refreshed.ActiveComplete {
+		if readErr != nil || refreshed.Target.DocumentID != adminDocumentID || refreshed.ActiveGeneration != snapshot.Generation || !refreshed.ActiveComplete {
 			return map[string]any{
 				"state": "active_pointer_readback_pending", "generation": snapshot.Generation,
 				"readback_verified": false, "active_pointer_changed": false,
@@ -628,7 +654,7 @@ func (s *Server) updateSchemaRegistry(ctx context.Context, runtime config.Config
 		table = refreshed
 	} else {
 		table, err = loadSchemaRegistryTable(ctx, runtime, client)
-		if err != nil || table.ActiveGeneration != snapshot.Generation || !table.ActiveComplete {
+		if err != nil || table.Target.DocumentID != adminDocumentID || table.ActiveGeneration != snapshot.Generation || !table.ActiveComplete {
 			return map[string]any{
 				"state": "active_pointer_readback_pending", "generation": snapshot.Generation,
 				"readback_verified": false, "active_pointer_changed": false,
@@ -1144,7 +1170,7 @@ func collectSchemaRegistrySnapshot(ctx context.Context, runtime config.Config, c
 		return schemaRegistrySnapshot{}, err
 	}
 	return schemaRegistrySnapshot{
-		Generation: digest, CapturedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		DocumentID: targets[roles[0]].DocumentID, Generation: digest, CapturedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		FieldCount: len(entries), Entries: entries,
 	}, nil
 }
