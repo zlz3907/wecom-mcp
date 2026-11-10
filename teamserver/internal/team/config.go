@@ -55,12 +55,13 @@ type Config struct {
 	OAuth21IntrospectionURL       string
 	OAuth21ClientID               string
 	OAuth21ClientSecret           string
+	PolicyFloorPath               string
 	TrustedLoopbackProxy          bool
-	// Capability catalog reporting is an explicit, default-off MCP -> GNAS
-	// directory channel. These values are binding metadata, never tool-call
-	// authorization and never a replacement for ResolveAuthorizationV1.
+	// Catalog reporting is binding-scoped directory metadata, never tool-call
+	// authorization or a replacement for ResolveAuthorizationV1.
 	CapabilityCatalogPushEnabled           bool
 	CapabilityCatalogEndpoint              string
+	CapabilityCatalogPollEndpoint          string
 	CapabilityCatalogBindingID             string
 	CapabilityCatalogSource                string
 	CapabilityCatalogInstanceID            string
@@ -149,13 +150,18 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 		OAuth21IntrospectionURL:                strings.TrimSpace(os.Getenv("TEAM_MCP_OAUTH21_INTROSPECTION_URL")),
 		OAuth21ClientID:                        strings.TrimSpace(os.Getenv("TEAM_MCP_OAUTH21_CLIENT_ID")),
 		OAuth21ClientSecret:                    os.Getenv("TEAM_MCP_OAUTH21_CLIENT_SECRET"),
+		PolicyFloorPath:                        os.Getenv("TEAM_MCP_POLICY_FLOOR_PATH"),
 		CapabilityCatalogPushEnabled:           strings.EqualFold(strings.TrimSpace(os.Getenv("TEAM_MCP_CAPABILITY_CATALOG_PUSH_ENABLED")), "true"),
 		CapabilityCatalogEndpoint:              firstNonEmpty(os.Getenv("GNAS_CAPABILITY_CATALOG_ENDPOINT"), gnasServiceURL(gnasBaseURL, "/gnas/service/reportMCPCapabilityCatalogV1")),
+		CapabilityCatalogPollEndpoint:          gnasServiceURL(gnasBaseURL, "/gnas/service/pollMCPCapabilityRefreshV1"),
 		CapabilityCatalogBindingID:             firstNonEmpty(overrides.CapabilityCatalogBindingID, os.Getenv("TEAM_MCP_CAPABILITY_BINDING_ID")),
 		CapabilityCatalogSource:                firstNonEmpty(overrides.CapabilityCatalogSource, os.Getenv("TEAM_MCP_CAPABILITY_SOURCE")),
 		CapabilityCatalogInstanceID:            firstNonEmpty(overrides.CapabilityCatalogInstanceID, os.Getenv("TEAM_MCP_CAPABILITY_INSTANCE_ID")),
 		CapabilityCatalogPublicResource:        firstNonEmpty(overrides.CapabilityCatalogPublicResource, os.Getenv("TEAM_MCP_CAPABILITY_PUBLIC_RESOURCE")),
 		CapabilityCatalogAuthorizationResource: firstNonEmpty(overrides.CapabilityCatalogAuthorizationResource, os.Getenv("TEAM_MCP_CAPABILITY_AUTHORIZATION_RESOURCE")),
+	}
+	if cfg.PolicyFloorPath != "" && (cfg.PolicyFloorPath != productionPolicyFloorPath || cfg.AuthenticationMode != AuthenticationModeOAuth21) {
+		return Config{}, fmt.Errorf("invalid managed policy floor configuration")
 	}
 	if overrides.OAuth21Credentials != nil {
 		// Explicit binding credentials never fall back to another tenant's
@@ -310,6 +316,9 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 	}
 	cfg.MCPURL = cfg.PublicURL + "/mcp"
 	cfg.MetadataURL = protectedResourceMetadataURL(cfg.MCPURL)
+	if cfg.OAuth21ServiceJWT && cfg.CapabilityCatalogBindingID != "" && cfg.CapabilityCatalogSource != "" {
+		cfg.CapabilityCatalogPushEnabled = true
+	}
 	if cfg.CapabilityCatalogPublicResource == "" {
 		cfg.CapabilityCatalogPublicResource = cfg.PublicURL
 	}
@@ -321,6 +330,9 @@ func LoadConfigForBinding(instanceConfigPath, listenAddress string, overrides Bi
 			return Config{}, fmt.Errorf("MCP capability catalog reporting configuration is incomplete")
 		}
 		if err := validateHTTPSURL(cfg.CapabilityCatalogEndpoint, "GNAS_CAPABILITY_CATALOG_ENDPOINT"); err != nil {
+			return Config{}, err
+		}
+		if err := validateHTTPSURL(cfg.CapabilityCatalogPollEndpoint, "GNAS_CAPABILITY_CATALOG_POLL_ENDPOINT"); err != nil {
 			return Config{}, err
 		}
 	}

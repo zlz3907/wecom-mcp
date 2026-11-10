@@ -52,6 +52,7 @@ func TestHybridVerifierHTTPToolsAndConfigDrift(t *testing.T) {
 		verifier := func(context.Context, string, *http.Request) (*sdkauth.TokenInfo, error) {
 			return &sdkauth.TokenInfo{Expiration: time.Now().Add(time.Minute), UserID: "test-employee", Scopes: cfg.RequiredScopes, Extra: map[string]any{"role": string(RolePolicy), "issuer": cfg.OIDCIssuer, "wecom_userid": "test-employee", "mcp_role": "admin", "effective_tools": []string{"*"}}}, nil
 		}
+		installTestPolicyFloor(t, service, "")
 		server := httptest.NewServer(service.Handler(verifier))
 		t.Cleanup(server.Close)
 		return server

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -99,6 +100,31 @@ func TestCapabilityCatalogUsesActualPluginDefinitionsAndOAuthScopes(t *testing.T
 	}
 }
 
+func TestCapabilityCatalogVersionChangesWhenToolContractChanges(t *testing.T) {
+	svc := newCapabilityService(t, "https://gnas.example.test")
+	first, err := svc.CapabilityCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.definitions = append([]legacymcp.ToolDefinition(nil), svc.definitions...)
+	for left, right := 0, len(svc.definitions)-1; left < right; left, right = left+1, right-1 {
+		svc.definitions[left], svc.definitions[right] = svc.definitions[right], svc.definitions[left]
+	}
+	svc.config.RequiredScopes[0], svc.config.RequiredScopes[1] = svc.config.RequiredScopes[1], svc.config.RequiredScopes[0]
+	reordered, err := svc.CapabilityCatalog()
+	if err != nil || reordered.CatalogVersion != first.CatalogVersion || reordered.Digest != first.Digest {
+		t.Fatal("catalog version changed when only the order changed")
+	}
+	svc.definitions[0].Description += " updated"
+	second, err := svc.CapabilityCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.CatalogVersion == second.CatalogVersion || first.Digest == second.Digest || !strings.HasSuffix(second.CatalogVersion, "-toolpolicy-v1") || len(second.CatalogVersion) > 128 {
+		t.Fatal("changed tool definitions did not yield a distinct compatible catalog version")
+	}
+}
+
 func TestCapabilityCatalogDigestMatchesGNAS858d61aContract(t *testing.T) {
 	catalog := capabilityCatalog{
 		SchemaVersion: capabilityCatalogSchemaVersion, MCPInstanceID: "instance-a", BindingID: "tenant-a",
@@ -107,6 +133,19 @@ func TestCapabilityCatalogDigestMatchesGNAS858d61aContract(t *testing.T) {
 	}
 	if got, want := capabilityCatalogDigest(catalog), "sha256:731700a177fc63dbd90328c227a20d1c29ac28c1e9532bd480e8e9a3eccaf119"; got != want {
 		t.Fatalf("digest=%q want %q", got, want)
+	}
+	catalog.Scopes = nil
+	if got, want := capabilityCatalogDigest(catalog), "sha256:b493f6a7755fd26d9492b304482e28d7a0b76f66e060a764f8412c09141a103a"; got != want {
+		t.Fatalf("scope-free digest=%q want %q", got, want)
+	}
+}
+
+func TestCapabilityCatalogDoesNotRequireOAuthScopes(t *testing.T) {
+	svc := newCapabilityService(t, "https://gnas.example.test")
+	svc.config.RequiredScopes = nil
+	catalog, err := svc.CapabilityCatalog()
+	if err != nil || len(catalog.Tools) == 0 || len(catalog.Scopes) != 0 {
+		t.Fatalf("scope-free tool catalog unavailable: %+v %v", catalog, err)
 	}
 }
 
@@ -125,7 +164,7 @@ func TestCapabilityCatalogReportUsesExistingServiceJWTAndBindsIdentity(t *testin
 			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 				t.Fatal(err)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"accepted": true, "policy_version": received.CatalogVersion, "catalog_digest": received.CatalogDigest, "schema_version": 1, "mcp_instance_id": ""})
+			_ = json.NewEncoder(w).Encode(map[string]any{"accepted": true, "policy_version": received.CatalogVersion, "catalog_digest": received.CatalogDigest, "schema_version": 1, "mcp_instance_id": "binding-a", "app_id": "mcp-service-a", "binding_digest": "sha256:" + strings.Repeat("c", 64), "reported_at": time.Now().UTC().Format(time.RFC3339Nano), "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -168,8 +207,8 @@ func TestCapabilityCatalogFailsClosedOnCrossBindingScopeAndReplay(t *testing.T) 
 		t.Fatal("wildcard scope was accepted")
 	}
 	service.config.RequiredScopes = nil
-	if _, err := service.CapabilityCatalog(); err == nil {
-		t.Fatal("missing OAuth/plugin scope was accepted")
+	if _, err := service.CapabilityCatalog(); err != nil {
+		t.Fatalf("scope-free catalog was rejected: %v", err)
 	}
 	service.config.RequiredScopes = []string{"records:read"}
 	service.config.CapabilityCatalogSource = "source-other"
@@ -244,5 +283,127 @@ func TestCapabilityCatalogStartupFailureDoesNotBlockMCPHandler(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://mcp.example.test/healthz", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("background report failure affected MCP health: status=%d", response.Code)
+	}
+}
+
+func TestCapabilityRefreshPollIsBoundedToSelectedBinding(t *testing.T) {
+	requested := false
+	refreshID := strings.Repeat("a", 32)
+	polls, writes := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/gnas/service/getJwtToken":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]any{"token": "service-token", "app_id": "mcp-service-a", "expires_at": time.Now().Add(time.Minute).Unix()}})
+		case "/gnas/service/pollMCPCapabilityRefreshV1":
+			polls++
+			var body map[string]string
+			if r.Header.Get("Authorization") != "Bearer service-token" || r.Header.Get("X-Auth-Type") != "service_jwt" || json.NewDecoder(r.Body).Decode(&body) != nil || body["binding_id"] != "binding-a" || body["binding_digest"] != strings.Repeat("a", 64) || body["source"] != "source-a" || body["public_resource"] != "https://mcp.example.test/a" || body["authorization_resource"] != "resource-a" {
+				t.Error("refresh poll was not bound to the configured resource")
+			}
+			value := ""
+			if requested {
+				value = refreshID
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]any{"requested": requested, "refresh_request_id": value}})
+		case "/gnas/service/reportMCPCapabilityCatalogV1":
+			writes++
+			var report capabilityCatalogReport
+			if json.NewDecoder(r.Body).Decode(&report) != nil || report.RefreshRequestID != refreshID || report.BindingDigest != strings.Repeat("a", 64) {
+				t.Error("report did not bind the pending refresh")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"accepted": true, "policy_version": report.CatalogVersion, "catalog_digest": report.CatalogDigest, "schema_version": 1, "mcp_instance_id": ""})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	svc := newCapabilityService(t, server.URL)
+	svc.config.CapabilityCatalogPollEndpoint = server.URL + "/gnas/service/pollMCPCapabilityRefreshV1"
+	id, err := svc.pollCapabilityRefresh(context.Background())
+	if err != nil || id != "" || polls != 1 || writes != 0 {
+		t.Fatalf("unselected binding wrote a catalog: id=%q err=%v", id, err)
+	}
+	requested = true
+	id, err = svc.pollCapabilityRefresh(context.Background())
+	if err != nil || id != refreshID {
+		t.Fatalf("selected binding refresh missing: id=%q err=%v", id, err)
+	}
+	if err := svc.pushCapabilityCatalog(context.Background(), id); err != nil || writes != 1 {
+		t.Fatalf("selected binding report failed: writes=%d err=%v", writes, err)
+	}
+	refreshID = "invalid"
+	if _, err := svc.pollCapabilityRefresh(context.Background()); err == nil {
+		t.Fatal("malformed refresh ID was accepted")
+	}
+}
+
+func TestCapabilityRefreshRejectsDifferentServiceOrigin(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer server.Close()
+	svc := newCapabilityService(t, server.URL)
+	svc.config.CapabilityCatalogPollEndpoint = "https://other.example/gnas/service/pollMCPCapabilityRefreshV1"
+	if _, err := svc.pollCapabilityRefresh(context.Background()); err == nil {
+		t.Fatal("poll accepted an unrelated service origin")
+	}
+	svc.config.CapabilityCatalogEndpoint = "https://other.example/gnas/service/reportMCPCapabilityCatalogV1"
+	if err := svc.pushCapabilityCatalog(context.Background(), strings.Repeat("a", 32)); err == nil {
+		t.Fatal("report accepted an unrelated service origin")
+	}
+	if requests.Load() != 0 {
+		t.Fatal("origin mismatch obtained a service token")
+	}
+}
+
+func TestCapabilityBackgroundReportsOnlyAfterSelection(t *testing.T) {
+	var requested atomic.Bool
+	var polls, writes atomic.Int32
+	id := strings.Repeat("b", 32)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/gnas/service/getJwtToken":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]any{"token": "service-token", "app_id": "mcp-service-a", "expires_at": time.Now().Add(time.Minute).Unix()}})
+		case "/gnas/service/pollMCPCapabilityRefreshV1":
+			polls.Add(1)
+			requestID := ""
+			if requested.Load() {
+				requestID = id
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]any{"requested": requested.Load(), "refresh_request_id": requestID}})
+		case "/gnas/service/reportMCPCapabilityCatalogV1":
+			var report capabilityCatalogReport
+			if json.NewDecoder(r.Body).Decode(&report) != nil || report.RefreshRequestID != id {
+				t.Error("background report was not bound to the selection")
+			}
+			writes.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"accepted": true, "policy_version": report.CatalogVersion, "catalog_digest": report.CatalogDigest, "schema_version": 1, "mcp_instance_id": ""})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	svc := newCapabilityService(t, server.URL)
+	svc.config.CapabilityCatalogPollEndpoint = server.URL + "/gnas/service/pollMCPCapabilityRefreshV1"
+	handler, ok := svc.Handler(nil).(*managedServiceHandler)
+	if !ok {
+		t.Fatal("catalog worker did not start")
+	}
+	defer handler.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for polls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if polls.Load() == 0 || writes.Load() != 0 {
+		t.Fatal("unselected binding did not stay read-only")
+	}
+	requested.Store(true)
+	deadline = time.Now().Add(capabilityCatalogPollInterval + 3*time.Second)
+	for writes.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if writes.Load() != 1 {
+		t.Fatalf("selected binding was not reported: %d", writes.Load())
 	}
 }

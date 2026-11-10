@@ -22,16 +22,16 @@ import (
 )
 
 const (
-	capabilityCatalogSchemaVersion   = "mcp-capability-catalog.v1"
-	capabilityCatalogPurpose         = "capability_catalog_report"
-	capabilityCatalogMaxBodyBytes    = 64 << 10
-	capabilityCatalogRefreshInterval = 5 * time.Minute
-	capabilityCatalogRetryBase       = 30 * time.Second
-	capabilityCatalogRetryMax        = 5 * time.Minute
-	capabilityCatalogAttemptTimeout  = 10 * time.Second
+	capabilityCatalogSchemaVersion  = "mcp-capability-catalog.v1"
+	capabilityCatalogPurpose        = "capability_catalog_report"
+	capabilityCatalogMaxBodyBytes   = 64 << 10
+	capabilityCatalogRetryMax       = 10 * time.Second
+	capabilityCatalogAttemptTimeout = 3 * time.Second
+	capabilityCatalogPollInterval   = 5 * time.Second
 )
 
 var capabilityCatalogIdentifier = regexp.MustCompile(`^[A-Za-z0-9_.\/-]{1,128}$`)
+var capabilityRefreshID = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 type capabilityCatalogTool struct {
 	Name        string `json:"name"`
@@ -58,6 +58,7 @@ type capabilityCatalogReport struct {
 	SchemaVersion         string                  `json:"schema_version"`
 	MCPInstanceID         string                  `json:"mcp_instance_id,omitempty"`
 	BindingID             string                  `json:"binding_id"`
+	BindingDigest         string                  `json:"binding_digest"`
 	Source                string                  `json:"source"`
 	PublicResource        string                  `json:"public_resource"`
 	AuthorizationResource string                  `json:"authorization_resource"`
@@ -67,6 +68,7 @@ type capabilityCatalogReport struct {
 	Scopes                []string                `json:"scopes"`
 	RequestID             string                  `json:"request_id"`
 	Purpose               string                  `json:"purpose"`
+	RefreshRequestID      string                  `json:"refresh_request_id,omitempty"`
 }
 
 type capabilityCatalogReportResponse struct {
@@ -75,6 +77,10 @@ type capabilityCatalogReportResponse struct {
 	CatalogDigest string `json:"catalog_digest"`
 	SchemaVersion int    `json:"schema_version"`
 	MCPInstanceID string `json:"mcp_instance_id"`
+	AppID         string `json:"app_id"`
+	BindingDigest string `json:"binding_digest"`
+	ReportedAt    string `json:"reported_at"`
+	ExpiresAt     string `json:"expires_at"`
 }
 
 // CapabilityCatalog returns the exact plugin-derived definitions already used
@@ -103,9 +109,17 @@ func (s *Service) CapabilityCatalog() (capabilityCatalog, error) {
 	if err != nil {
 		return capabilityCatalog{}, err
 	}
-	if len(scopes) == 0 {
-		return capabilityCatalog{}, fmt.Errorf("MCP capability catalog requires real OAuth/plugin scopes")
+	// A new binary can change tools without changing the instance runtime or
+	// the marketing version. Bind the catalog version to its actual contents
+	// so GNAS can distinguish an upgrade from conflicting same-version data.
+	contractBytes, err := json.Marshal(struct {
+		Tools  []capabilityCatalogTool `json:"tools"`
+		Scopes []string                `json:"scopes"`
+	}{tools, scopes})
+	if err != nil {
+		return capabilityCatalog{}, fmt.Errorf("MCP capability catalog version unavailable")
 	}
+	contractSHA := sha256.Sum256(contractBytes)
 	catalog := capabilityCatalog{
 		SchemaVersion:         capabilityCatalogSchemaVersion,
 		MCPInstanceID:         cfg.CapabilityCatalogInstanceID,
@@ -113,7 +127,7 @@ func (s *Service) CapabilityCatalog() (capabilityCatalog, error) {
 		Source:                cfg.CapabilityCatalogSource,
 		PublicResource:        cfg.CapabilityCatalogPublicResource,
 		AuthorizationResource: cfg.CapabilityCatalogAuthorizationResource,
-		CatalogVersion:        "teamserver-" + serverVersion + "-" + runtime.Digest() + "-toolpolicy-v1",
+		CatalogVersion:        "teamserver-" + serverVersion + "-" + runtime.Digest() + "-" + hex.EncodeToString(contractSHA[:8]) + "-toolpolicy-v1",
 		Tools:                 tools,
 		Scopes:                scopes,
 	}
@@ -237,6 +251,13 @@ func capabilityCatalogDigest(catalog capabilityCatalog) string {
 // GNAS Service JWT direction. It fails closed on every transport, identity,
 // digest, response, timeout or replay error and never caches a token.
 func (s *Service) PushCapabilityCatalog(ctx context.Context) error {
+	return s.pushCapabilityCatalog(ctx, "")
+}
+
+func (s *Service) pushCapabilityCatalog(ctx context.Context, refreshID string) error {
+	if refreshID != "" && !capabilityRefreshID.MatchString(refreshID) {
+		return fmt.Errorf("MCP capability refresh request is invalid")
+	}
 	catalog, err := s.CapabilityCatalog()
 	if err != nil {
 		return err
@@ -245,7 +266,7 @@ func (s *Service) PushCapabilityCatalog(ctx context.Context) error {
 		return fmt.Errorf("MCP capability catalog requires the configured GNAS Service JWT identity")
 	}
 	endpoint := strings.TrimSpace(s.config.CapabilityCatalogEndpoint)
-	if err := validateCapabilityHTTPSURL(endpoint); err != nil {
+	if err := validateCapabilityHTTPSURL(endpoint); err != nil || !sameCapabilityAuthority(endpoint, s.config.AuthorizationTokenEndpoint) {
 		return fmt.Errorf("MCP capability catalog endpoint is invalid")
 	}
 	timeout := s.config.AuthorizationTimeout
@@ -263,19 +284,77 @@ func (s *Service) PushCapabilityCatalog(ctx context.Context) error {
 		return fmt.Errorf("MCP capability catalog request id is unavailable")
 	}
 	report := capabilityCatalogReport{
-		SchemaVersion: catalog.SchemaVersion, MCPInstanceID: catalog.MCPInstanceID, BindingID: catalog.BindingID,
+		SchemaVersion: catalog.SchemaVersion, MCPInstanceID: catalog.MCPInstanceID, BindingID: catalog.BindingID, BindingDigest: s.config.GNASBindingDigest,
 		Source: catalog.Source, PublicResource: catalog.PublicResource, AuthorizationResource: catalog.AuthorizationResource,
 		CatalogVersion: catalog.CatalogVersion, CatalogDigest: catalog.Digest, Tools: catalog.Tools, Scopes: catalog.Scopes,
-		RequestID: requestID, Purpose: capabilityCatalogPurpose,
+		RequestID: requestID, Purpose: capabilityCatalogPurpose, RefreshRequestID: refreshID,
 	}
 	return postCapabilityCatalog(ctx, endpoint, token, report, catalog, client)
 }
 
-// runCapabilityCatalogReporter keeps the GNAS directory fresh without making
-// the MCP data plane depend on the directory. The first report is attempted in
-// the background; failures use bounded exponential retry and do not stop
-// tools/list or tools/call. GNAS TTL expiry therefore makes only its admin
-// catalog unavailable until a later report succeeds.
+// pollCapabilityRefresh only reads an explicit request for this authenticated
+// binding; an unselected enterprise never writes a capability catalog.
+func (s *Service) pollCapabilityRefresh(ctx context.Context) (string, error) {
+	catalog, err := s.CapabilityCatalog()
+	if err != nil {
+		return "", err
+	}
+	cfg := s.config
+	if !cfg.OAuth21ServiceJWT || !bindingDigestPattern.MatchString(cfg.GNASBindingDigest) || cfg.AuthorizationTokenEndpoint == "" || cfg.AuthorizationServiceAppID == "" || cfg.AuthorizationServiceAppSecret == "" || validateCapabilityHTTPSURL(cfg.CapabilityCatalogPollEndpoint) != nil || !sameCapabilityAuthority(cfg.CapabilityCatalogPollEndpoint, cfg.AuthorizationTokenEndpoint) {
+		return "", fmt.Errorf("MCP capability refresh is not configured")
+	}
+	timeout := cfg.AuthorizationTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	client := &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	provider := &GNASServiceJWTProvider{Endpoint: cfg.AuthorizationTokenEndpoint, Client: client, AppID: cfg.AuthorizationServiceAppID, Secret: cfg.AuthorizationServiceAppSecret, now: time.Now}
+	token, err := provider.Token(ctx)
+	if err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(struct {
+		BindingID             string `json:"binding_id"`
+		BindingDigest         string `json:"binding_digest"`
+		Source                string `json:"source"`
+		PublicResource        string `json:"public_resource"`
+		AuthorizationResource string `json:"authorization_resource"`
+	}{catalog.BindingID, cfg.GNASBindingDigest, catalog.Source, catalog.PublicResource, catalog.AuthorizationResource})
+	if err != nil {
+		return "", fmt.Errorf("MCP capability refresh request is invalid")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.CapabilityCatalogPollEndpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("MCP capability refresh request is invalid")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Auth-Type", "service_jwt")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	response, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("MCP capability refresh unavailable")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || requireJSONContentType(response.Header.Get("Content-Type")) != nil {
+		return "", fmt.Errorf("MCP capability refresh unavailable")
+	}
+	var envelope struct {
+		Code int `json:"code"`
+		Data struct {
+			Requested bool   `json:"requested"`
+			RequestID string `json:"refresh_request_id"`
+		} `json:"data"`
+	}
+	if err := decodeStrictJSON(io.LimitReader(response.Body, capabilityCatalogMaxBodyBytes+1), &envelope); err != nil || envelope.Code != http.StatusOK || (envelope.Data.Requested && !capabilityRefreshID.MatchString(envelope.Data.RequestID)) || (!envelope.Data.Requested && envelope.Data.RequestID != "") {
+		return "", fmt.Errorf("MCP capability refresh response is invalid")
+	}
+	return envelope.Data.RequestID, nil
+}
+
+// runCapabilityCatalogReporter polls for explicitly requested directory
+// refreshes in the background. Failures use bounded exponential retry and do
+// not stop tools/list or tools/call.
 func runCapabilityCatalogReporter(ctx context.Context, push func(context.Context) error, logger *slog.Logger, refreshInterval, retryBase, retryMax time.Duration) {
 	if ctx == nil || push == nil || refreshInterval <= 0 || retryBase <= 0 || retryMax < retryBase {
 		return
@@ -374,4 +453,12 @@ func validateCapabilityHTTPSURL(raw string) error {
 		return fmt.Errorf("URL must use HTTPS")
 	}
 	return nil
+}
+
+// Never send the GNAS Service JWT to a different configured origin.
+func sameCapabilityAuthority(endpoint, tokenEndpoint string) bool {
+	left, err1 := url.Parse(endpoint)
+	right, err2 := url.Parse(tokenEndpoint)
+	return err1 == nil && err2 == nil && left.User == nil && right.User == nil &&
+		left.Scheme == right.Scheme && left.Host != "" && left.Host == right.Host
 }

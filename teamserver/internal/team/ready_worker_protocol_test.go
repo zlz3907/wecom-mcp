@@ -128,3 +128,48 @@ func TestReadyWorkerReconstructsAdminOnlyForExactBinding(t *testing.T) {
 		t.Fatal("another worker received the grant")
 	}
 }
+
+func TestReadyWorkerRetainsCatalogBindingForOnDemandRefresh(t *testing.T) {
+	setupFleetOAuthEnvironment(t)
+	t.Setenv("GNAS_BASE_URL", "http://127.0.0.1:1")
+	t.Setenv("GNAS_APP_ID", "test-app")
+	t.Setenv("GNAS_APP_SECRET", "test-secret")
+	t.Setenv("GNAS_WECOM_TRANSPORT", "managed_executor")
+	t.Setenv("TEAM_MCP_ADVERTISED_SCOPES_RESOURCE", "https://one.example/mcp")
+	runtime := instanceconfig.Config{Version: 1, InstanceName: "tenant_one", TenantRoute: "source-one", RegistryDocumentID: "registry-one", RegistryKey: "key-one", SchemaSource: "z-s00", StatePath: filepath.Join(t.TempDir(), "state.json"), APIWhitelist: map[string][]string{"read": {"get_sheet", "get_fields", "get_records"}}}
+	binding := workerProtocolBinding()
+	binding.Binding.Source = "source-one"
+	binding.Binding.MCPInstanceID = "instance-one"
+	binding.Config.Runtime = &runtime
+	binding.Config.CapabilityCatalogBindingID = "tenant_one"
+	binding.Config.CapabilityCatalogSource = "source-one"
+	binding.Config.CapabilityCatalogInstanceID = "instance-one"
+	start, err := NewBindingWorkerStart(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := json.Marshal(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded BindingWorkerStart
+	if err := json.Unmarshal(wire, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := decoded.LoadConfig("127.0.0.1:17801")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.CapabilityCatalogPushEnabled || cfg.CapabilityCatalogBindingID != "tenant_one" || cfg.CapabilityCatalogSource != "source-one" || cfg.CapabilityCatalogInstanceID != "instance-one" {
+		t.Fatal("selected worker did not retain the exact catalog binding")
+	}
+	t.Setenv("TEAM_MCP_ADVERTISED_SCOPES_RESOURCE", "https://other.example/mcp")
+	other, err := decoded.LoadConfig("127.0.0.1:17801")
+	if err != nil || !other.CapabilityCatalogPushEnabled {
+		t.Fatalf("other worker lost on-demand reporting: %v", err)
+	}
+	decoded.CatalogSource = "another-source"
+	if err := decoded.Validate(); err == nil {
+		t.Fatal("catalog source drift was accepted")
+	}
+}

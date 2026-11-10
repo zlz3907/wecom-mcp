@@ -54,6 +54,8 @@ type BindingWorkerStart struct {
 	Runtime            *instanceconfig.Config `json:"runtime,omitempty"`
 	BoundRuntime       *instanceconfig.Config `json:"bound_runtime,omitempty"`
 	InstanceConfigPath string                 `json:"instance_config_path,omitempty"`
+	CatalogSource      string                 `json:"catalog_source,omitempty"`
+	CatalogInstanceID  string                 `json:"catalog_instance_id,omitempty"`
 }
 
 // NewBindingWorkerSpec rejects drift between the authoritative route and the
@@ -82,7 +84,14 @@ func NewBindingWorkerStart(binding LoadedFleetBinding) (BindingWorkerStart, erro
 	if err != nil {
 		return BindingWorkerStart{}, err
 	}
-	start := BindingWorkerStart{Identity: identity, InstanceConfigPath: binding.Config.InstanceConfigPath}
+	if binding.Config.CapabilityCatalogSource != "" &&
+		(binding.Config.CapabilityCatalogBindingID != binding.Binding.BindingID ||
+			binding.Config.CapabilityCatalogSource != binding.Binding.Source ||
+			binding.Config.CapabilityCatalogInstanceID != binding.Binding.MCPInstanceID) {
+		return BindingWorkerStart{}, fmt.Errorf("binding worker catalog metadata does not match authoritative route")
+	}
+	start := BindingWorkerStart{Identity: identity, InstanceConfigPath: binding.Config.InstanceConfigPath,
+		CatalogSource: binding.Config.CapabilityCatalogSource, CatalogInstanceID: binding.Config.CapabilityCatalogInstanceID}
 	if binding.Config.Runtime != nil {
 		value := cloneWorkerRuntime(*binding.Config.Runtime)
 		start.Runtime = &value
@@ -103,6 +112,14 @@ func (s BindingWorkerStart) Validate() error {
 	}
 	if s.Runtime != nil && s.BoundRuntime != nil || s.Runtime == nil && s.BoundRuntime == nil {
 		return fmt.Errorf("binding worker runtime is invalid")
+	}
+	runtime := s.Runtime
+	if runtime == nil {
+		runtime = s.BoundRuntime
+	}
+	if s.CatalogSource != "" && (s.CatalogSource != runtime.TenantRoute || !capabilityCatalogIdentifier.MatchString(s.CatalogSource)) ||
+		s.CatalogInstanceID != "" && !fleetIdentifier.MatchString(s.CatalogInstanceID) {
+		return fmt.Errorf("binding worker catalog identity is invalid")
 	}
 	if s.Runtime != nil {
 		if s.InstanceConfigPath != "" || s.Runtime.Validate() != nil {
@@ -143,6 +160,9 @@ func (s BindingWorkerStart) LoadConfig(listen string) (Config, error) {
 		GNASBindingDigest: s.Identity.BindingDigest, PublicURL: s.Identity.PublicURL,
 		OIDCIssuer: "https://" + u.Host + "/gnas/oauth", AuthorizationTenant: s.Identity.Tenant,
 		AuthorizationResource: s.Identity.Resource, Plugins: []string{"zoop"},
+		CapabilityCatalogBindingID: s.Identity.BindingID, CapabilityCatalogSource: s.CatalogSource,
+		CapabilityCatalogInstanceID: s.CatalogInstanceID, CapabilityCatalogPublicResource: s.Identity.PublicURL,
+		CapabilityCatalogAuthorizationResource: s.Identity.Resource,
 	})
 	if err != nil {
 		return Config{}, fmt.Errorf("binding worker configuration is invalid")
