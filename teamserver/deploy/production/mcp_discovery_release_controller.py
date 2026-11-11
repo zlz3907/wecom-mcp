@@ -34,6 +34,7 @@ LOOPBACK = '127.0.0.1:7703'
 READINESS_FILE = Path('/etc/wecom-mcp/gnas-discovery-readiness.json')
 CURRENT_RELEASE_ID = '20261105T001200-21462d2dfb22'
 CURRENT_BINARY_SHA256 = '988055b38a6963afe1f6cfe3b2bdb9b691483cb599974a450efae535d356ad22'
+CURRENT_POLICY_SHA256 = '7d45dd145b1c4f604619046e305e031d42e807e5c7ee32450015d04123ccbba6'
 PREVIOUS_RELEASE_ID = '20261105T000000-396f2500540e'
 PREVIOUS_BINARY_SHA256 = 'e37bd4ec2103dd33bd2d923c2d827748c8f6b95a63db26c4a1835f4a4bac7d69'
 TARGET_HOST = 'zhycit.com'
@@ -171,6 +172,15 @@ def _preflight_recovery(release_id):
     return {'state': 'recovery_preflight_passed', 'release_id': release_id, 'service_restarted': False}
 
 
+def _mutation_disabled(release_id, approval_id):
+    # The live 7703 service uses worker isolation even in schema-v2 artifacts.
+    # The base deploy gate checks only the schema-v3 declaration, and it cannot
+    # guarantee fail-closed recovery or fence an old systemd restart on crash.
+    # Do not make a directly restarting release path executable until those
+    # contracts are implemented and independently verified.
+    raise ValueError('discovery mutation requires a reviewed fail-closed executor')
+
+
 def _deploy_fields(manifest, directory):
     expected = _base_deploy_fields(manifest, directory)
     expected.update({
@@ -183,6 +193,7 @@ def _deploy_fields(manifest, directory):
         'readiness_file': str(READINESS_FILE),
         'expected_current_release_id': manifest['expected_current_release_id'],
         'expected_current_binary_sha256': manifest['expected_current_binary_sha256'],
+        'expected_current_policy_sha256': manifest['expected_current_policy_sha256'],
         'expected_previous_release_id': manifest['expected_previous_release_id'],
         'expected_previous_binary_sha256': manifest['expected_previous_binary_sha256'],
         'expected_current_unit_fragment_sha256': manifest['expected_current_unit_fragment_sha256'],
@@ -209,6 +220,7 @@ def _verify(directory, release_id):
         require(SHA.fullmatch(manifest.get(key, '')), key + ' missing')
     require(manifest.get('expected_current_release_id') == CURRENT_RELEASE_ID, 'current release baseline mismatch')
     require(manifest.get('expected_current_binary_sha256') == CURRENT_BINARY_SHA256, 'current binary baseline mismatch')
+    require(manifest.get('expected_current_policy_sha256') == CURRENT_POLICY_SHA256, 'current policy baseline mismatch')
     require(manifest.get('expected_previous_release_id') == PREVIOUS_RELEASE_ID, 'previous release baseline mismatch')
     require(manifest.get('expected_previous_binary_sha256') == PREVIOUS_BINARY_SHA256, 'previous binary baseline mismatch')
     require(manifest.get('fleet_state_vector') == [dict(row) for row in FLEET_STATE_VECTOR], 'discovery fleet vector mismatch')
@@ -242,6 +254,8 @@ c.unready = _unready
 c.healthy = _healthy
 c.check_gnas = _check_gnas
 c.preflight_recovery = _preflight_recovery
+c.deploy = _mutation_disabled
+c.rollback = _mutation_disabled
 c.deploy_fields = _deploy_fields
 c.verify = _verify
 

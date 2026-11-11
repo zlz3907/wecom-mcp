@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +13,31 @@ SPEC.loader.exec_module(TARGET)
 
 
 class DiscoveryProfileTests(unittest.TestCase):
+    def test_direct_mutations_are_disabled_until_fail_closed_executor_exists(self):
+        for action in (TARGET.c.deploy, TARGET.c.rollback):
+            with self.subTest(action=action), patch.object(TARGET.c, 'status') as status:
+                with self.assertRaisesRegex(ValueError, 'fail-closed executor'):
+                    action('20261106T010203Z-' + 'a' * 12, 'unused')
+                status.assert_not_called()
+
+    def test_main_dispatch_rejects_deploy_and_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            control = Path(directory).resolve()
+            actual_require = TARGET.c.require
+            def require_for_fixture(ok, message):
+                if message != 'controller not installed':
+                    actual_require(ok, message)
+            for action in ('deploy', 'rollback'):
+                with self.subTest(action=action), patch.object(TARGET.c, 'CONTROL', control), \
+                        patch.object(TARGET.c.os, 'geteuid', return_value=0), \
+                        patch.dict(TARGET.c.os.environ), \
+                        patch.object(TARGET.c, 'require', side_effect=require_for_fixture), \
+                        patch.object(TARGET.c.sys, 'argv', ['controller', action, '20261106T010203Z-' + 'a' * 12, 'unused']), \
+                        patch.object(TARGET.c, 'status') as status:
+                    with self.assertRaisesRegex(ValueError, 'fail-closed executor'):
+                        TARGET.c.main()
+                    status.assert_not_called()
+
     def test_profile_is_fixed_to_live_7703_service(self):
         self.assertEqual(TARGET.PROFILE, 'gnas-discovery-21462d2-v1')
         self.assertEqual(TARGET.UNIT, 'wecom-mcp-discovery-21462d2.service')
@@ -89,6 +115,7 @@ class DiscoveryProfileTests(unittest.TestCase):
                       'service.conf': 'c' * 64, 'recovery.conf': 'd' * 64},
             'expected_current_release_id': TARGET.CURRENT_RELEASE_ID,
             'expected_current_binary_sha256': TARGET.CURRENT_BINARY_SHA256,
+            'expected_current_policy_sha256': TARGET.CURRENT_POLICY_SHA256,
             'expected_previous_release_id': TARGET.PREVIOUS_RELEASE_ID,
             'expected_previous_binary_sha256': TARGET.PREVIOUS_BINARY_SHA256,
             'expected_current_unit_fragment_sha256': 'f' * 64,

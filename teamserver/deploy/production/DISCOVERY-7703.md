@@ -63,7 +63,7 @@ expected_gnas_release_id, expected_gnas_binary_sha256,
 recovery_mode, recovery_hosts, recovery_sha256,
 profile, service_unit, loopback, resources, public_hosts,
 observed_fleet_snapshot, readiness_file,
-expected_current_release_id, expected_current_binary_sha256,
+expected_current_release_id, expected_current_binary_sha256, expected_current_policy_sha256,
 expected_previous_release_id, expected_previous_binary_sha256,
 expected_current_unit_fragment_sha256,
 expected_current_archive_sha256, expected_current_manifest_sha256,
@@ -78,6 +78,13 @@ invent or create them. The candidate archive SHA is independently reported by
 the check-only gate and must be copied into the external receipt binding by
 the admission/promotion controller; it is not embedded back into the archive
 because that would make a self-referential digest.
+
+The check-only gate requires the fallback archive, fallback manifest, checksum
+catalogue and separately prepared legacy-smoke evidence. It checks their bytes
+against the candidate manifest, compares every candidate archive file to the
+verified directory, and binds the fallback policy to the profile baseline.
+Matching bytes do not establish that the smoke passed. Recheck the live policy,
+unit and fleet before any eventual controlled promotion.
 
 ## Check-only / future controlled actions
 

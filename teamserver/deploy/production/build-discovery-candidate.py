@@ -88,6 +88,7 @@ def main():
         'expected_gnas_binary_sha256': a.expected_gnas_binary_sha256,
         'expected_current_release_id': d.CURRENT_RELEASE_ID,
         'expected_current_binary_sha256': d.CURRENT_BINARY_SHA256,
+        'expected_current_policy_sha256': d.CURRENT_POLICY_SHA256,
         'expected_previous_release_id': d.PREVIOUS_RELEASE_ID,
         'expected_previous_binary_sha256': d.PREVIOUS_BINARY_SHA256,
         'expected_current_archive_sha256': a.expected_current_archive_sha256,
